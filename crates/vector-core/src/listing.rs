@@ -262,7 +262,7 @@ pub fn spawn_biggest(roots: Vec<PathBuf>, n: usize, one_file_system: bool) -> Li
                     &seen,
                 ));
             }
-            all.sort_by(|a, b| b.1.cmp(&a.1));
+            all.sort_by_key(|b| std::cmp::Reverse(b.1));
             all.truncate(n);
             let cancelled = stop.swap(true, Ordering::Relaxed);
             let _ = ticker.join();
