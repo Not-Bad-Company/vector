@@ -18,6 +18,9 @@ pub enum SidebarEvent {
     Notify(String),
 }
 
+/// What a sidebar menu entry does with its row's path.
+type RowAction = Box<dyn Fn(&Sidebar, PathBuf)>;
+
 /// Which section a row is in, for its right-click menu.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Section {
@@ -283,7 +286,7 @@ impl Sidebar {
     fn connect_menu(self: &Rc<Self>) {
         let actions = gio::SimpleActionGroup::new();
         let weak = Rc::downgrade(self);
-        let add = |name: &str, f: Box<dyn Fn(&Sidebar, PathBuf)>| {
+        let add = |name: &str, f: RowAction| {
             let a = gio::SimpleAction::new(name, Some(glib::VariantTy::STRING));
             let weak = weak.clone();
             a.connect_activate(move |_, v| {
