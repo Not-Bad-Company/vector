@@ -9,6 +9,6 @@ description = "A keyboard-and-mouse file manager for GTK4"
 strata-core.workspace = true
 glib.workspace = true
 gio.workspace = true
-gtk4.workspace = true
+gtk.workspace = true
 sourceview5.workspace = true
 async-channel.workspace = true

@@ -907,8 +907,8 @@ fn list_names(f: &gio::File, cancel: &gio::Cancellable) -> Result<Vec<PathBuf>, 
     Ok(out)
 }
 
-/// Bytes under `p`, not following symlinks. Unreadable parts count as zero.
-fn tree_size(p: &Path) -> u64 {
+/// Bytes under `p`, not following symlinks. Unreadable parts count as zero. Blocking.
+pub fn tree_size(p: &Path) -> u64 {
     let Ok(m) = std::fs::symlink_metadata(p) else {
         return 0;
     };

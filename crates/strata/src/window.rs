@@ -1,0 +1,2051 @@
+//! The main window: sidebar, tabs with one or two panes, path bar, preview, statusline,
+//! the `:` / `/` line, dialogs, the context menu, and the key handling that ties them to the
+//! core keymap and operation queue.
+
+use std::cell::{Cell, RefCell};
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::time::Duration;
+
+use gtk::prelude::*;
+use gtk::{gdk, gio, glib};
+use strata_core::command::{self, Command, Toggle};
+use strata_core::edit;
+use strata_core::keymap::{Action, Feed, Key, Keymap, Mode};
+use strata_core::model::ViewOptions;
+use strata_core::ops::{Conflict, ErrorKind, Op, OpEvent, OpQueue};
+use strata_core::search::{self, SearchOptions};
+use strata_core::sort::SortSpec;
+use strata_core::theme::Theme;
+
+use crate::pane::{Pane, PaneEvent};
+use crate::preview::Preview;
+use crate::sidebar::Sidebar;
+
+struct Tab {
+    panes: RefCell<Vec<Rc<Pane>>>,
+    active: Cell<usize>,
+    container: gtk::Box,
+    button: gtk::Button,
+}
+
+struct Register {
+    paths: Vec<PathBuf>,
+    cut: bool,
+}
+
+/// Results of `:find` / `:grep`, shown in the panel above the command line.
+struct Picker {
+    title: &'static str,
+    root: PathBuf,
+    /// (relative path, line number for grep)
+    items: Vec<(PathBuf, Option<u64>, String)>,
+    index: usize,
+}
+
+/// A modal card over the window.
+struct Dialog {
+    actions: Vec<Box<dyn Fn(&Win, Option<String>)>>,
+    entry: Option<gtk::Entry>,
+}
+
+pub struct Win {
+    pub window: gtk::ApplicationWindow,
+    sidebar: Rc<Sidebar>,
+    tabs: RefCell<Vec<Rc<Tab>>>,
+    current: Cell<usize>,
+    tab_bar: gtk::Box,
+    stack: gtk::Stack,
+    crumbs: gtk::Box,
+    path_entry: gtk::Entry,
+    path_stack: gtk::Stack,
+    preview: Rc<Preview>,
+    preview_box: gtk::Box,
+    mode_label: gtk::Label,
+    pending_label: gtk::Label,
+    message: gtk::Label,
+    info: gtk::Label,
+    progress: gtk::ProgressBar,
+    cmd_box: gtk::Box,
+    prompt: gtk::Label,
+    cmd_entry: gtk::Entry,
+    list_box: gtk::Box,
+    overlay_layer: gtk::Box,
+    mode: Cell<Mode>,
+    keymap: RefCell<Keymap>,
+    register: RefCell<Option<Register>>,
+    last_change: Cell<Option<Action>>,
+    ops: OpQueue,
+    completions: RefCell<(Vec<String>, usize, usize)>,
+    picker: RefCell<Option<Picker>>,
+    dialog: RefCell<Option<Dialog>>,
+    preview_timer: RefCell<Option<glib::SourceId>>,
+    edit_poll: RefCell<Option<glib::SourceId>>,
+    search_cancel: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
+    weak_self: RefCell<std::rc::Weak<Win>>,
+}
+
+const HOME_GLYPH: &str = "\u{F02DC}";
+
+impl Win {
+    pub fn new(app: &gtk::Application, start: &Path, theme: Theme) -> Rc<Win> {
+        let window = gtk::ApplicationWindow::new(app);
+        window.add_css_class("strata");
+        window.set_title(Some(strata_core::APP_NAME));
+        window.set_default_size(1280, 800);
+        window.set_decorated(false);
+
+        let tab_bar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        tab_bar.add_css_class("tabs");
+        tab_bar.set_visible(false);
+        let crumbs = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let path_entry = gtk::Entry::new();
+        path_entry.set_hexpand(true);
+        let path_stack = gtk::Stack::new();
+        path_stack.add_named(&crumbs, Some("crumbs"));
+        path_stack.add_named(&path_entry, Some("entry"));
+        path_stack.set_hexpand(true);
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        header.add_css_class("header");
+        header.append(&path_stack);
+
+        let stack = gtk::Stack::new();
+        stack.set_hexpand(true);
+        stack.set_vexpand(true);
+        let preview = Preview::new(&theme);
+        let preview_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        preview_box.append(preview.widget());
+        preview_box.set_visible(false);
+        let body = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        body.append(&stack);
+        body.append(&preview_box);
+
+        let mode_label = gtk::Label::new(Some("NORMAL"));
+        mode_label.add_css_class("mode");
+        let pending_label = gtk::Label::new(None);
+        pending_label.add_css_class("dim");
+        let message = gtk::Label::new(None);
+        message.add_css_class("message");
+        message.set_hexpand(true);
+        message.set_xalign(0.0);
+        message.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        let info = gtk::Label::new(None);
+        info.add_css_class("dim");
+        let status = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        status.add_css_class("statusline");
+        for w in [&mode_label, &message, &pending_label, &info] {
+            status.append(w);
+        }
+        let progress = gtk::ProgressBar::new();
+        progress.add_css_class("progress");
+        progress.set_visible(false);
+
+        let list_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        list_box.add_css_class("completions");
+        list_box.set_visible(false);
+        let prompt = gtk::Label::new(Some(":"));
+        prompt.add_css_class("prompt");
+        let cmd_entry = gtk::Entry::new();
+        cmd_entry.set_hexpand(true);
+        let cmd_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        cmd_box.add_css_class("cmdline");
+        cmd_box.append(&prompt);
+        cmd_box.append(&cmd_entry);
+        cmd_box.set_visible(false);
+
+        let main = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        main.append(&tab_bar);
+        main.append(&header);
+        main.append(&body);
+        main.append(&progress);
+        main.append(&list_box);
+        main.append(&cmd_box);
+        main.append(&status);
+
+        let outer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let overlay = gtk::Overlay::new();
+        overlay.add_css_class("root");
+        overlay.set_child(Some(&outer));
+        let overlay_layer = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        overlay_layer.set_halign(gtk::Align::Center);
+        overlay_layer.set_valign(gtk::Align::Center);
+        overlay_layer.set_visible(false);
+        overlay.add_overlay(&overlay_layer);
+        window.set_child(Some(&overlay));
+
+        let win = Rc::new_cyclic(|weak: &std::rc::Weak<Win>| {
+            let w = weak.clone();
+            let sidebar = Sidebar::new(move |path| {
+                if let Some(win) = w.upgrade() {
+                    win.pane().open_dir(&path);
+                    win.pane().focus_view();
+                }
+            });
+            outer.append(sidebar.widget());
+            outer.append(&main);
+            Win {
+                window,
+                sidebar,
+                tabs: RefCell::default(),
+                current: Cell::new(0),
+                tab_bar,
+                stack,
+                crumbs,
+                path_entry,
+                path_stack,
+                preview,
+                preview_box,
+                mode_label,
+                pending_label,
+                message,
+                info,
+                progress,
+                cmd_box,
+                prompt,
+                cmd_entry,
+                list_box,
+                overlay_layer,
+                mode: Cell::new(Mode::Normal),
+                keymap: RefCell::default(),
+                register: RefCell::new(None),
+                last_change: Cell::new(None),
+                ops: OpQueue::new(),
+                completions: RefCell::default(),
+                picker: RefCell::new(None),
+                dialog: RefCell::new(None),
+                preview_timer: RefCell::new(None),
+                edit_poll: RefCell::new(None),
+                search_cancel: RefCell::new(None),
+                weak_self: RefCell::new(weak.clone()),
+            }
+        });
+        win.connect_keys();
+        win.connect_entries();
+        win.connect_actions();
+        win.watch_ops();
+        win.new_tab(start);
+        win
+    }
+
+    fn tab(&self) -> Rc<Tab> {
+        let tabs = self.tabs.borrow();
+        tabs[self.current.get().min(tabs.len() - 1)].clone()
+    }
+
+    /// The pane with focus in the current tab.
+    pub fn pane(&self) -> Rc<Pane> {
+        let tab = self.tab();
+        let panes = tab.panes.borrow();
+        panes[tab.active.get().min(panes.len() - 1)].clone()
+    }
+
+    // ── tabs and panes ──────────────────────────────────────────────────────
+
+    fn make_pane(&self, dir: &Path, opts: ViewOptions, grid: bool) -> Rc<Pane> {
+        let weak = self.weak_self.borrow().clone();
+        let pane_cell: Rc<RefCell<std::rc::Weak<Pane>>> = Rc::default();
+        let pc = pane_cell.clone();
+        let pane = Pane::new(opts, move |ev| {
+            let (Some(win), Some(pane)) = (weak.upgrade(), pc.borrow().upgrade()) else {
+                return;
+            };
+            win.on_pane_event(&pane, ev);
+        });
+        *pane_cell.borrow_mut() = Rc::downgrade(&pane);
+        pane.set_grid(grid);
+        pane.open_dir(dir);
+        pane
+    }
+
+    pub fn new_tab(&self, dir: &Path) {
+        let (opts, grid) = self
+            .tabs
+            .borrow()
+            .first()
+            .map(|_| {
+                let p = self.pane();
+                let o = p.model.borrow().options().clone();
+                (
+                    ViewOptions {
+                        filter: String::new(),
+                        ..o
+                    },
+                    p.is_grid(),
+                )
+            })
+            .unwrap_or_default();
+        let pane = self.make_pane(dir, opts, grid);
+        let container = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        container.append(pane.widget());
+        pane.widget().set_hexpand(true);
+        let button = gtk::Button::new();
+        button.add_css_class("link");
+        button.add_css_class("tab");
+        let tab = Rc::new(Tab {
+            panes: RefCell::new(vec![pane]),
+            active: Cell::new(0),
+            container,
+            button,
+        });
+        let weak = self.weak_self.borrow().clone();
+        let t = Rc::downgrade(&tab);
+        tab.button.connect_clicked(move |_| {
+            if let (Some(win), Some(t)) = (weak.upgrade(), t.upgrade()) {
+                let i = win.tabs.borrow().iter().position(|x| Rc::ptr_eq(x, &t));
+                if let Some(i) = i {
+                    win.switch_tab(i);
+                }
+            }
+        });
+        self.tab_bar.append(&tab.button);
+        self.stack.add_child(&tab.container);
+        self.tabs.borrow_mut().push(tab);
+        let n = self.tabs.borrow().len();
+        self.switch_tab(n - 1);
+    }
+
+    fn switch_tab(&self, i: usize) {
+        let n = self.tabs.borrow().len();
+        if n == 0 {
+            return;
+        }
+        self.current.set(i % n);
+        let tab = self.tab();
+        self.stack.set_visible_child(&tab.container);
+        self.update_panes_focus();
+        self.update_chrome();
+        self.pane().focus_view();
+    }
+
+    fn close_tab(&self) {
+        if self.tabs.borrow().len() <= 1 {
+            self.window.close();
+            return;
+        }
+        let i = self.current.get();
+        let tab = self.tabs.borrow_mut().remove(i);
+        self.stack.remove(&tab.container);
+        self.tab_bar.remove(&tab.button);
+        self.switch_tab(i.min(self.tabs.borrow().len() - 1));
+    }
+
+    fn toggle_split(&self) {
+        let tab = self.tab();
+        let count = tab.panes.borrow().len();
+        if count == 2 {
+            let other = tab.panes.borrow_mut().remove(1 - tab.active.get());
+            tab.container.remove(other.widget());
+            tab.active.set(0);
+            if let Some(p) = tab.panes.borrow().first() {
+                p.widget().remove_css_class("pane-split");
+            }
+        } else {
+            let cur = self.pane();
+            let opts = cur.model.borrow().options().clone();
+            let pane = self.make_pane(
+                &cur.dir(),
+                ViewOptions {
+                    filter: String::new(),
+                    ..opts
+                },
+                cur.is_grid(),
+            );
+            pane.widget().set_hexpand(true);
+            pane.widget().add_css_class("pane-split");
+            tab.container.append(pane.widget());
+            tab.panes.borrow_mut().push(pane);
+            tab.active.set(1);
+        }
+        self.update_panes_focus();
+        self.pane().focus_view();
+        self.update_chrome();
+    }
+
+    fn other_pane(&self) {
+        let tab = self.tab();
+        if tab.panes.borrow().len() == 2 {
+            tab.active.set(1 - tab.active.get());
+            self.update_panes_focus();
+            self.pane().focus_view();
+            self.update_chrome();
+        }
+    }
+
+    fn update_panes_focus(&self) {
+        let tab = self.tab();
+        let split = tab.panes.borrow().len() > 1;
+        for (i, p) in tab.panes.borrow().iter().enumerate() {
+            p.set_focused(!split || i == tab.active.get());
+        }
+    }
+
+    fn on_pane_event(&self, pane: &Rc<Pane>, ev: PaneEvent) {
+        // panes report while they are being built, before their tab exists
+        if self.tabs.borrow().is_empty() || self.tabs.borrow().iter().all(|t| t.panes.try_borrow().is_err()) {
+            return;
+        }
+        let is_current = Rc::ptr_eq(pane, &self.pane());
+        match ev {
+            PaneEvent::Cursor => {
+                if is_current {
+                    self.update_status();
+                    self.schedule_preview();
+                }
+            }
+            PaneEvent::Dir => {
+                self.update_chrome();
+                if pane.timing.get().1.is_some() && std::env::var_os("STRATA_TIMING").is_some() {
+                    let (a, b) = pane.timing.get();
+                    eprintln!(
+                        "strata timing: {} entries, first paint {:.1} ms, full list {:.1} ms",
+                        pane.model.borrow().total(),
+                        a.unwrap_or(-1.0),
+                        b.unwrap_or(-1.0)
+                    );
+                }
+            }
+            PaneEvent::Activate(e) => self.open_file(&e.path),
+            PaneEvent::Menu(w, x, y) => {
+                if !is_current {
+                    self.focus_pane(pane);
+                }
+                self.show_menu(&w, x, y);
+            }
+            PaneEvent::Drop { paths, dest, copy } => {
+                let sources: Vec<PathBuf> = paths
+                    .into_iter()
+                    .filter(|p| p.parent() != Some(dest.as_path()) || copy)
+                    .collect();
+                if !sources.is_empty() {
+                    self.transfer(sources, dest, !copy);
+                }
+            }
+            PaneEvent::Focus => {
+                if !is_current {
+                    self.focus_pane(pane);
+                }
+            }
+            PaneEvent::Error(e) => self.flash_error(&e),
+        }
+    }
+
+    fn focus_pane(&self, pane: &Rc<Pane>) {
+        let tab = self.tab();
+        let i = tab.panes.borrow().iter().position(|p| Rc::ptr_eq(p, pane));
+        if let Some(i) = i {
+            tab.active.set(i);
+            self.update_panes_focus();
+            self.update_chrome();
+        }
+    }
+
+    // ── chrome: path bar, tab labels, statusline ────────────────────────────
+
+    fn update_chrome(&self) {
+        let pane = self.pane();
+        let dir = pane.dir();
+        self.sidebar.set_current(&dir);
+        self.window.set_title(Some(&format!(
+            "{} — {}",
+            display_path(&dir),
+            strata_core::APP_NAME
+        )));
+        while let Some(c) = self.crumbs.first_child() {
+            self.crumbs.remove(&c);
+        }
+        let home = glib::home_dir();
+        let (mut acc, parts): (PathBuf, Vec<String>) = match dir.strip_prefix(&home) {
+            Ok(rest) => (
+                home.clone(),
+                std::iter::once(HOME_GLYPH.to_string())
+                    .chain(rest.iter().map(|s| s.to_string_lossy().into_owned()))
+                    .collect(),
+            ),
+            Err(_) => (
+                PathBuf::from("/"),
+                std::iter::once("/".to_string())
+                    .chain(dir.iter().skip(1).map(|s| s.to_string_lossy().into_owned()))
+                    .collect(),
+            ),
+        };
+        let n = parts.len();
+        for (i, part) in parts.into_iter().enumerate() {
+            if i > 0 {
+                acc.push(&part);
+                // no separator right after the root "/"
+                if !(i == 1 && acc.parent() == Some(Path::new("/")) && !dir.starts_with(&home)) {
+                    let sep = gtk::Label::new(Some("/"));
+                    sep.add_css_class("crumb-sep");
+                    self.crumbs.append(&sep);
+                }
+            }
+            let b = gtk::Button::with_label(&part);
+            b.add_css_class("link");
+            if i == n - 1 {
+                b.add_css_class("primary");
+            }
+            let target = acc.clone();
+            let weak = self.weak_self.borrow().clone();
+            b.connect_clicked(move |_| {
+                if let Some(win) = weak.upgrade() {
+                    win.pane().open_dir(&target);
+                    win.pane().focus_view();
+                }
+            });
+            self.crumbs.append(&b);
+        }
+        let tabs = self.tabs.borrow();
+        self.tab_bar.set_visible(tabs.len() > 1);
+        for (i, t) in tabs.iter().enumerate() {
+            let p = t.panes.borrow()[t.active.get().min(t.panes.borrow().len() - 1)].clone();
+            let d = p.dir();
+            let name = d
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "/".into());
+            t.button.set_label(&format!("{} {name}", i + 1));
+            if i == self.current.get() {
+                t.button.add_css_class("primary");
+            } else {
+                t.button.remove_css_class("primary");
+            }
+        }
+        drop(tabs);
+        self.update_status();
+        self.schedule_preview();
+    }
+
+    fn update_status(&self) {
+        let mode = self.mode.get();
+        let picker_title = self.picker.borrow().as_ref().map(|p| p.title);
+        self.mode_label
+            .set_text(picker_title.unwrap_or(mode.label()));
+        if mode == Mode::Normal && picker_title.is_none() {
+            self.mode_label.remove_css_class("active");
+        } else {
+            self.mode_label.add_css_class("active");
+        }
+        self.pending_label
+            .set_text(&self.keymap.borrow().pending_text());
+        let pane = self.pane();
+        let m = pane.model.borrow();
+        let sel = pane.selection.borrow();
+        let mut parts = Vec::new();
+        if pane.loading.get() {
+            parts.push(format!("loading {}", m.total()));
+        } else {
+            let hidden = m.total().saturating_sub(m.len());
+            parts.push(format!("{} items", m.len()));
+            if hidden > 0 && m.options().filter.is_empty() && !m.options().show_hidden {
+                parts.push(format!("{hidden} hidden"));
+            }
+        }
+        let nsel = sel.selected_names().count();
+        if nsel > 0 {
+            parts.push(format!("{nsel} selected"));
+        } else if let (Some(i), false) = (sel.cursor(&m), m.is_empty()) {
+            parts.push(format!("{}/{}", i + 1, m.len()));
+        }
+        if !m.options().filter.is_empty() {
+            parts.push(format!("filter {}", m.options().filter));
+        }
+        let s = m.options().sort;
+        parts.push(format!(
+            "{}{}",
+            s.key.label(),
+            if s.reverse { " ↓" } else { "" }
+        ));
+        if let Some(r) = self.register.borrow().as_ref() {
+            parts.push(format!(
+                "{} {}",
+                if r.cut { "cut" } else { "yanked" },
+                r.paths.len()
+            ));
+        }
+        self.info.set_text(&parts.join(" · "));
+    }
+
+    fn flash(&self, text: &str) {
+        self.message.remove_css_class("crit");
+        self.message.add_css_class("dim");
+        self.message.set_text(text);
+    }
+
+    fn flash_error(&self, text: &str) {
+        self.message.remove_css_class("dim");
+        self.message.add_css_class("crit");
+        self.message.set_text(text);
+    }
+
+    fn schedule_preview(&self) {
+        if !self.preview_box.is_visible() {
+            return;
+        }
+        if let Some(id) = self.preview_timer.borrow_mut().take() {
+            id.remove();
+        }
+        let weak = self.weak_self.borrow().clone();
+        let id = glib::timeout_add_local_once(Duration::from_millis(60), move || {
+            if let Some(win) = weak.upgrade() {
+                win.preview_timer.borrow_mut().take();
+                let e = win.pane().cursor_entry();
+                win.preview.show(e.as_ref());
+            }
+        });
+        *self.preview_timer.borrow_mut() = Some(id);
+    }
+
+    fn toggle_preview(&self) {
+        let show = !self.preview_box.is_visible();
+        self.preview_box.set_visible(show);
+        if show {
+            self.schedule_preview();
+        } else {
+            self.preview.show(None);
+        }
+    }
+
+    // ── keys ────────────────────────────────────────────────────────────────
+
+    fn connect_keys(&self) {
+        let ctl = gtk::EventControllerKey::new();
+        ctl.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak = self.weak_self.borrow().clone();
+        ctl.connect_key_pressed(move |_, keyval, _, state| {
+            let Some(win) = weak.upgrade() else {
+                return glib::Propagation::Proceed;
+            };
+            match to_key(keyval, state) {
+                Some(k) if win.handle_key(k, false) => glib::Propagation::Stop,
+                _ => glib::Propagation::Proceed,
+            }
+        });
+        self.window.add_controller(ctl);
+    }
+
+    /// Handles one key. `synthetic` keys (from `--keys`) also type into the command line.
+    /// Returns whether the key was used.
+    pub fn handle_key(&self, key: Key, synthetic: bool) -> bool {
+        if self.dialog.borrow().is_some() {
+            return self.dialog_key(key, synthetic);
+        }
+        if self.path_stack.visible_child_name().as_deref() == Some("entry") {
+            match key {
+                Key::Esc => {
+                    self.path_stack.set_visible_child_name("crumbs");
+                    self.pane().focus_view();
+                    return true;
+                }
+                Key::Enter => {
+                    let text = self.path_entry.text().to_string();
+                    self.path_stack.set_visible_child_name("crumbs");
+                    self.run_command(Command::Cd(text));
+                    return true;
+                }
+                Key::Char(c) if synthetic => {
+                    self.path_entry
+                        .set_text(&format!("{}{c}", self.path_entry.text()));
+                    return true;
+                }
+                _ => return false,
+            }
+        }
+        if self.picker.borrow().is_some()
+            && !matches!(self.mode.get(), Mode::Command | Mode::Filter)
+        {
+            return self.picker_key(key);
+        }
+        match self.mode.get() {
+            Mode::Command | Mode::Filter => self.line_key(key, synthetic),
+            Mode::Normal | Mode::Visual => {
+                let feed = self.keymap.borrow_mut().feed(key);
+                let used = match feed {
+                    Feed::Run { action, count } => {
+                        self.run_action(action, count);
+                        true
+                    }
+                    Feed::Pending => true,
+                    Feed::Unbound => false,
+                };
+                self.update_status();
+                used
+            }
+        }
+    }
+
+    fn line_key(&self, key: Key, synthetic: bool) -> bool {
+        match key {
+            Key::Esc => {
+                if self.mode.get() == Mode::Filter {
+                    self.pane().model.borrow_mut().set_filter("");
+                    self.pane().refresh();
+                }
+                self.leave_line();
+                true
+            }
+            Key::Enter => {
+                let text = self.cmd_entry.text().to_string();
+                let was = self.mode.get();
+                self.leave_line();
+                if was == Mode::Command {
+                    match command::parse(&text) {
+                        Ok(c) => self.run_command(c),
+                        Err(command::ParseError::Empty) => {}
+                        Err(e) => self.flash_error(&e.to_string()),
+                    }
+                }
+                true
+            }
+            Key::Tab | Key::BackTab if self.mode.get() == Mode::Command => {
+                self.complete(key == Key::BackTab);
+                true
+            }
+            Key::Backspace if self.cmd_entry.text().is_empty() => {
+                self.line_key(Key::Esc, synthetic)
+            }
+            Key::Char(c) if synthetic => {
+                let mut t = self.cmd_entry.text().to_string();
+                t.push(c);
+                self.cmd_entry.set_text(&t);
+                self.cmd_entry.set_position(-1);
+                true
+            }
+            Key::Backspace if synthetic => {
+                let mut t = self.cmd_entry.text().to_string();
+                t.pop();
+                self.cmd_entry.set_text(&t);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn enter_line(&self, mode: Mode) {
+        self.mode.set(mode);
+        self.prompt
+            .set_text(if mode == Mode::Filter { "/" } else { ":" });
+        let current = if mode == Mode::Filter {
+            self.pane().model.borrow().options().filter.clone()
+        } else {
+            String::new()
+        };
+        self.cmd_entry.set_text(&current);
+        self.cmd_box.set_visible(true);
+        self.cmd_entry.grab_focus();
+        self.cmd_entry.set_position(-1);
+        self.close_picker();
+        self.update_status();
+    }
+
+    fn leave_line(&self) {
+        self.mode.set(Mode::Normal);
+        self.cmd_box.set_visible(false);
+        self.clear_list();
+        self.completions.borrow_mut().0.clear();
+        self.pane().focus_view();
+        self.update_status();
+    }
+
+    fn connect_entries(&self) {
+        let weak = self.weak_self.borrow().clone();
+        self.cmd_entry.connect_changed(move |e| {
+            let Some(win) = weak.upgrade() else { return };
+            match win.mode.get() {
+                Mode::Filter => {
+                    let pane = win.pane();
+                    pane.model.borrow_mut().set_filter(&e.text());
+                    pane.selection
+                        .borrow_mut()
+                        .set_cursor(&pane.model.borrow(), 0);
+                    pane.refresh();
+                }
+                Mode::Command => {
+                    // typing invalidates the completion cycle; show fresh candidates
+                    let fresh = win.completions.borrow().2 != e.text().len();
+                    if fresh {
+                        win.completions.borrow_mut().0.clear();
+                        win.show_completions_for(&e.text(), false);
+                    }
+                }
+                _ => {}
+            }
+        });
+    }
+
+    fn clear_list(&self) {
+        while let Some(c) = self.list_box.first_child() {
+            self.list_box.remove(&c);
+        }
+        self.list_box.set_visible(false);
+    }
+
+    fn fill_list(&self, rows: &[String], active: Option<usize>) {
+        self.clear_list();
+        let max = 10;
+        let start = active.map_or(0, |a| a.saturating_sub(max - 1));
+        for (i, text) in rows.iter().enumerate().skip(start).take(max) {
+            let l = gtk::Label::new(Some(text));
+            l.set_xalign(0.0);
+            l.add_css_class("row");
+            l.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+            if Some(i) == active {
+                l.add_css_class("active");
+            }
+            self.list_box.append(&l);
+        }
+        if rows.len() > max {
+            let more = gtk::Label::new(Some(&format!(
+                "{} of {}",
+                active.map_or(0, |a| a + 1),
+                rows.len()
+            )));
+            more.add_css_class("section");
+            more.set_xalign(0.0);
+            self.list_box.append(&more);
+        }
+        self.list_box.set_visible(!rows.is_empty());
+    }
+
+    /// Lists completions for `line` off the main thread (they may read folders), then shows
+    /// them; with `apply`, also puts the first/next one into the line.
+    fn show_completions_for(&self, line: &str, apply: bool) {
+        let cwd = self.pane().dir();
+        let line_owned = line.to_string();
+        let weak = self.weak_self.borrow().clone();
+        glib::spawn_future_local(async move {
+            let l = line_owned.clone();
+            let Ok(c) = gio::spawn_blocking(move || {
+                let home = glib::home_dir();
+                let lister = |p: &Path| -> Vec<(String, bool)> {
+                    std::fs::read_dir(p)
+                        .map(|rd| {
+                            rd.flatten()
+                                .take(5000)
+                                .map(|e| {
+                                    let dir = std::fs::metadata(e.path()).is_ok_and(|m| m.is_dir());
+                                    (e.file_name().to_string_lossy().into_owned(), dir)
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                };
+                command::complete(
+                    &l,
+                    &command::CompletionCtx {
+                        cwd: &cwd,
+                        home: &home,
+                        list_dir: &lister,
+                    },
+                )
+            })
+            .await
+            else {
+                return;
+            };
+            let Some(win) = weak.upgrade() else { return };
+            if win.cmd_entry.text() != line_owned {
+                return;
+            }
+            let prefix = line_owned[..c.start].to_string();
+            let full: Vec<String> = c
+                .candidates
+                .iter()
+                .map(|x| format!("{prefix}{x}"))
+                .collect();
+            *win.completions.borrow_mut() = (full.clone(), usize::MAX, line_owned.len());
+            win.fill_list(&c.candidates, None);
+            if apply && !full.is_empty() {
+                win.cycle_completion(false);
+            }
+        });
+    }
+
+    fn complete(&self, back: bool) {
+        if self.completions.borrow().0.is_empty() {
+            self.show_completions_for(&self.cmd_entry.text(), true);
+        } else {
+            self.cycle_completion(back);
+        }
+    }
+
+    fn cycle_completion(&self, back: bool) {
+        let (text, shown) = {
+            let mut c = self.completions.borrow_mut();
+            let n = c.0.len();
+            if n == 0 {
+                return;
+            }
+            c.1 = match (c.1, back) {
+                (usize::MAX, false) => 0,
+                (usize::MAX, true) => n - 1,
+                (i, false) => (i + 1) % n,
+                (i, true) => (i + n - 1) % n,
+            };
+            c.2 = c.0[c.1].len();
+            (c.0[c.1].clone(), c.1)
+        };
+        self.cmd_entry.set_text(&text);
+        self.cmd_entry.set_position(-1);
+        let rows: Vec<String> = {
+            let c = self.completions.borrow();
+            let start = text.len() - text.rsplit(' ').next().map_or(0, str::len);
+            c.0.iter()
+                .map(|x| x.get(start..).unwrap_or(x).to_string())
+                .collect()
+        };
+        self.fill_list(&rows, Some(shown));
+    }
+
+    // ── actions ─────────────────────────────────────────────────────────────
+
+    fn run_action(&self, action: Action, count: usize) {
+        let pane = self.pane();
+        let rows = |d: isize| d * count as isize;
+        let mv = |delta: isize| {
+            pane.selection
+                .borrow_mut()
+                .move_by(&pane.model.borrow(), delta);
+            pane.push_selection(true);
+            self.update_status();
+            self.schedule_preview();
+        };
+        match action {
+            Action::Down => mv(rows(pane.columns())),
+            Action::Up => mv(rows(-pane.columns())),
+            Action::PageDown => mv(rows(pane.page_rows())),
+            Action::PageUp => mv(rows(-pane.page_rows())),
+            Action::Top => {
+                pane.selection
+                    .borrow_mut()
+                    .set_cursor(&pane.model.borrow(), 0);
+                mv(0);
+            }
+            Action::Bottom => {
+                let n = pane.model.borrow().len();
+                let i = if count == 0 {
+                    n.saturating_sub(1)
+                } else {
+                    count - 1
+                };
+                pane.selection
+                    .borrow_mut()
+                    .set_cursor(&pane.model.borrow(), i);
+                mv(0);
+            }
+            Action::Open => {
+                if let Some(e) = pane.cursor_entry() {
+                    if e.is_dir() {
+                        self.leave_visual();
+                        pane.open_dir(&e.path);
+                    } else {
+                        self.open_file(&e.path);
+                    }
+                }
+            }
+            Action::Parent => {
+                self.leave_visual();
+                pane.go_parent();
+            }
+            Action::Back => pane.go_back(),
+            Action::Forward => pane.go_forward(),
+            Action::Yank | Action::Cut => {
+                let paths: Vec<PathBuf> = pane.targets().into_iter().map(|e| e.path).collect();
+                if paths.is_empty() {
+                    return;
+                }
+                let cut = action == Action::Cut;
+                self.flash(&format!(
+                    "{} {}",
+                    if cut { "cut" } else { "yanked" },
+                    count_label(&paths)
+                ));
+                *self.register.borrow_mut() = Some(Register { paths, cut });
+                self.leave_visual();
+                pane.selection.borrow_mut().clear();
+                pane.push_selection(false);
+            }
+            Action::Paste => {
+                self.last_change.set(Some(action));
+                self.paste();
+            }
+            Action::Trash => {
+                self.last_change.set(Some(action));
+                let paths: Vec<PathBuf> = pane.targets().into_iter().map(|e| e.path).collect();
+                self.leave_visual();
+                if !paths.is_empty() {
+                    self.ops.submit(Op::Trash { paths });
+                }
+            }
+            Action::DeletePermanently => {
+                let paths: Vec<PathBuf> = pane.targets().into_iter().map(|e| e.path).collect();
+                self.leave_visual();
+                self.confirm_delete(paths, "delete permanently");
+            }
+            Action::Rename => self.rename_dialog(),
+            Action::Undo => match self.ops.undo_label() {
+                Some(label) => {
+                    self.ops.undo();
+                    self.flash(&format!("undo {label}"));
+                }
+                None => self.flash("nothing to undo"),
+            },
+            Action::Repeat => {
+                if let Some(a) = self.last_change.get() {
+                    self.run_action(a, 1);
+                }
+            }
+            Action::VisualStart => {
+                if self.mode.get() == Mode::Visual {
+                    self.leave_visual();
+                } else {
+                    self.mode.set(Mode::Visual);
+                    pane.selection
+                        .borrow_mut()
+                        .start_visual(&pane.model.borrow());
+                    pane.push_selection(false);
+                }
+                self.update_status();
+            }
+            Action::Escape => {
+                self.leave_visual();
+                pane.selection.borrow_mut().clear();
+                if !pane.model.borrow().options().filter.is_empty() {
+                    pane.model.borrow_mut().set_filter("");
+                    pane.refresh();
+                }
+                pane.push_selection(false);
+                self.message.set_text("");
+                self.update_status();
+            }
+            Action::CommandStart => self.enter_line(Mode::Command),
+            Action::FilterStart => self.enter_line(Mode::Filter),
+            Action::ToggleHidden => self.run_command(Command::Hidden(Toggle::Toggle)),
+            Action::ToggleView => {
+                pane.set_grid(!pane.is_grid());
+                pane.focus_view();
+            }
+            Action::TogglePreview => self.toggle_preview(),
+            Action::ToggleSplit => self.toggle_split(),
+            Action::OtherPane => self.other_pane(),
+            Action::NewTab => self.new_tab(&pane.dir()),
+            Action::CloseTab => self.close_tab(),
+            Action::NextTab => {
+                let i = self.current.get() + count;
+                self.switch_tab(i);
+            }
+            Action::PrevTab => {
+                let n = self.tabs.borrow().len();
+                let i = (self.current.get() + n * count - count) % n.max(1);
+                self.switch_tab(i);
+            }
+            Action::ToggleSelect => {
+                if let Some(e) = pane.cursor_entry() {
+                    pane.selection.borrow_mut().toggle(&e.name);
+                    pane.selection.borrow_mut().move_by(&pane.model.borrow(), 1);
+                    pane.push_selection(true);
+                    self.update_status();
+                }
+            }
+            Action::SelectAll => {
+                let names: Vec<String> =
+                    pane.model.borrow().iter().map(|e| e.name.clone()).collect();
+                pane.selection.borrow_mut().set_selected(names);
+                pane.push_selection(false);
+                self.update_status();
+            }
+            Action::FolderSize => self.folder_sizes(),
+            Action::Edit => self.run_command(Command::Edit),
+            Action::Terminal => self.run_command(Command::Term),
+            Action::Reload => pane.reload(),
+            Action::PathEdit => {
+                self.path_entry.set_text(&display_path(&pane.dir()));
+                self.path_stack.set_visible_child_name("entry");
+                self.path_entry.grab_focus();
+                self.path_entry.set_position(-1);
+            }
+            Action::Quit => self.window.close(),
+        }
+    }
+
+    fn leave_visual(&self) {
+        if self.mode.get() == Mode::Visual {
+            self.mode.set(Mode::Normal);
+            self.pane().selection.borrow_mut().end_visual();
+            self.update_status();
+        }
+    }
+
+    fn run_command(&self, c: Command) {
+        let pane = self.pane();
+        let dir = pane.dir();
+        match c {
+            Command::New(name) => {
+                self.ops.submit(Op::NewFile {
+                    path: dir.join(name),
+                });
+            }
+            Command::Mkdir(name) => {
+                self.ops.submit(Op::Mkdir {
+                    path: dir.join(name),
+                });
+            }
+            Command::Cd(p) => {
+                let target = resolve(&dir, &p);
+                let t = target.clone();
+                let weak = self.weak_self.borrow().clone();
+                glib::spawn_future_local(async move {
+                    let is_dir = gio::spawn_blocking(move || t.is_dir())
+                        .await
+                        .unwrap_or(false);
+                    let Some(win) = weak.upgrade() else { return };
+                    if is_dir {
+                        win.pane().open_dir(&target);
+                        win.pane().focus_view();
+                    } else {
+                        win.flash_error(&format!("no folder {}", display_path(&target)));
+                    }
+                });
+            }
+            Command::Sort { key, reverse } => {
+                let spec = SortSpec {
+                    key,
+                    reverse,
+                    ..SortSpec::default()
+                };
+                pane.model.borrow_mut().set_sort(spec);
+                pane.refresh();
+            }
+            Command::Hidden(t) => {
+                let cur = pane.model.borrow().options().show_hidden;
+                let show = match t {
+                    Toggle::Toggle => !cur,
+                    Toggle::On => true,
+                    Toggle::Off => false,
+                };
+                pane.model.borrow_mut().set_show_hidden(show);
+                pane.refresh();
+                self.flash(if show {
+                    "showing hidden files"
+                } else {
+                    "hiding hidden files"
+                });
+            }
+            Command::Open(None) => self.run_action(Action::Open, 1),
+            Command::Open(Some(name)) => {
+                let p = resolve(&dir, &name);
+                self.open_file(&p);
+            }
+            Command::Term => self.open_terminal(&dir),
+            Command::Edit => self.start_edit(),
+            Command::Quit => self.window.close(),
+            Command::Find(q) => self.search(q, false),
+            Command::Grep(q) => self.search(q, true),
+        }
+    }
+
+    fn open_file(&self, path: &Path) {
+        if path.is_dir() {
+            self.pane().open_dir(path);
+            return;
+        }
+        let uri = gio::File::for_path(path).uri();
+        let ctx = WidgetExt::display(&self.window).app_launch_context();
+        let weak = self.weak_self.borrow().clone();
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        gio::AppInfo::launch_default_for_uri_async(
+            &uri,
+            Some(&ctx),
+            gio::Cancellable::NONE,
+            move |r| {
+                if let (Err(e), Some(win)) = (r, weak.upgrade()) {
+                    win.flash_error(&format!("{name}: {}", e.message()));
+                }
+            },
+        );
+    }
+
+    fn open_terminal(&self, dir: &Path) {
+        let launcher = gio::SubprocessLauncher::new(gio::SubprocessFlags::NONE);
+        launcher.set_cwd(dir);
+        if let Err(e) = launcher.spawn(&[std::ffi::OsStr::new("xdg-terminal-exec")]) {
+            self.flash_error(&format!("terminal: {}", e.message()));
+        }
+    }
+
+    // ── paste, transfers, deletes ───────────────────────────────────────────
+
+    fn paste(&self) {
+        let Some((paths, cut)) = self
+            .register
+            .borrow()
+            .as_ref()
+            .map(|r| (r.paths.clone(), r.cut))
+        else {
+            self.flash("nothing yanked");
+            return;
+        };
+        let dest = self.pane().dir();
+        if cut {
+            // a cut pastes once
+            *self.register.borrow_mut() = None;
+        }
+        self.transfer(paths, dest, cut);
+    }
+
+    /// Copies or moves `paths` into `dest`, asking first when names are taken.
+    fn transfer(&self, paths: Vec<PathBuf>, dest: PathBuf, cut: bool) {
+        let weak = self.weak_self.borrow().clone();
+        glib::spawn_future_local(async move {
+            let (p, d) = (paths.clone(), dest.clone());
+            let taken = gio::spawn_blocking(move || strata_core::ops::conflicts(&p, &d))
+                .await
+                .unwrap_or_default();
+            let Some(win) = weak.upgrade() else { return };
+            let make = move |conflict: Conflict| {
+                if cut {
+                    Op::Move {
+                        sources: paths.clone(),
+                        dest: dest.clone(),
+                        conflict,
+                    }
+                } else {
+                    Op::Copy {
+                        sources: paths.clone(),
+                        dest: dest.clone(),
+                        conflict,
+                    }
+                }
+            };
+            if taken.is_empty() {
+                win.ops.submit(make(Conflict::Skip));
+                return;
+            }
+            let lines: Vec<String> = taken.iter().map(|p| file_name(p)).collect();
+            let make = Rc::new(make);
+            let (m1, m2) = (make.clone(), make.clone());
+            win.show_dialog(
+                &format!(
+                    "{} already exist{}",
+                    count_label(&taken),
+                    if taken.len() == 1 { "s" } else { "" }
+                ),
+                &lines,
+                "same-name files inside folders are replaced too",
+                vec![
+                    cancel(),
+                    button("skip", "", move |w, _| {
+                        w.ops.submit(m1(Conflict::Skip));
+                    }),
+                    button("replace", "danger", move |w, _| {
+                        w.ops.submit(m2(Conflict::Overwrite));
+                    }),
+                    button("keep both", "primary", move |w, _| {
+                        w.ops.submit(make(Conflict::KeepBoth));
+                    }),
+                ],
+                None,
+            );
+        });
+    }
+
+    fn confirm_delete(&self, paths: Vec<PathBuf>, title: &str) {
+        if paths.is_empty() {
+            return;
+        }
+        let lines: Vec<String> = paths.iter().map(|p| file_name(p)).collect();
+        self.show_dialog(
+            &format!("{title} {}", count_label(&paths)),
+            &lines,
+            "this can't be undone",
+            vec![
+                cancel(),
+                button("delete", "danger", move |w, _| {
+                    w.ops.submit(Op::DeletePermanently {
+                        paths: paths.clone(),
+                    });
+                }),
+            ],
+            None,
+        );
+    }
+
+    fn rename_dialog(&self) {
+        let Some(e) = self.pane().cursor_entry() else {
+            return;
+        };
+        let entry = gtk::Entry::new();
+        entry.set_text(&e.name);
+        entry.set_width_chars(40);
+        let path = e.path.clone();
+        self.show_dialog(
+            "rename",
+            &[],
+            "",
+            vec![
+                cancel(),
+                button("rename", "primary", move |w, text| {
+                    if let Some(t) = text.filter(|t| !t.is_empty()) {
+                        w.ops.submit(Op::Rename {
+                            path: path.clone(),
+                            new_name: t,
+                        });
+                    }
+                }),
+            ],
+            Some(entry.clone()),
+        );
+        entry.grab_focus();
+        // select the name without its extension, like other file managers
+        let stem = if e.is_dir() {
+            e.name.chars().count()
+        } else {
+            e.name
+                .rfind('.')
+                .filter(|&i| i > 0)
+                .map_or(e.name.chars().count(), |i| e.name[..i].chars().count())
+        };
+        entry.select_region(0, stem as i32);
+    }
+
+    fn folder_sizes(&self) {
+        let pane = self.pane();
+        let dirs: Vec<(String, PathBuf)> = pane
+            .targets()
+            .into_iter()
+            .filter(|e| e.is_dir())
+            .map(|e| (e.name, e.path))
+            .collect();
+        if dirs.is_empty() {
+            return;
+        }
+        self.flash("measuring…");
+        let weak = std::rc::Rc::downgrade(&pane);
+        let wwin = self.weak_self.borrow().clone();
+        let dir = pane.dir();
+        glib::spawn_future_local(async move {
+            let Ok(sizes) = gio::spawn_blocking(move || {
+                dirs.into_iter()
+                    .map(|(n, p)| (n, strata_core::ops::tree_size(&p)))
+                    .collect::<Vec<_>>()
+            })
+            .await
+            else {
+                return;
+            };
+            let (Some(pane), Some(win)) = (weak.upgrade(), wwin.upgrade()) else {
+                return;
+            };
+            if pane.dir() != dir {
+                return;
+            }
+            let total: u64 = sizes.iter().map(|(_, s)| s).sum();
+            pane.sizes.borrow_mut().extend(sizes);
+            pane.rebind();
+            win.flash(&format!("{} in total", crate::fmt::size(total)));
+        });
+    }
+
+    fn watch_ops(&self) {
+        let rx = self.ops.events.clone();
+        let weak = self.weak_self.borrow().clone();
+        glib::spawn_future_local(async move {
+            while let Ok(ev) = rx.recv().await {
+                let Some(win) = weak.upgrade() else { return };
+                match ev {
+                    OpEvent::Started { label, .. } => {
+                        win.flash(&format!("{label}…"));
+                        win.progress.set_fraction(0.0);
+                    }
+                    OpEvent::Progress { done, total, .. } => {
+                        if total > 0 {
+                            win.progress.set_visible(true);
+                            win.progress.set_fraction(done as f64 / total as f64);
+                        }
+                    }
+                    OpEvent::Finished { report, .. } => {
+                        win.progress.set_visible(false);
+                        let unsupported: Vec<PathBuf> = report
+                            .errors
+                            .iter()
+                            .filter(|e| e.kind == ErrorKind::TrashUnsupported)
+                            .map(|e| e.path.clone())
+                            .collect();
+                        let others: Vec<String> = report
+                            .errors
+                            .iter()
+                            .filter(|e| e.kind != ErrorKind::TrashUnsupported)
+                            .map(|e| e.to_string())
+                            .collect();
+                        if report.cancelled {
+                            win.flash(&format!("{} cancelled", report.label));
+                        } else if !others.is_empty() {
+                            win.flash_error(&format!("{}: {}", report.label, others.join("; ")));
+                        } else {
+                            let undo = if report.undoable { " · u to undo" } else { "" };
+                            win.flash(&format!("{}{undo}", report.label));
+                        }
+                        if !unsupported.is_empty() {
+                            win.confirm_delete(
+                                unsupported,
+                                "no trash on this drive — delete permanently",
+                            );
+                        }
+                        if !report.created.is_empty() {
+                            win.pane().select_paths(&report.created);
+                        }
+                        win.update_status();
+                    }
+                }
+            }
+        });
+    }
+
+    // ── :find / :grep ───────────────────────────────────────────────────────
+
+    fn search(&self, query: String, content: bool) {
+        if let Some(c) = self.search_cancel.borrow_mut().take() {
+            c.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        *self.search_cancel.borrow_mut() = Some(cancel.clone());
+        let root = self.pane().dir();
+        let opts = SearchOptions {
+            hidden: self.pane().model.borrow().options().show_hidden,
+            ..Default::default()
+        };
+        self.flash(if content {
+            "searching contents…"
+        } else {
+            "finding…"
+        });
+        let weak = self.weak_self.borrow().clone();
+        glib::spawn_future_local(async move {
+            let r = root.clone();
+            let q = query.clone();
+            let res = gio::spawn_blocking(
+                move || -> Result<Vec<(PathBuf, Option<u64>, String)>, String> {
+                    if content {
+                        search::grep(&r, &q, &opts, &cancel, 500)
+                            .map(|v| {
+                                v.into_iter()
+                                    .map(|h| (h.path, Some(h.line), h.text))
+                                    .collect()
+                            })
+                            .map_err(|e| e.to_string())
+                    } else {
+                        Ok(search::find(&r, &q, &opts, &cancel, 500)
+                            .into_iter()
+                            .map(|h| (h.path, None, String::new()))
+                            .collect())
+                    }
+                },
+            )
+            .await;
+            let Some(win) = weak.upgrade() else { return };
+            match res {
+                Ok(Ok(items)) if items.is_empty() => win.flash("no matches"),
+                Ok(Ok(items)) => {
+                    win.flash(&format!(
+                        "{} matches · enter opens · esc closes",
+                        items.len()
+                    ));
+                    *win.picker.borrow_mut() = Some(Picker {
+                        title: if content { "GREP" } else { "FIND" },
+                        root,
+                        items,
+                        index: 0,
+                    });
+                    win.render_picker();
+                }
+                Ok(Err(e)) => win.flash_error(&e),
+                Err(_) => win.flash_error("search failed"),
+            }
+        });
+    }
+
+    fn render_picker(&self) {
+        let rows: Vec<String> = match self.picker.borrow().as_ref() {
+            Some(p) => p
+                .items
+                .iter()
+                .map(|(path, line, text)| match line {
+                    Some(l) => format!("{}:{l}  {text}", path.display()),
+                    None => path.display().to_string(),
+                })
+                .collect(),
+            None => return,
+        };
+        let idx = self.picker.borrow().as_ref().map(|p| p.index);
+        self.fill_list(&rows, idx);
+        self.update_status();
+    }
+
+    fn close_picker(&self) {
+        if self.picker.borrow_mut().take().is_some() {
+            self.clear_list();
+            self.update_status();
+        }
+    }
+
+    fn picker_key(&self, key: Key) -> bool {
+        let n = self.picker.borrow().as_ref().map_or(0, |p| p.items.len());
+        let step = |d: isize| {
+            if let Some(p) = self.picker.borrow_mut().as_mut() {
+                p.index = (p.index as isize + d).rem_euclid(n.max(1) as isize) as usize;
+            }
+        };
+        match key {
+            Key::Esc => self.close_picker(),
+            Key::Char('j') | Key::Down | Key::Tab | Key::Ctrl('n') => {
+                step(1);
+                self.render_picker();
+            }
+            Key::Char('k') | Key::Up | Key::BackTab | Key::Ctrl('p') => {
+                step(-1);
+                self.render_picker();
+            }
+            Key::Enter | Key::Char('l') => {
+                let pick = self
+                    .picker
+                    .borrow()
+                    .as_ref()
+                    .and_then(|p| p.items.get(p.index).map(|i| p.root.join(&i.0)));
+                self.close_picker();
+                if let Some(path) = pick {
+                    if let Some(parent) = path.parent() {
+                        let pane = self.pane();
+                        pane.open_dir(parent);
+                        pane.select_paths(&[path.clone()]);
+                    }
+                }
+            }
+            Key::Char(':') => {
+                self.close_picker();
+                self.enter_line(Mode::Command);
+            }
+            _ => return true,
+        }
+        true
+    }
+
+    // ── :edit ───────────────────────────────────────────────────────────────
+
+    fn start_edit(&self) {
+        let pane = self.pane();
+        let dir = pane.dir();
+        let listed: Vec<edit::Listed> = pane
+            .model
+            .borrow()
+            .iter()
+            .enumerate()
+            .map(|(i, e)| edit::Listed {
+                id: i + 1,
+                name: e.name.clone(),
+                is_dir: e.is_dir(),
+            })
+            .collect();
+        let text = edit::render(&display_path(&dir), &listed);
+        let file = glib::user_runtime_dir().join(format!("strata-edit-{}.txt", std::process::id()));
+        let marker = file.with_extension("txt.done");
+        let _ = std::fs::remove_file(&marker);
+        if let Err(e) = std::fs::write(&file, text) {
+            self.flash_error(&format!("edit: {e}"));
+            return;
+        }
+        // The terminal may hand off to an already running instance and return at once, so the
+        // shell inside it marks when nvim has really exited.
+        let script = r#"${STRATA_EDITOR:-nvim} "$1"; : > "$1.done""#;
+        let mut argv: Vec<std::ffi::OsString> = match std::env::var_os("STRATA_EDIT_CMD") {
+            // tests: run the editor command directly, without a terminal
+            Some(cmd) => vec![
+                "sh".into(),
+                "-c".into(),
+                format!("{} \"$1\"; : > \"$1.done\"", cmd.to_string_lossy()).into(),
+            ],
+            None => vec![
+                "xdg-terminal-exec".into(),
+                "sh".into(),
+                "-c".into(),
+                script.into(),
+            ],
+        };
+        argv.push("sh".into());
+        argv.push(file.clone().into());
+        let refs: Vec<&std::ffi::OsStr> = argv.iter().map(|s| s.as_os_str()).collect();
+        if let Err(e) = gio::Subprocess::newv(&refs, gio::SubprocessFlags::NONE) {
+            self.flash_error(&format!("edit: {}", e.message()));
+            return;
+        }
+        self.flash("editing in nvim — save and quit to apply");
+        if let Some(id) = self.edit_poll.borrow_mut().take() {
+            id.remove();
+        }
+        let weak = self.weak_self.borrow().clone();
+        let id = glib::timeout_add_local(Duration::from_millis(250), move || {
+            let Some(win) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            if !marker.exists() {
+                return glib::ControlFlow::Continue;
+            }
+            win.edit_poll.borrow_mut().take();
+            let text = std::fs::read_to_string(&file).unwrap_or_default();
+            let _ = std::fs::remove_file(&file);
+            let _ = std::fs::remove_file(&marker);
+            win.finish_edit(&dir, &listed, &text);
+            glib::ControlFlow::Break
+        });
+        *self.edit_poll.borrow_mut() = Some(id);
+    }
+
+    fn finish_edit(&self, dir: &Path, listed: &[edit::Listed], text: &str) {
+        match edit::plan(listed, text) {
+            Err(e) => self.flash_error(&format!("edit not applied: {e}")),
+            Ok(plan) if plan.is_empty() => self.flash("no changes"),
+            Ok(plan) => {
+                let lines = edit::describe(&plan);
+                let dir = dir.to_path_buf();
+                self.show_dialog(
+                    &format!(
+                        "apply {} change{}",
+                        lines.len(),
+                        if lines.len() == 1 { "" } else { "s" }
+                    ),
+                    &lines,
+                    "deleted entries go to the trash",
+                    vec![
+                        cancel(),
+                        button("apply", "primary", move |w, _| {
+                            w.ops.submit(Op::ApplyEdit {
+                                dir: dir.clone(),
+                                plan: plan.clone(),
+                            });
+                        }),
+                    ],
+                    None,
+                );
+            }
+        }
+    }
+
+    // ── dialogs ─────────────────────────────────────────────────────────────
+
+    /// Shows a card with a title, a list, a note and buttons. The first button is what Esc
+    /// does, the last what Enter does; with an entry, callbacks get its text.
+    fn show_dialog(
+        &self,
+        title: &str,
+        lines: &[String],
+        note: &str,
+        buttons: Vec<Button>,
+        entry: Option<gtk::Entry>,
+    ) {
+        while let Some(c) = self.overlay_layer.first_child() {
+            self.overlay_layer.remove(&c);
+        }
+        let card = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        card.add_css_class("card");
+        card.set_size_request(440, -1);
+        let head = gtk::Label::new(Some(title));
+        head.add_css_class("title");
+        head.set_xalign(0.0);
+        head.set_wrap(true);
+        let head_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        head_box.add_css_class("head");
+        head_box.append(&head);
+        card.append(&head_box);
+        let max = 12;
+        for l in lines.iter().take(max) {
+            let row = gtk::Label::new(Some(l));
+            row.set_xalign(0.0);
+            row.add_css_class("row");
+            row.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+            card.append(&row);
+        }
+        if lines.len() > max {
+            let more = gtk::Label::new(Some(&format!("and {} more", lines.len() - max)));
+            more.add_css_class("section");
+            more.set_xalign(0.0);
+            card.append(&more);
+        }
+        if let Some(e) = &entry {
+            let b = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            b.add_css_class("body");
+            b.append(e);
+            card.append(&b);
+        }
+        if !note.is_empty() {
+            let n = gtk::Label::new(Some(note));
+            n.add_css_class("dim");
+            n.set_xalign(0.0);
+            n.set_wrap(true);
+            let b = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            b.add_css_class("body");
+            b.set_margin_top(10);
+            b.append(&n);
+            card.append(&b);
+        }
+        let foot = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        foot.add_css_class("foot");
+        foot.set_halign(gtk::Align::End);
+        let n = buttons.len();
+        let mut actions = Vec::with_capacity(n);
+        for (i, b) in buttons.into_iter().enumerate() {
+            let hint = if i == 0 {
+                "  esc"
+            } else if i == n - 1 {
+                "  ↵"
+            } else {
+                ""
+            };
+            let w = gtk::Button::with_label(&format!("{}{hint}", b.label));
+            w.add_css_class("link");
+            if !b.class.is_empty() {
+                w.add_css_class(b.class);
+            }
+            let weak = self.weak_self.borrow().clone();
+            w.connect_clicked(move |_| {
+                if let Some(win) = weak.upgrade() {
+                    win.close_dialog(i);
+                }
+            });
+            foot.append(&w);
+            actions.push(b.run);
+        }
+        card.append(&foot);
+        self.overlay_layer.append(&card);
+        self.overlay_layer.set_visible(true);
+        *self.dialog.borrow_mut() = Some(Dialog { actions, entry });
+    }
+
+    fn close_dialog(&self, choice: usize) {
+        let Some(d) = self.dialog.borrow_mut().take() else {
+            return;
+        };
+        self.overlay_layer.set_visible(false);
+        while let Some(c) = self.overlay_layer.first_child() {
+            self.overlay_layer.remove(&c);
+        }
+        let text = d.entry.as_ref().map(|e| e.text().to_string());
+        if let Some(run) = d.actions.get(choice) {
+            run(self, text);
+        }
+        self.pane().focus_view();
+    }
+
+    fn dialog_key(&self, key: Key, synthetic: bool) -> bool {
+        let (n, has_entry) = match self.dialog.borrow().as_ref() {
+            Some(d) => (d.actions.len(), d.entry.clone()),
+            None => return false,
+        };
+        match key {
+            Key::Esc => self.close_dialog(0),
+            Key::Enter => self.close_dialog(n.saturating_sub(1)),
+            Key::Char('y') if has_entry.is_none() => self.close_dialog(n.saturating_sub(1)),
+            Key::Char('n') if has_entry.is_none() => self.close_dialog(0),
+            Key::Char(c) if synthetic => {
+                if let Some(e) = has_entry {
+                    let pos = e.position();
+                    e.delete_selection();
+                    let mut p = e.position().min(pos);
+                    e.insert_text(&c.to_string(), &mut p);
+                    e.set_position(p);
+                }
+            }
+            // typing goes to the entry; everything else is swallowed while the card is up
+            _ => return has_entry.is_none(),
+        }
+        true
+    }
+
+    // ── context menu ────────────────────────────────────────────────────────
+
+    fn connect_actions(&self) {
+        let simple: &[(&str, Action)] = &[
+            ("open", Action::Open),
+            ("yank", Action::Yank),
+            ("cut", Action::Cut),
+            ("paste", Action::Paste),
+            ("rename", Action::Rename),
+            ("trash", Action::Trash),
+            ("delete", Action::DeletePermanently),
+            ("size", Action::FolderSize),
+            ("terminal", Action::Terminal),
+            ("hidden", Action::ToggleHidden),
+            ("edit", Action::Edit),
+            ("split", Action::ToggleSplit),
+            ("preview", Action::TogglePreview),
+            ("view", Action::ToggleView),
+            ("new-tab", Action::NewTab),
+        ];
+        for &(name, action) in simple {
+            let a = gio::SimpleAction::new(name, None);
+            let weak = self.weak_self.borrow().clone();
+            a.connect_activate(move |_, _| {
+                if let Some(win) = weak.upgrade() {
+                    win.run_action(action, 1);
+                }
+            });
+            self.window.add_action(&a);
+        }
+        let a = gio::SimpleAction::new("open-with", Some(glib::VariantTy::STRING));
+        let weak = self.weak_self.borrow().clone();
+        a.connect_activate(move |_, v| {
+            let (Some(win), Some(id)) = (weak.upgrade(), v.and_then(|v| v.get::<String>())) else {
+                return;
+            };
+            let Some(app) = gio::AppInfo::all()
+                .into_iter()
+                .find(|a| a.id().as_deref() == Some(id.as_str()))
+            else {
+                return;
+            };
+            let files: Vec<gio::File> = win
+                .pane()
+                .targets()
+                .iter()
+                .map(|e| gio::File::for_path(&e.path))
+                .collect();
+            let ctx = WidgetExt::display(&win.window).app_launch_context();
+            if let Err(e) = app.launch(&files, Some(&ctx)) {
+                win.flash_error(&format!("{}: {}", app.name(), e.message()));
+            }
+        });
+        self.window.add_action(&a);
+        let a = gio::SimpleAction::new("copy-path", None);
+        let weak = self.weak_self.borrow().clone();
+        a.connect_activate(move |_, _| {
+            let Some(win) = weak.upgrade() else { return };
+            let paths: Vec<String> = win
+                .pane()
+                .targets()
+                .iter()
+                .map(|e| e.path.display().to_string())
+                .collect();
+            let text = if paths.is_empty() {
+                win.pane().dir().display().to_string()
+            } else {
+                paths.join("\n")
+            };
+            win.window.clipboard().set_text(&text);
+            win.flash("path copied");
+        });
+        self.window.add_action(&a);
+        for (name, cmd) in [("new-folder", "mkdir "), ("new-file", "new ")] {
+            let a = gio::SimpleAction::new(name, None);
+            let weak = self.weak_self.borrow().clone();
+            a.connect_activate(move |_, _| {
+                if let Some(win) = weak.upgrade() {
+                    win.enter_line(Mode::Command);
+                    win.cmd_entry.set_text(cmd);
+                    win.cmd_entry.set_position(-1);
+                }
+            });
+            self.window.add_action(&a);
+        }
+    }
+
+    fn show_menu(&self, w: &gtk::Widget, x: f64, y: f64) {
+        let pane = self.pane();
+        let targets = pane.targets();
+        let menu = gio::Menu::new();
+        let first = gio::Menu::new();
+        let has_items = !targets.is_empty();
+        if has_items {
+            first.append(Some("open"), Some("win.open"));
+            if let Some(e) = targets.first().filter(|e| !e.is_dir()) {
+                let with = gio::Menu::new();
+                let ct = if e.content_type.is_empty() {
+                    "application/octet-stream"
+                } else {
+                    &e.content_type
+                };
+                let default = gio::AppInfo::default_for_type(ct, false);
+                let mut apps = gio::AppInfo::all_for_type(ct);
+                if let Some(d) = &default {
+                    apps.retain(|a| a.id() != d.id());
+                    apps.insert(0, d.clone());
+                }
+                for app in apps.iter().take(12) {
+                    if let Some(id) = app.id() {
+                        let item = gio::MenuItem::new(Some(&app.name()), None);
+                        item.set_action_and_target_value(
+                            Some("win.open-with"),
+                            Some(&id.to_variant()),
+                        );
+                        with.append_item(&item);
+                    }
+                }
+                if with.n_items() > 0 {
+                    first.append_submenu(Some("open with"), &with);
+                }
+            }
+        }
+        menu.append_section(None, &first);
+        let edit_items = gio::Menu::new();
+        if has_items {
+            edit_items.append(Some("copy  yy"), Some("win.yank"));
+            edit_items.append(Some("cut  dd"), Some("win.cut"));
+        }
+        if self.register.borrow().is_some() {
+            edit_items.append(Some("paste  p"), Some("win.paste"));
+        }
+        if has_items {
+            edit_items.append(Some("rename  r"), Some("win.rename"));
+        }
+        menu.append_section(None, &edit_items);
+        let more = gio::Menu::new();
+        if targets.iter().any(|e| e.is_dir()) {
+            more.append(Some("folder size  gs"), Some("win.size"));
+        }
+        more.append(Some("copy path"), Some("win.copy-path"));
+        more.append(Some("new folder"), Some("win.new-folder"));
+        more.append(Some("new file"), Some("win.new-file"));
+        more.append(Some("open terminal here"), Some("win.terminal"));
+        more.append(Some("edit names in nvim  ge"), Some("win.edit"));
+        menu.append_section(None, &more);
+        if has_items {
+            let danger = gio::Menu::new();
+            danger.append(Some("move to trash  D"), Some("win.trash"));
+            danger.append(Some("delete permanently"), Some("win.delete"));
+            menu.append_section(None, &danger);
+        }
+        let Some(root) = self.window.child() else {
+            return;
+        };
+        let pt = w
+            .compute_point(&root, &gtk::graphene::Point::new(x as f32, y as f32))
+            .unwrap_or(gtk::graphene::Point::new(x as f32, y as f32));
+        let pop = gtk::PopoverMenu::from_model(Some(&menu));
+        pop.set_has_arrow(false);
+        pop.set_parent(&root);
+        pop.set_pointing_to(Some(&gdk::Rectangle::new(
+            pt.x() as i32,
+            pt.y() as i32,
+            1,
+            1,
+        )));
+        pop.set_halign(gtk::Align::Start);
+        pop.connect_closed(|p| {
+            let p = p.clone();
+            glib::idle_add_local_once(move || p.unparent());
+        });
+        pop.popup();
+    }
+}
+
+pub struct Button {
+    label: String,
+    class: &'static str,
+    run: Box<dyn Fn(&Win, Option<String>)>,
+}
+
+fn button(
+    label: &str,
+    class: &'static str,
+    run: impl Fn(&Win, Option<String>) + 'static,
+) -> Button {
+    Button {
+        label: label.into(),
+        class,
+        run: Box::new(run),
+    }
+}
+
+fn cancel() -> Button {
+    button("cancel", "", |_, _| {})
+}
+
+fn to_key(keyval: gdk::Key, state: gdk::ModifierType) -> Option<Key> {
+    let ctrl = state.contains(gdk::ModifierType::CONTROL_MASK);
+    let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
+    let alt = state.contains(gdk::ModifierType::ALT_MASK);
+    if alt {
+        return None;
+    }
+    use gdk::Key as K;
+    let k = match keyval {
+        K::Return | K::KP_Enter => Key::Enter,
+        K::Escape => Key::Esc,
+        K::Tab => Key::Tab,
+        K::ISO_Left_Tab => Key::BackTab,
+        K::BackSpace => Key::Backspace,
+        K::Delete if shift => Key::ShiftDelete,
+        K::Delete => Key::Delete,
+        // shift+arrows: let the list do range selection
+        K::Up | K::Down | K::Left | K::Right | K::Home | K::End if shift || ctrl => return None,
+        K::Up => Key::Up,
+        K::Down => Key::Down,
+        K::Left => Key::Left,
+        K::Right => Key::Right,
+        K::Home => Key::Home,
+        K::End => Key::End,
+        K::Page_Up => Key::PageUp,
+        K::Page_Down => Key::PageDown,
+        K::F1 => Key::F(1),
+        K::F2 => Key::F(2),
+        K::F3 => Key::F(3),
+        K::F5 => Key::F(5),
+        _ => {
+            let c = keyval.to_unicode()?;
+            if ctrl {
+                Key::Ctrl(c.to_ascii_lowercase())
+            } else if c.is_control() {
+                return None;
+            } else {
+                Key::Char(c)
+            }
+        }
+    };
+    Some(k)
+}
+
+fn file_name(p: &Path) -> String {
+    p.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| p.display().to_string())
+}
+
+fn count_label(paths: &[PathBuf]) -> String {
+    match paths {
+        [one] => file_name(one),
+        _ => format!("{} items", paths.len()),
+    }
+}
+
+/// `~/x` for paths under home.
+pub fn display_path(p: &Path) -> String {
+    let home = glib::home_dir();
+    match p.strip_prefix(&home) {
+        Ok(rest) if rest.as_os_str().is_empty() => "~".into(),
+        Ok(rest) => format!("~/{}", rest.display()),
+        Err(_) => p.display().to_string(),
+    }
+}
+
+/// Resolves a typed path against `cwd`, with `~` for home.
+fn resolve(cwd: &Path, typed: &str) -> PathBuf {
+    let home = glib::home_dir();
+    let p = if typed == "~" {
+        home
+    } else if let Some(rest) = typed.strip_prefix("~/") {
+        home.join(rest)
+    } else {
+        cwd.join(typed)
+    };
+    // normalise "a/../b" without touching the file system
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out
+}

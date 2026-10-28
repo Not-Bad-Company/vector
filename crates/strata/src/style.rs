@@ -13,11 +13,12 @@ pub fn css(t: &Theme) -> String {
     format!(
         r#"
 window.strata {{
-  background: alpha({bg}, 0.97);
+  background: transparent;
   color: {fg};
   font-family: '{FONT}';
   font-size: 12px;
 }}
+.root {{ background: alpha({bg}, 0.97); }}
 window.strata * {{ border-radius: 0; outline: none; -gtk-icon-shadow: none; }}
 .title {{ color: {acc}; font-weight: bold; }}
 .dim {{ opacity: 0.5; }}
@@ -31,7 +32,9 @@ window.strata * {{ border-radius: 0; outline: none; -gtk-icon-shadow: none; }}
 .icon {{ min-width: 22px; }}
 
 /* ── sidebar ── */
-.sidebar {{ border-right: 1px solid alpha({fg}, 0.08); padding: 8px 0; }}
+.places {{ padding: 8px 0; }}
+.sidebar-scroll {{ border-right: 1px solid alpha({fg}, 0.08); background: transparent; }}
+scrolledwindow, viewport {{ background: transparent; }}
 .row {{
   padding: 7px 16px;
   border-left: 2px solid transparent;
@@ -41,9 +44,6 @@ window.strata * {{ border-radius: 0; outline: none; -gtk-icon-shadow: none; }}
 .row.active {{ border-left-color: {acc}; background: alpha({acc}, 0.08); }}
 .row.active:hover {{ background: alpha({acc}, 0.13); }}
 .row .meta {{ opacity: 0.5; }}
-button.x {{ opacity: 0; padding: 0 5px; min-height: 0; min-width: 0; }}
-.row:hover button.x {{ opacity: 0.55; }}
-.row:hover button.x:hover {{ opacity: 1; }}
 
 /* ── header: tabs and path bar ── */
 .header {{ border-bottom: 1px solid alpha({fg}, 0.08); padding: 0 8px; min-height: 34px; }}
@@ -56,6 +56,10 @@ button.link {{
 }}
 button.link:hover {{ opacity: 1; background: alpha({fg}, 0.07); }}
 button.link.primary {{ color: {acc}; opacity: 0.95; }}
+button.link label {{ text-decoration: none; }}
+button.x {{ opacity: 0; padding: 0 5px; }}
+.row:hover button.x {{ opacity: 0.55; }}
+.row:hover button.x:hover {{ opacity: 1; }}
 button.link.danger:hover {{ color: {red}; }}
 button.tab {{ padding: 6px 12px; border-bottom: 2px solid transparent; }}
 button.tab.primary {{ border-bottom-color: {acc}; }}
@@ -110,7 +114,7 @@ gridview > child:selected {{ border-left-color: {acc}; background: alpha({acc}, 
 .preview {{ border-left: 1px solid alpha({fg}, 0.08); padding: 14px 16px; }}
 .preview picture {{ border: 1px solid alpha({fg}, 0.12); }}
 .preview textview, .preview textview text {{ background: transparent; color: {fg}; font-family: '{FONT}'; font-size: 11px; }}
-.preview .gutter {{ opacity: 0.4; }}
+.preview textview border, .preview gutter, .preview gutter > * {{ background: transparent; }}
 
 /* ── statusline and command line ── */
 .statusline {{ background: alpha({fg}, 0.035); border-top: 1px solid alpha({fg}, 0.08); min-height: 26px; }}
