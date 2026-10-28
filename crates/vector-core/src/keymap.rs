@@ -160,6 +160,8 @@ pub enum Action {
     Menu,
     /// The key cheat sheet.
     Help,
+    /// A mapping from the user's config (`vector.map`), by its index.
+    User(u16),
     /// Show, focus or hide the terminal panel.
     ToggleTerminal,
     /// Pin the item in its folder (it stays on top there).
@@ -274,9 +276,21 @@ pub enum Feed {
 pub struct Keymap {
     pending: Vec<Key>,
     count: Option<usize>,
+    /// The user's mappings; they win over the built-in ones.
+    user: Vec<(Vec<Key>, Action)>,
 }
 
 impl Keymap {
+    /// Adds a user mapping (vim notation). A built-in binding of the same keys is replaced.
+    pub fn bind(&mut self, keys: &str, action: Action) {
+        let k = parse_keys(keys);
+        if k.is_empty() {
+            return;
+        }
+        self.user.retain(|(x, _)| *x != k);
+        self.user.push((k, action));
+    }
+
     /// What has been typed so far (count and keys), for the statusline.
     pub fn pending_text(&self) -> String {
         let mut s = self.count.map(|c| c.to_string()).unwrap_or_default();
@@ -314,9 +328,20 @@ impl Keymap {
             return Feed::Pending;
         }
         self.pending.push(key);
+        // a longer user mapping starting with these keys waits for the rest
+        let user_prefix = self
+            .user
+            .iter()
+            .any(|(k, _)| k.len() > self.pending.len() && k.starts_with(&self.pending));
+        let user_exact = self.user.iter().any(|(k, _)| *k == self.pending);
+        if user_prefix && !user_exact {
+            return Feed::Pending;
+        }
         let mut prefix = false;
-        for (seq, action) in BINDINGS {
-            let keys = parse_keys(seq);
+        let builtin = BINDINGS.iter().map(|(seq, a)| (parse_keys(seq), *a));
+        let all: Vec<(Vec<Key>, Action)> = self.user.iter().cloned().chain(builtin).collect();
+        for (keys, action) in &all {
+            let keys = keys.clone();
             if keys == self.pending {
                 let count = match (action, self.count) {
                     (Action::Bottom, c) => c.unwrap_or(0),
@@ -462,5 +487,17 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn user_mappings_win_and_can_be_sequences() {
+        let mut m = Keymap::default();
+        m.bind("j", Action::User(0));
+        m.bind("<Space>x", Action::User(1));
+        assert_eq!(m.feed(Key::Char('j')), act(Action::User(0), 1));
+        assert_eq!(m.feed(Key::Char(' ')), Feed::Pending);
+        assert_eq!(m.feed(Key::Char('x')), act(Action::User(1), 1));
+        assert_eq!(m.feed(Key::Char('k')), act(Action::Up, 1));
+        m.bind("", Action::User(2));
     }
 }
