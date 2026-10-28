@@ -10,6 +10,8 @@ use crate::entry::{ATTRIBUTES, Entry};
 /// What a listing sends back, in order: batches, then `Done` or `Error`.
 #[derive(Debug, Clone)]
 pub enum ListEvent {
+    /// Names from the folder's `.hidden` file; sent first.
+    HiddenNames(std::collections::HashSet<String>),
     Batch(Vec<Entry>),
     Done,
     /// The folder could not be opened or read. Entries already sent stay valid.
@@ -36,6 +38,21 @@ const BATCH: usize = 5000;
 const BATCH_INTERVAL: Duration = Duration::from_millis(60);
 const MAX_ERRORS_IN_A_ROW: usize = 64;
 
+/// Names listed in a folder's `.hidden` file (one per line). Blocking; empty when missing.
+pub fn read_hidden_file(dir: &Path) -> std::collections::HashSet<String> {
+    std::fs::read_to_string(dir.join(".hidden"))
+        .map(|t| parse_hidden_file(&t))
+        .unwrap_or_default()
+}
+
+pub fn parse_hidden_file(text: &str) -> std::collections::HashSet<String> {
+    text.lines()
+        .map(|l| l.strip_suffix('\r').unwrap_or(l))
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 /// Starts listing `dir` on a worker thread.
 pub fn spawn(dir: &Path) -> Listing {
     let (tx, rx) = async_channel::unbounded();
@@ -45,6 +62,7 @@ pub fn spawn(dir: &Path) -> Listing {
     let spawned = std::thread::Builder::new()
         .name("strata-list".into())
         .spawn(move || {
+            let _ = tx.send_blocking(ListEvent::HiddenNames(read_hidden_file(&path)));
             let last = match list_blocking(&path, &worker_cancel, |batch| {
                 tx.send_blocking(ListEvent::Batch(batch)).is_ok()
             }) {
@@ -115,6 +133,89 @@ pub fn list_blocking(
         send(batch);
     }
     Ok(())
+}
+
+/// At most this many entries in a flat listing; it says so with an error at the end.
+pub const FLAT_LIMIT: usize = 200_000;
+
+/// Lists every file under `dir` (recursively, not following symlinks, folders themselves left
+/// out) as one flat list; entry names are paths relative to `dir`. Dot files only with
+/// `hidden`. Same events as [`spawn`].
+pub fn spawn_flat(dir: &Path, hidden: bool) -> Listing {
+    let (tx, rx) = async_channel::unbounded();
+    let cancel = gio::Cancellable::new();
+    let worker_cancel = cancel.clone();
+    let root = dir.to_path_buf();
+    let spawned = std::thread::Builder::new()
+        .name("strata-flat".into())
+        .spawn(move || {
+            let mut batch = Vec::with_capacity(FIRST_BATCH);
+            let mut limit = FIRST_BATCH;
+            let mut count = 0usize;
+            let mut last_send = Instant::now();
+            let walker = ignore::WalkBuilder::new(&root)
+                .hidden(!hidden)
+                .git_ignore(false)
+                .git_global(false)
+                .git_exclude(false)
+                .ignore(false)
+                .parents(false)
+                .follow_links(false)
+                .build();
+            for item in walker {
+                if worker_cancel.is_cancelled() {
+                    return;
+                }
+                let Ok(item) = item else { continue };
+                if item.depth() == 0 || item.file_type().is_some_and(|t| t.is_dir()) {
+                    continue;
+                }
+                let Ok(mut e) = Entry::query(item.path()) else {
+                    continue;
+                };
+                let Ok(rel) = item.path().strip_prefix(&root) else {
+                    continue;
+                };
+                e.name = rel.to_string_lossy().into_owned();
+                batch.push(e);
+                count += 1;
+                if batch.len() >= limit || last_send.elapsed() >= BATCH_INTERVAL {
+                    if tx
+                        .send_blocking(ListEvent::Batch(std::mem::take(&mut batch)))
+                        .is_err()
+                    {
+                        return;
+                    }
+                    limit = BATCH;
+                    last_send = Instant::now();
+                }
+                if count >= FLAT_LIMIT {
+                    let _ = tx.send_blocking(ListEvent::Batch(std::mem::take(&mut batch)));
+                    let _ = tx.send_blocking(ListEvent::Error(format!(
+                        "showing the first {FLAT_LIMIT} files"
+                    )));
+                    return;
+                }
+            }
+            if !batch.is_empty() {
+                let _ = tx.send_blocking(ListEvent::Batch(batch));
+            }
+            let _ = tx.send_blocking(ListEvent::Done);
+        });
+    if let Err(e) = spawned {
+        let (tx, rx) = async_channel::bounded(1);
+        let _ = tx.try_send(ListEvent::Error(e.to_string()));
+        return Listing {
+            dir: dir.to_path_buf(),
+            events: rx,
+            cancel,
+        };
+    }
+    Listing {
+        dir: dir.to_path_buf(),
+        events: rx,
+        cancel,
+    }
 }
 
 /// A change to a watched folder.
@@ -298,12 +399,17 @@ mod tests {
         loop {
             match l.events.recv_blocking().unwrap() {
                 ListEvent::Batch(b) => n += b.len(),
+                ListEvent::HiddenNames(_) => {}
                 ListEvent::Done => break,
                 ListEvent::Error(e) => panic!("{e}"),
             }
         }
         assert_eq!(n, 1);
         let bad = spawn(&t.path().join("nope"));
+        assert!(matches!(
+            bad.events.recv_blocking().unwrap(),
+            ListEvent::HiddenNames(_)
+        ));
         assert!(matches!(
             bad.events.recv_blocking().unwrap(),
             ListEvent::Error(_)
@@ -359,5 +465,45 @@ mod tests {
             assert!(has(&|c| *c == DirChange::Gone));
         })
         .unwrap();
+    }
+
+    #[test]
+    fn hidden_file_parsing() {
+        let set = parse_hidden_file("a b\r\n\nc.txt\n");
+        assert_eq!(set, ["a b".to_string(), "c.txt".to_string()].into());
+        let t = scratch();
+        std::fs::write(t.path().join(".hidden"), "x\n").unwrap();
+        assert!(read_hidden_file(t.path()).contains("x"));
+        assert!(read_hidden_file(&t.path().join("none")).is_empty());
+    }
+
+    #[test]
+    fn flat_listing_walks_the_tree() {
+        let t = scratch();
+        let d = t.path();
+        std::fs::create_dir_all(d.join("a/b")).unwrap();
+        std::fs::create_dir_all(d.join(".dot")).unwrap();
+        std::fs::write(d.join("top.exe"), "").unwrap();
+        std::fs::write(d.join("a/b/deep.exe"), "").unwrap();
+        std::fs::write(d.join(".dot/secret"), "").unwrap();
+        std::os::unix::fs::symlink(d.join("a"), d.join("loop")).unwrap();
+        let collect = |hidden| {
+            let l = spawn_flat(d, hidden);
+            let mut names = Vec::new();
+            loop {
+                match l.events.recv_blocking().unwrap() {
+                    ListEvent::Batch(b) => names.extend(b.into_iter().map(|e| e.name)),
+                    ListEvent::Done => break,
+                    other => panic!("{other:?}"),
+                }
+            }
+            names.sort();
+            names
+        };
+        assert_eq!(collect(false), ["a/b/deep.exe", "loop", "top.exe"]);
+        assert_eq!(
+            collect(true),
+            [".dot/secret", "a/b/deep.exe", "loop", "top.exe"]
+        );
     }
 }

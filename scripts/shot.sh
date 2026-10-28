@@ -7,7 +7,7 @@ bin="$(dirname "$0")/../target/release/strata"
 bin="$(realpath "$bin")"
 rm -f "$out"
 q() { printf '%q ' "$@"; }
-hyprctl dispatch exec "[workspace 9 silent] env XDG_CONFIG_HOME=/tmp/claude-1000/strata-cfg $(q "$bin" "$dir" --snapshot "$out" --keys "$keys" --size 1400x860 "$@") 2>/tmp/claude-1000/strata-shots/last.log" >/dev/null
+hyprctl dispatch exec "[workspace 9 silent;render_unfocused on] env XDG_CONFIG_HOME=/tmp/claude-1000/strata-cfg STRATA_TIMING=1 $(q "$bin" "$dir" --snapshot "$out" --keys "$keys" --size 1400x860 "$@") 2>/tmp/claude-1000/strata-shots/last.log" >/dev/null
 for _ in $(seq 1 150); do [ -s "$out" ] && break; sleep 0.1; done
 sleep 0.3
 # it quits by itself after the snapshot; close it if it did not

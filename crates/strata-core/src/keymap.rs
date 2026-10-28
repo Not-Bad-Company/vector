@@ -156,6 +156,10 @@ pub enum Action {
     Terminal,
     Reload,
     PathEdit,
+    /// The context menu, for keyboard users.
+    Menu,
+    /// The key cheat sheet.
+    Help,
     Quit,
 }
 
@@ -189,10 +193,12 @@ pub const BINDINGS: &[(&str, Action)] = &[
     ("<BS>", Action::Parent),
     ("H", Action::Back),
     ("L", Action::Forward),
-    ("yy", Action::Yank),
-    ("dd", Action::Cut),
+    // single keys: no doubled presses (yy/dd) needed
+    ("y", Action::Yank),
+    ("x", Action::Cut),
     ("p", Action::Paste),
-    ("D", Action::Trash),
+    ("d", Action::Trash),
+    ("D", Action::DeletePermanently),
     ("<Del>", Action::Trash),
     ("<S-Del>", Action::DeletePermanently),
     ("r", Action::Rename),
@@ -222,6 +228,9 @@ pub const BINDINGS: &[(&str, Action)] = &[
     ("ge", Action::Edit),
     ("<C-l>", Action::PathEdit),
     ("gx", Action::Terminal),
+    ("gm", Action::Menu),
+    ("?", Action::Help),
+    ("<F1>", Action::Help),
     ("<C-r>", Action::Reload),
     ("<F5>", Action::Reload),
     ("ZZ", Action::Quit),
@@ -240,7 +249,7 @@ pub enum Feed {
 }
 
 /// Turns keys into actions in normal and visual mode, with counts (`5j`) and multi-key
-/// sequences (`gg`, `yy`).
+/// sequences (`gg`, `gs`).
 #[derive(Debug, Clone, Default)]
 pub struct Keymap {
     pending: Vec<Key>,
@@ -357,8 +366,10 @@ mod tests {
     fn single_keys_and_sequences() {
         assert_eq!(run("j"), [act(Action::Down, 1)]);
         assert_eq!(run("gg"), [Feed::Pending, act(Action::Top, 1)]);
-        assert_eq!(run("yy"), [Feed::Pending, act(Action::Yank, 1)]);
-        assert_eq!(run("dd"), [Feed::Pending, act(Action::Cut, 1)]);
+        assert_eq!(run("y"), [act(Action::Yank, 1)]);
+        assert_eq!(run("x"), [act(Action::Cut, 1)]);
+        assert_eq!(run("d"), [act(Action::Trash, 1)]);
+        assert_eq!(run("D"), [act(Action::DeletePermanently, 1)]);
         assert_eq!(run("p"), [act(Action::Paste, 1)]);
         assert_eq!(run("-"), [act(Action::Parent, 1)]);
         assert_eq!(run("<CR>"), [act(Action::Open, 1)]);
@@ -406,7 +417,7 @@ mod tests {
             run("5<Esc>j"),
             [Feed::Pending, act(Action::Escape, 1), act(Action::Down, 1)]
         );
-        assert_eq!(run("y<Esc>"), [Feed::Pending, act(Action::Escape, 1)]);
+        assert_eq!(run("g<Esc>"), [Feed::Pending, act(Action::Escape, 1)]);
     }
 
     #[test]

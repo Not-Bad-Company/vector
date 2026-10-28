@@ -4,6 +4,7 @@ pub mod bookmarks;
 pub mod command;
 pub mod edit;
 pub mod entry;
+pub mod filter;
 pub mod git;
 pub mod icons;
 pub mod keymap;

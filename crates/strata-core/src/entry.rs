@@ -65,7 +65,9 @@ impl Entry {
         let executable = kind == Kind::File && info.boolean(gio::FILE_ATTRIBUTE_ACCESS_CAN_EXECUTE);
         Entry {
             path: dir.join(&raw),
-            hidden: info.is_hidden() || info.is_backup() || name.starts_with('.'),
+            // `.hidden` files are applied by the model, which re-reads them when they change;
+            // GIO caches them, so its is-hidden can lag behind an edit
+            hidden: info.is_backup() || name.starts_with('.'),
             size: if kind == Kind::Dir {
                 0
             } else {

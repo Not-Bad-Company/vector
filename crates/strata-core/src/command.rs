@@ -19,11 +19,18 @@ pub enum Command {
     Find(String),
     Grep(String),
     Cd(String),
-    Sort { key: SortKey, reverse: bool },
+    Sort {
+        key: SortKey,
+        reverse: bool,
+    },
     Hidden(Toggle),
     Open(Option<String>),
     Term,
     Edit,
+    /// `:filter [expr]`: set the `/` filter (no arg clears it).
+    Filter(String),
+    /// `:flat`: toggle listing the whole tree under this folder.
+    Flat,
     Quit,
 }
 
@@ -51,7 +58,8 @@ impl std::fmt::Display for ParseError {
 
 /// Command names, in the order completion offers them.
 pub const COMMANDS: &[&str] = &[
-    "new", "mkdir", "find", "grep", "cd", "sort", "hidden", "open", "term", "edit", "quit",
+    "new", "mkdir", "find", "grep", "cd", "sort", "hidden", "open", "term", "edit", "filter",
+    "flat", "quit",
 ];
 
 /// Parses what follows the `:` (a leading `:` is skipped too).
@@ -131,6 +139,8 @@ pub fn parse(line: &str) -> Result<Command, ParseError> {
         })),
         "term" if arg.is_empty() => Ok(Command::Term),
         "edit" if arg.is_empty() => Ok(Command::Edit),
+        "filter" => Ok(Command::Filter(arg.to_owned())),
+        "flat" if arg.is_empty() => Ok(Command::Flat),
         "quit" if arg.is_empty() => Ok(Command::Quit),
         other => Err(ParseError::BadArg {
             command: other,
@@ -215,6 +225,38 @@ pub fn complete(line: &str, ctx: &CompletionCtx<'_>) -> Completion {
     let name = resolve(input[..space].trim_end_matches('!')).unwrap_or("");
     let arg_start = colon + space + input[space..].len() - input[space..].trim_start().len();
     let arg = &line[arg_start..];
+    if name == "filter" {
+        // complete the last word only
+        let word_at = arg.rfind(' ').map_or(0, |i| i + 1);
+        let word = &arg[word_at..];
+        let (neg, bare) = word.strip_prefix('!').map_or(("", word), |w| ("!", w));
+        let candidates: Vec<String> = match bare.split_once(':') {
+            Some(("type" | "is", v)) => {
+                let done = v.rfind(['|', ',']).map_or(0, |i| i + 1);
+                crate::filter::Class::ALL
+                    .iter()
+                    .filter(|(n, _)| n.starts_with(&v[done..]))
+                    .map(|(n, _)| {
+                        format!(
+                            "{neg}{}:{}{n}",
+                            &bare[..bare.find(':').unwrap_or(0)],
+                            &v[..done]
+                        )
+                    })
+                    .collect()
+            }
+            Some(_) => Vec::new(),
+            None => ["type:", "ext:", "size>", "size<", "mod<", "mod>"]
+                .iter()
+                .filter(|k| k.starts_with(bare))
+                .map(|k| format!("{neg}{k}"))
+                .collect(),
+        };
+        return Completion {
+            start: arg_start + word_at,
+            candidates,
+        };
+    }
     let candidates = match name {
         "sort" => prefixed(&["name", "size", "mtime", "type"], arg),
         "hidden" => prefixed(&["on", "off"], arg),
@@ -416,5 +458,43 @@ mod tests {
         );
         assert_eq!(complete("open .", &ctx).candidates, vec![".secret"]);
         assert_eq!(complete("open a", &ctx).candidates, vec!["Alpha"]);
+    }
+
+    #[test]
+    fn filter_and_flat() {
+        assert_eq!(
+            parse("filter ext:exe size>1m"),
+            Ok(Command::Filter("ext:exe size>1m".into()))
+        );
+        assert_eq!(parse("filter"), Ok(Command::Filter(String::new())));
+        assert_eq!(parse("flat"), Ok(Command::Flat));
+        assert_eq!(parse("fl"), Ok(Command::Flat));
+        assert!(matches!(parse("f"), Err(ParseError::Ambiguous(..))));
+        assert!(matches!(parse("fi"), Err(ParseError::Ambiguous(..))));
+    }
+
+    #[test]
+    fn filter_completion() {
+        let lister = |_p: &Path| Vec::new();
+        let ctx = CompletionCtx {
+            cwd: Path::new("/c"),
+            home: Path::new("/h"),
+            list_dir: &lister,
+        };
+        assert_eq!(complete("filter ty", &ctx).candidates, vec!["type:"]);
+        let c = complete("filter *.exe type:im", &ctx);
+        assert_eq!(
+            (c.start, c.candidates),
+            (13, vec!["type:image".to_string()])
+        );
+        assert_eq!(
+            complete("filter is:image|vi", &ctx).candidates,
+            vec!["is:image|video"]
+        );
+        assert_eq!(
+            complete("filter !s", &ctx).candidates,
+            vec!["!size>", "!size<"]
+        );
+        assert!(complete("filter ext:", &ctx).candidates.is_empty());
     }
 }

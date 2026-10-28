@@ -82,6 +82,9 @@ pub struct Win {
     preview_timer: RefCell<Option<glib::SourceId>>,
     edit_poll: RefCell<Option<glib::SourceId>>,
     search_cancel: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
+    settings: RefCell<crate::settings::Settings>,
+    /// Set while the line's text is changed by code, so `changed` doesn't restart completion.
+    setting_line: Cell<bool>,
     weak_self: RefCell<std::rc::Weak<Win>>,
 }
 
@@ -115,7 +118,8 @@ impl Win {
         let preview = Preview::new(&theme);
         let preview_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
         preview_box.append(preview.widget());
-        preview_box.set_visible(false);
+        let settings = crate::settings::Settings::load();
+        preview_box.set_visible(settings.preview);
         let body = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         body.append(&stack);
         body.append(&preview_box);
@@ -216,6 +220,8 @@ impl Win {
                 preview_timer: RefCell::new(None),
                 edit_poll: RefCell::new(None),
                 search_cancel: RefCell::new(None),
+                setting_line: Cell::new(false),
+                settings: RefCell::new(settings),
                 weak_self: RefCell::new(weak.clone()),
             }
         });
@@ -273,7 +279,17 @@ impl Win {
                     p.is_grid(),
                 )
             })
-            .unwrap_or_default();
+            .unwrap_or_else(|| {
+                let s = self.settings.borrow();
+                (
+                    ViewOptions {
+                        sort: s.sort,
+                        show_hidden: s.show_hidden,
+                        filter: String::new(),
+                    },
+                    s.grid,
+                )
+            });
         let pane = self.make_pane(dir, opts, grid);
         let container = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         container.append(pane.widget());
@@ -376,12 +392,19 @@ impl Win {
         let split = tab.panes.borrow().len() > 1;
         for (i, p) in tab.panes.borrow().iter().enumerate() {
             p.set_focused(!split || i == tab.active.get());
+            p.set_compact(split);
         }
     }
 
     fn on_pane_event(&self, pane: &Rc<Pane>, ev: PaneEvent) {
         // panes report while they are being built, before their tab exists
-        if self.tabs.borrow().is_empty() || self.tabs.borrow().iter().all(|t| t.panes.try_borrow().is_err()) {
+        if self.tabs.borrow().is_empty()
+            || self
+                .tabs
+                .borrow()
+                .iter()
+                .all(|t| t.panes.try_borrow().is_err())
+        {
             return;
         }
         let is_current = Rc::ptr_eq(pane, &self.pane());
@@ -546,6 +569,9 @@ impl Win {
         } else if let (Some(i), false) = (sel.cursor(&m), m.is_empty()) {
             parts.push(format!("{}/{}", i + 1, m.len()));
         }
+        if pane.is_flat() {
+            parts.push("flat".into());
+        }
         if !m.options().filter.is_empty() {
             parts.push(format!("filter {}", m.options().filter));
         }
@@ -595,9 +621,26 @@ impl Win {
         *self.preview_timer.borrow_mut() = Some(id);
     }
 
+    /// Remembers the current pane's view (and the preview) for the next start.
+    fn save_settings(&self) {
+        let pane = self.pane();
+        let o = pane.model.borrow().options().clone();
+        let s = crate::settings::Settings {
+            preview: self.preview_box.is_visible(),
+            grid: pane.is_grid(),
+            show_hidden: o.show_hidden,
+            sort: o.sort,
+        };
+        if *self.settings.borrow() != s {
+            s.save();
+            *self.settings.borrow_mut() = s;
+        }
+    }
+
     fn toggle_preview(&self) {
         let show = !self.preview_box.is_visible();
         self.preview_box.set_visible(show);
+        self.save_settings();
         if show {
             self.schedule_preview();
         } else {
@@ -750,6 +793,9 @@ impl Win {
         let weak = self.weak_self.borrow().clone();
         self.cmd_entry.connect_changed(move |e| {
             let Some(win) = weak.upgrade() else { return };
+            if win.setting_line.get() {
+                return;
+            }
             match win.mode.get() {
                 Mode::Filter => {
                     let pane = win.pane();
@@ -884,7 +930,9 @@ impl Win {
             c.2 = c.0[c.1].len();
             (c.0[c.1].clone(), c.1)
         };
+        self.setting_line.set(true);
         self.cmd_entry.set_text(&text);
+        self.setting_line.set(false);
         self.cmd_entry.set_position(-1);
         let rows: Vec<String> = {
             let c = self.completions.borrow();
@@ -1022,6 +1070,7 @@ impl Win {
             Action::ToggleHidden => self.run_command(Command::Hidden(Toggle::Toggle)),
             Action::ToggleView => {
                 pane.set_grid(!pane.is_grid());
+                self.save_settings();
                 pane.focus_view();
             }
             Action::TogglePreview => self.toggle_preview(),
@@ -1062,6 +1111,12 @@ impl Win {
                 self.path_stack.set_visible_child_name("entry");
                 self.path_entry.grab_focus();
                 self.path_entry.set_position(-1);
+            }
+            Action::Help => self.show_help(),
+            Action::Menu => {
+                let w = pane.widget().clone().upcast::<gtk::Widget>();
+                let (x, y) = (w.width() as f64 / 3.0, w.height() as f64 / 4.0);
+                self.show_menu(&w, x, y);
             }
             Action::Quit => self.window.close(),
         }
@@ -1114,6 +1169,7 @@ impl Win {
                 };
                 pane.model.borrow_mut().set_sort(spec);
                 pane.refresh();
+                self.save_settings();
             }
             Command::Hidden(t) => {
                 let cur = pane.model.borrow().options().show_hidden;
@@ -1124,6 +1180,7 @@ impl Win {
                 };
                 pane.model.borrow_mut().set_show_hidden(show);
                 pane.refresh();
+                self.save_settings();
                 self.flash(if show {
                     "showing hidden files"
                 } else {
@@ -1139,6 +1196,15 @@ impl Win {
             Command::Edit => self.start_edit(),
             Command::Quit => self.window.close(),
             Command::Find(q) => self.search(q, false),
+            Command::Filter(f) => self.set_filter(&f),
+            Command::Flat => {
+                pane.toggle_flat();
+                self.flash(if pane.is_flat() {
+                    "flat: every file below this folder"
+                } else {
+                    "flat off"
+                });
+            }
             Command::Grep(q) => self.search(q, true),
         }
     }
@@ -1256,8 +1322,13 @@ impl Win {
             return;
         }
         let lines: Vec<String> = paths.iter().map(|p| file_name(p)).collect();
+        let what = if paths.len() == 1 {
+            "1 item".to_string()
+        } else {
+            format!("{} items", paths.len())
+        };
         self.show_dialog(
-            &format!("{title} {}", count_label(&paths)),
+            &format!("{title} · {what}"),
             &lines,
             "this can't be undone",
             vec![
@@ -1533,8 +1604,28 @@ impl Win {
 
     // ── :edit ───────────────────────────────────────────────────────────────
 
+    fn set_filter(&self, f: &str) {
+        let pane = self.pane();
+        if let Err(e) = strata_core::filter::Filter::parse(f) {
+            self.flash_error(&format!("filter: {e}"));
+            return;
+        }
+        pane.model.borrow_mut().set_filter(f);
+        pane.selection
+            .borrow_mut()
+            .set_cursor(&pane.model.borrow(), 0);
+        pane.refresh();
+        if f.is_empty() {
+            self.flash("filter cleared");
+        }
+    }
+
     fn start_edit(&self) {
         let pane = self.pane();
+        if pane.is_flat() {
+            self.flash_error("edit works on one folder; leave the flat view first (:flat)");
+            return;
+        }
         let dir = pane.dir();
         let listed: Vec<edit::Listed> = pane
             .model
@@ -1694,14 +1785,7 @@ impl Win {
         let n = buttons.len();
         let mut actions = Vec::with_capacity(n);
         for (i, b) in buttons.into_iter().enumerate() {
-            let hint = if i == 0 {
-                "  esc"
-            } else if i == n - 1 {
-                "  ↵"
-            } else {
-                ""
-            };
-            let w = gtk::Button::with_label(&format!("{}{hint}", b.label));
+            let w = gtk::Button::with_label(&b.label);
             w.add_css_class("link");
             if !b.class.is_empty() {
                 w.add_css_class(b.class);
@@ -1719,6 +1803,118 @@ impl Win {
         self.overlay_layer.append(&card);
         self.overlay_layer.set_visible(true);
         *self.dialog.borrow_mut() = Some(Dialog { actions, entry });
+    }
+
+    /// The key cheat sheet, as a card like the other dialogs.
+    fn show_help(&self) {
+        const KEYS: &[(&str, &[(&str, &str)])] = &[
+            (
+                "move",
+                &[
+                    ("j k", "down, up (5j: five down)"),
+                    ("gg G", "first, last"),
+                    ("l enter", "open"),
+                    ("h -", "parent folder"),
+                    ("H L", "back, forward"),
+                    ("ctrl+d ctrl+u", "page down, up"),
+                ],
+            ),
+            (
+                "files",
+                &[
+                    ("y x p", "copy, cut, paste"),
+                    ("d", "move to trash"),
+                    ("D", "delete permanently"),
+                    ("r", "rename"),
+                    ("u .", "undo, repeat"),
+                    ("v space", "select range, toggle one"),
+                ],
+            ),
+            (
+                "view",
+                &[
+                    ("/", "filter: text, *.exe, ext:pdf, type:image"),
+                    ("", "size>10m, mod<7d, !not"),
+                    ("i", "preview"),
+                    ("w", "list / grid"),
+                    ("ctrl+h", "hidden files"),
+                    ("s tab", "split, other pane"),
+                    ("ctrl+t gt ctrl+w", "new tab, next tab, close tab"),
+                ],
+            ),
+            (
+                "more",
+                &[
+                    (":", "commands, tab completes"),
+                    (":flat", "every file below this folder"),
+                    ("ge", "edit names in nvim"),
+                    ("gs", "folder size"),
+                    ("gm", "menu"),
+                    ("gx", "terminal here"),
+                    ("ctrl+l", "type a path"),
+                ],
+            ),
+        ];
+        while let Some(c) = self.overlay_layer.first_child() {
+            self.overlay_layer.remove(&c);
+        }
+        let card = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        card.add_css_class("card");
+        let head = gtk::Label::new(Some("keys"));
+        head.add_css_class("title");
+        head.set_xalign(0.0);
+        let hb = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        hb.add_css_class("head");
+        hb.append(&head);
+        card.append(&hb);
+        let cols = gtk::Box::new(gtk::Orientation::Horizontal, 24);
+        cols.add_css_class("body");
+        for pair in KEYS.chunks(2) {
+            // one grid per column, so keys line up across its sections
+            let grid = gtk::Grid::new();
+            grid.set_column_spacing(16);
+            grid.set_row_spacing(4);
+            let mut row = 0;
+            for (section, rows) in pair {
+                let sl = gtk::Label::new(Some(section));
+                sl.add_css_class("dim");
+                sl.set_xalign(0.0);
+                sl.set_margin_top(if row == 0 { 0 } else { 10 });
+                grid.attach(&sl, 0, row, 2, 1);
+                row += 1;
+                for (k, d) in rows.iter() {
+                    let kl = gtk::Label::new(Some(k));
+                    kl.add_css_class("ok");
+                    kl.set_xalign(0.0);
+                    let dl = gtk::Label::new(Some(d));
+                    dl.set_xalign(0.0);
+                    grid.attach(&kl, 0, row, 1, 1);
+                    grid.attach(&dl, 1, row, 1, 1);
+                    row += 1;
+                }
+            }
+            cols.append(&grid);
+        }
+        card.append(&cols);
+        let foot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        foot.add_css_class("foot");
+        foot.set_halign(gtk::Align::End);
+        let close = gtk::Button::with_label("close");
+        close.add_css_class("link");
+        let weak = self.weak_self.borrow().clone();
+        close.connect_clicked(move |_| {
+            if let Some(w) = weak.upgrade() {
+                w.close_dialog(0);
+            }
+        });
+        foot.append(&close);
+        card.append(&foot);
+        self.overlay_layer.append(&card);
+        self.overlay_layer.set_visible(true);
+        *self.dialog.borrow_mut() = Some(Dialog {
+            actions: vec![Box::new(|_, _| {})],
+            entry: None,
+        });
     }
 
     fn close_dialog(&self, choice: usize) {
@@ -1815,6 +2011,22 @@ impl Win {
             }
         });
         self.window.add_action(&a);
+        let a = gio::SimpleAction::new("filter", Some(glib::VariantTy::STRING));
+        let weak = self.weak_self.borrow().clone();
+        a.connect_activate(move |_, v| {
+            if let (Some(win), Some(f)) = (weak.upgrade(), v.and_then(|v| v.get::<String>())) {
+                win.set_filter(&f);
+            }
+        });
+        self.window.add_action(&a);
+        let a = gio::SimpleAction::new("flat", None);
+        let weak = self.weak_self.borrow().clone();
+        a.connect_activate(move |_, _| {
+            if let Some(win) = weak.upgrade() {
+                win.run_command(Command::Flat);
+            }
+        });
+        self.window.add_action(&a);
         let a = gio::SimpleAction::new("copy-path", None);
         let weak = self.weak_self.borrow().clone();
         a.connect_activate(move |_, _| {
@@ -1887,29 +2099,69 @@ impl Win {
         menu.append_section(None, &first);
         let edit_items = gio::Menu::new();
         if has_items {
-            edit_items.append(Some("copy  yy"), Some("win.yank"));
-            edit_items.append(Some("cut  dd"), Some("win.cut"));
+            edit_items.append(Some("copy"), Some("win.yank"));
+            edit_items.append(Some("cut"), Some("win.cut"));
         }
         if self.register.borrow().is_some() {
-            edit_items.append(Some("paste  p"), Some("win.paste"));
+            edit_items.append(Some("paste"), Some("win.paste"));
         }
         if has_items {
-            edit_items.append(Some("rename  r"), Some("win.rename"));
+            edit_items.append(Some("rename"), Some("win.rename"));
         }
         menu.append_section(None, &edit_items);
         let more = gio::Menu::new();
         if targets.iter().any(|e| e.is_dir()) {
-            more.append(Some("folder size  gs"), Some("win.size"));
+            more.append(Some("folder size"), Some("win.size"));
         }
         more.append(Some("copy path"), Some("win.copy-path"));
         more.append(Some("new folder"), Some("win.new-folder"));
         more.append(Some("new file"), Some("win.new-file"));
         more.append(Some("open terminal here"), Some("win.terminal"));
-        more.append(Some("edit names in nvim  ge"), Some("win.edit"));
+        more.append(Some("edit names in nvim"), Some("win.edit"));
         menu.append_section(None, &more);
+        let only = gio::Menu::new();
+        if let Some(e) = targets.first() {
+            let ext = strata_core::entry::extension_of(&e.name).to_lowercase();
+            if !e.is_dir() && !ext.is_empty() {
+                let item = gio::MenuItem::new(Some(&format!("only .{ext} files")), None);
+                item.set_action_and_target_value(
+                    Some("win.filter"),
+                    Some(&format!("ext:{ext}").to_variant()),
+                );
+                only.append_item(&item);
+            }
+            if let Some(class) = strata_core::filter::Class::of(e) {
+                let label = match class.name() {
+                    "dir" => "only folders".to_string(),
+                    n => format!("only {n} files"),
+                };
+                let item = gio::MenuItem::new(Some(&label), None);
+                item.set_action_and_target_value(
+                    Some("win.filter"),
+                    Some(&format!("type:{}", class.name()).to_variant()),
+                );
+                only.append_item(&item);
+            }
+        }
+        if !pane.model.borrow().options().filter.is_empty() {
+            let item = gio::MenuItem::new(Some("clear filter"), None);
+            item.set_action_and_target_value(Some("win.filter"), Some(&String::new().to_variant()));
+            only.append_item(&item);
+        }
+        let flat = gio::MenuItem::new(
+            Some(if pane.is_flat() {
+                "back to folder view"
+            } else {
+                "show all files below"
+            }),
+            None,
+        );
+        flat.set_action_and_target_value(Some("win.flat"), None);
+        only.append_item(&flat);
+        menu.append_section(None, &only);
         if has_items {
             let danger = gio::Menu::new();
-            danger.append(Some("move to trash  D"), Some("win.trash"));
+            danger.append(Some("move to trash"), Some("win.trash"));
             danger.append(Some("delete permanently"), Some("win.delete"));
             menu.append_section(None, &danger);
         }

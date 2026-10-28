@@ -10,18 +10,8 @@ use crate::sort::{SortSpec, compare};
 pub struct ViewOptions {
     pub sort: SortSpec,
     pub show_hidden: bool,
-    /// Live filter from `/`: substring of the name, smart case. Empty = no filter.
+    /// Live filter from `/`, in the [`crate::filter`] language. Empty = no filter.
     pub filter: String,
-}
-
-impl ViewOptions {
-    /// Whether `e` is shown under these options.
-    pub fn shows(&self, e: &Entry) -> bool {
-        if e.hidden && !self.show_hidden {
-            return false;
-        }
-        matches_filter(&e.name, &self.filter)
-    }
 }
 
 /// Smart-case substring match: case-insensitive unless the pattern has an uppercase letter.
@@ -44,6 +34,8 @@ pub struct DirModel {
     /// Indices into `all` of the shown entries, in order.
     shown: Vec<usize>,
     opts: ViewOptions,
+    /// Names listed in the folder's `.hidden` file.
+    hidden_names: std::collections::HashSet<String>,
 }
 
 impl DirModel {
@@ -53,6 +45,7 @@ impl DirModel {
             all: Vec::new(),
             shown: Vec::new(),
             opts,
+            hidden_names: Default::default(),
         }
     }
 
@@ -173,10 +166,30 @@ impl DirModel {
         self.refilter();
     }
 
+    /// Sets the names from the folder's `.hidden` file; they count as hidden files.
+    pub fn set_hidden_names(&mut self, names: std::collections::HashSet<String>) {
+        if self.hidden_names != names {
+            self.hidden_names = names;
+            self.refilter();
+        }
+    }
+
+    /// Hidden: a dotfile, a backup file, or listed in `.hidden`.
+    pub fn is_hidden(&self, e: &Entry) -> bool {
+        e.hidden || self.hidden_names.contains(&e.name)
+    }
+
     fn refilter(&mut self) {
-        let opts = &self.opts;
+        let filter = crate::filter::Filter::parse_lenient(&self.opts.filter);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64);
+        let show_hidden = self.opts.show_hidden;
         self.shown = (0..self.all.len())
-            .filter(|&i| opts.shows(&self.all[i]))
+            .filter(|&i| {
+                let e = &self.all[i];
+                (show_hidden || !self.is_hidden(e)) && filter.matches(e, now)
+            })
             .collect();
     }
 }
@@ -273,5 +286,29 @@ mod tests {
         m.extend(vec![entry("b.txt", Kind::File, 100, 1)]);
         assert_eq!(m.total(), 5);
         assert_eq!(m.find("b.txt").map(|e| e.size), Some(100));
+    }
+
+    #[test]
+    fn dot_hidden_names_hide_and_unhide() {
+        let mut m = sample();
+        m.set_hidden_names(["b.txt".to_string(), "Docs".to_string()].into());
+        assert_eq!(names(&m), ["a2.txt", "a10.txt"]);
+        m.set_show_hidden(true);
+        assert_eq!(m.len(), 5);
+        m.set_show_hidden(false);
+        m.set_hidden_names(Default::default());
+        assert_eq!(names(&m), ["Docs", "a2.txt", "a10.txt", "b.txt"]);
+    }
+
+    #[test]
+    fn filter_language_applies() {
+        let mut m = sample();
+        m.set_filter("*.txt !a2*");
+        assert_eq!(names(&m), ["a10.txt", "b.txt"]);
+        m.set_filter("type:dir");
+        assert_eq!(names(&m), ["Docs"]);
+        // half-typed terms are text, never an error
+        m.set_filter("size>");
+        assert!(m.is_empty());
     }
 }

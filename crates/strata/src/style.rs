@@ -133,7 +133,8 @@ progressbar progress {{ background: {acc}; min-height: 2px; border-radius: 0; }}
 
 /* ── dialogs and menus ── */
 .card {{
-  background: alpha({bg}, 0.97);
+  /* opaque: it sits over file names, not over a wallpaper like the bar panels */
+  background: {bg};
   border: 1px solid alpha({fg}, 0.18);
   padding: 14px 0 10px 0;
   box-shadow: 0 10px 28px alpha(black, 0.35);

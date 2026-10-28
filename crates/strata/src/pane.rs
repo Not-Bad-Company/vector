@@ -57,7 +57,11 @@ pub struct Pane {
     git: RefCell<HashMap<String, Badge>>,
     pub sizes: RefCell<HashMap<String, u64>>,
     grid_mode: Cell<bool>,
+    /// Narrow (split) pane: no date column.
+    compact: Cell<bool>,
     syncing: Cell<bool>,
+    refresh_queued: Cell<bool>,
+    flat: Cell<bool>,
     pub loading: Cell<bool>,
     /// Name to put the cursor on once it shows up (after going to the parent folder).
     want_cursor: RefCell<Option<String>>,
@@ -114,7 +118,10 @@ impl Pane {
             git: RefCell::default(),
             sizes: RefCell::default(),
             grid_mode: Cell::new(false),
+            compact: Cell::new(false),
             syncing: Cell::new(false),
+            refresh_queued: Cell::new(false),
+            flat: Cell::new(false),
             loading: Cell::new(false),
             want_cursor: RefCell::new(None),
             on_event: Box::new(on_event),
@@ -243,6 +250,12 @@ impl Pane {
         }
     }
 
+    pub fn set_compact(&self, compact: bool) {
+        if self.compact.replace(compact) != compact {
+            self.rebind();
+        }
+    }
+
     pub fn set_focused(&self, focused: bool) {
         if focused {
             self.root.add_css_class("focused-pane");
@@ -259,12 +272,24 @@ impl Pane {
 
     /// Opens `dir`, remembering the current folder for `back`.
     pub fn open_dir(self: &Rc<Self>, dir: &Path) {
+        self.flat.set(false);
         let cur = self.dir();
         if cur != dir && self.store.n_items() > 0 || self.loading.get() {
             self.back.borrow_mut().push(cur);
             self.forward.borrow_mut().clear();
         }
         self.load(dir);
+    }
+
+    /// Toggles the flat view: every file below this folder in one list.
+    pub fn toggle_flat(self: &Rc<Self>) {
+        self.flat.set(!self.flat.get());
+        let cur = self.dir();
+        self.load(&cur);
+    }
+
+    pub fn is_flat(&self) -> bool {
+        self.flat.get()
     }
 
     pub fn go_parent(self: &Rc<Self>) {
@@ -320,12 +345,19 @@ impl Pane {
         self.loading.set(true);
         self.update_stack();
         self.watcher.replace(None);
+        let flat = self.flat.get();
         let weak = Rc::downgrade(self);
-        match listing::watch(dir, move |change| {
-            if let Some(p) = weak.upgrade() {
-                p.apply_change(change);
-            }
-        }) {
+        // a flat listing spans many folders; it is a snapshot, refreshed with reload
+        let watched = if flat {
+            Err(glib::Error::new(gio::IOErrorEnum::NotSupported, "flat"))
+        } else {
+            listing::watch(dir, move |change| {
+                if let Some(p) = weak.upgrade() {
+                    p.apply_change(change);
+                }
+            })
+        };
+        match watched {
             Ok(w) => {
                 self.watcher.replace(Some(w));
             }
@@ -333,7 +365,11 @@ impl Pane {
                 // some file systems can't be watched; the listing still works
             }
         }
-        let l = listing::spawn(dir);
+        let l = if flat {
+            listing::spawn_flat(dir, self.model.borrow().options().show_hidden)
+        } else {
+            listing::spawn(dir)
+        };
         let rx = l.events.clone();
         self.listing.replace(Some(l));
         let started = Instant::now();
@@ -341,22 +377,46 @@ impl Pane {
         let weak = Rc::downgrade(self);
         let dir = dir.to_path_buf();
         glib::spawn_future_local(async move {
-            let mut first = true;
-            while let Ok(ev) = rx.recv().await {
+            // The first batch is shown at once; later ones are merged and shown at most every
+            // REFRESH_EVERY, so a huge folder costs a few sorts and splices instead of one per
+            // batch, and the main loop gets to draw and handle input in between.
+            const REFRESH_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
+            let mut shown_once = false;
+            let mut last_refresh = Instant::now();
+            let mut pending: Vec<Entry> = Vec::new();
+            while let Ok(first_ev) = rx.recv().await {
+                let mut events = vec![first_ev];
+                while let Ok(more) = rx.try_recv() {
+                    events.push(more);
+                }
                 let Some(p) = weak.upgrade() else { return };
                 if p.dir() != dir {
                     return;
                 }
-                match ev {
-                    ListEvent::Batch(batch) => {
-                        p.model.borrow_mut().extend(batch);
-                        p.refresh();
-                        if first {
-                            first = false;
-                            p.note_first_paint(started);
+                let mut end = None;
+                for ev in events {
+                    match ev {
+                        ListEvent::Batch(batch) => pending.extend(batch),
+                        ListEvent::HiddenNames(names) => {
+                            p.model.borrow_mut().set_hidden_names(names)
                         }
+                        other => end = Some(other),
                     }
-                    ListEvent::Done => {
+                }
+                let due = !shown_once || last_refresh.elapsed() >= REFRESH_EVERY;
+                if (due || end.is_some()) && !pending.is_empty() {
+                    p.model.borrow_mut().extend(std::mem::take(&mut pending));
+                    if end.is_none() {
+                        p.refresh();
+                    }
+                    last_refresh = Instant::now();
+                    if !shown_once {
+                        shown_once = true;
+                        p.note_first_paint(started);
+                    }
+                }
+                match end {
+                    Some(ListEvent::Done) => {
                         p.loading.set(false);
                         let t = p.timing.get();
                         p.timing
@@ -367,15 +427,19 @@ impl Pane {
                         (p.on_event)(PaneEvent::Dir);
                         return;
                     }
-                    ListEvent::Error(e) => {
+                    Some(ListEvent::Error(e)) => {
                         p.loading.set(false);
                         p.listing.replace(None);
-                        p.update_stack();
+                        p.refresh();
                         (p.on_event)(PaneEvent::Error(e));
                         (p.on_event)(PaneEvent::Dir);
                         return;
                     }
+                    _ => {}
                 }
+                drop(p);
+                // let GTK draw and handle input before the next round
+                glib::timeout_future(std::time::Duration::from_millis(1)).await;
             }
         });
         (self.on_event)(PaneEvent::Dir);
@@ -423,6 +487,12 @@ impl Pane {
     }
 
     fn apply_change(self: &Rc<Self>, change: DirChange) {
+        let touches_hidden_file = matches!(&change,
+            DirChange::Upsert(e) if e.name == ".hidden")
+            || matches!(&change, DirChange::Remove(n) if n == ".hidden");
+        if touches_hidden_file {
+            self.reload_hidden_names();
+        }
         match change {
             DirChange::Upsert(e) => {
                 self.objects.borrow_mut().remove(&e.name);
@@ -445,8 +515,39 @@ impl Pane {
             }
         }
         if !self.loading.get() {
-            self.refresh();
+            self.schedule_refresh();
         }
+    }
+
+    /// Many monitor events can arrive at once (a copy, a busy dotfile folder); show them in one
+    /// refresh on the next idle instead of one per event, so input never waits behind them.
+    fn schedule_refresh(self: &Rc<Self>) {
+        if self.refresh_queued.replace(true) {
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local_once(std::time::Duration::from_millis(30), move || {
+            if let Some(p) = weak.upgrade() {
+                p.refresh_queued.set(false);
+                p.refresh();
+            }
+        });
+    }
+
+    fn reload_hidden_names(self: &Rc<Self>) {
+        let dir = self.dir();
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let d = dir.clone();
+            let Ok(names) = gio::spawn_blocking(move || listing::read_hidden_file(&d)).await else {
+                return;
+            };
+            let Some(p) = weak.upgrade() else { return };
+            if p.dir() == dir {
+                p.model.borrow_mut().set_hidden_names(names);
+                p.schedule_refresh();
+            }
+        });
     }
 
     // ── model → view ────────────────────────────────────────────────────────
@@ -822,7 +923,7 @@ fn row_factory(pane: Weak<Pane>) -> gtk::SignalListItemFactory {
         };
         icon.set_text(strata_core::icons::icon_for(&e.name, e.is_dir(), e.symlink));
         name.set_text(&e.name);
-        if e.hidden {
+        if pane.model.borrow().is_hidden(&e) {
             row.add_css_class("hidden-file");
         } else {
             row.remove_css_class("hidden-file");
@@ -848,6 +949,7 @@ fn row_factory(pane: Weak<Pane>) -> gtk::SignalListItemFactory {
         };
         size.set_text(&s);
         date.set_text(&fmt::date(e.modified));
+        date.set_visible(!pane.compact.get());
     });
     f
 }

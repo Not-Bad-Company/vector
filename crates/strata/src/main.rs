@@ -8,6 +8,7 @@
 mod fmt;
 mod pane;
 mod preview;
+mod settings;
 mod sidebar;
 mod style;
 mod thumbs;
@@ -107,6 +108,9 @@ fn main() -> glib::ExitCode {
             win.window.set_default_size(w, h);
         }
         win.window.present();
+        if std::env::var_os("STRATA_TIMING").is_some() {
+            watch_stalls();
+        }
         if args.snapshot.is_some() || !args.keys.is_empty() {
             schedule_script(win.clone(), args.clone(), app.clone());
         }
@@ -114,6 +118,27 @@ fn main() -> glib::ExitCode {
     });
     // GTK must not see our own options
     app.run_with_args::<&str>(&[])
+}
+
+/// Prints the longest gap between 5 ms main-loop ticks during the first 4 s: how long the
+/// window could not react to input.
+fn watch_stalls() {
+    let start = std::time::Instant::now();
+    let last = Rc::new(std::cell::Cell::new(start));
+    let worst = Rc::new(std::cell::Cell::new(Duration::ZERO));
+    glib::timeout_add_local(Duration::from_millis(5), move || {
+        let now = std::time::Instant::now();
+        worst.set(worst.get().max(now - last.get()));
+        last.set(now);
+        if now - start > Duration::from_secs(4) {
+            eprintln!(
+                "strata timing: longest main-loop stall {:.1} ms",
+                worst.get().as_secs_f64() * 1000.0
+            );
+            return glib::ControlFlow::Break;
+        }
+        glib::ControlFlow::Continue
+    });
 }
 
 /// Waits for the first folder to load, feeds `--keys`, waits `--after`, writes the snapshot.
@@ -162,7 +187,9 @@ fn snapshot(window: &gtk::ApplicationWindow, out: &std::path::Path) -> Result<()
     let paintable = gtk::WidgetPaintable::new(Some(window));
     let snap = gtk::Snapshot::new();
     paintable.snapshot(&snap, w as f64, h as f64);
-    let node = snap.to_node().ok_or("nothing drawn")?;
+    let node = snap
+        .to_node()
+        .ok_or_else(|| format!("nothing drawn (mapped {}, {w}x{h})", window.is_mapped()))?;
     let renderer = window
         .native()
         .and_then(|n| n.renderer())
@@ -171,5 +198,30 @@ fn snapshot(window: &gtk::ApplicationWindow, out: &std::path::Path) -> Result<()
         &node,
         Some(&gtk::graphene::Rect::new(0.0, 0.0, w as f32, h as f32)),
     );
-    texture.save_to_png(out).map_err(|e| e.to_string())
+    texture.save_to_png(out).map_err(|e| e.to_string())?;
+    // popovers (the context menu) are their own surfaces: write each open one next to it
+    let mut child = window.child().and_then(|c| c.first_child());
+    let mut n = 0;
+    while let Some(c) = child {
+        if let Some(pop) = c.downcast_ref::<gtk::Popover>()
+            && pop.is_visible()
+        {
+            n += 1;
+            let (pw, ph) = (pop.width(), pop.height());
+            let paintable = gtk::WidgetPaintable::new(Some(pop));
+            let snap = gtk::Snapshot::new();
+            paintable.snapshot(&snap, pw as f64, ph as f64);
+            if let (Some(node), Some(r)) = (snap.to_node(), pop.native().and_then(|n| n.renderer()))
+            {
+                let tex = r.render_texture(
+                    &node,
+                    Some(&gtk::graphene::Rect::new(0.0, 0.0, pw as f32, ph as f32)),
+                );
+                let path = out.with_extension(format!("popover{n}.png"));
+                tex.save_to_png(&path).map_err(|e| e.to_string())?;
+            }
+        }
+        child = c.next_sibling();
+    }
+    Ok(())
 }
