@@ -9,5 +9,11 @@ install -Dm644 data/vector.desktop ~/.local/share/applications/vector.desktop
 # "show in folder" from other apps (D-Bus activation) opens vector
 mkdir -p ~/.local/share/dbus-1/services
 sed "s|@BIN@|$HOME/.local/bin/vector|" data/org.freedesktop.FileManager1.service.in > ~/.local/share/dbus-1/services/org.freedesktop.FileManager1.service
+# open/save dialogs of other apps (xdg-desktop-portal FileChooser backend)
+sed "s|@BIN@|$HOME/.local/bin/vector|" data/org.freedesktop.impl.portal.desktop.vector.service.in > ~/.local/share/dbus-1/services/org.freedesktop.impl.portal.desktop.vector.service
+if [ ! -f /usr/share/xdg-desktop-portal/portals/vector.portal ]; then
+  echo "to use vector as the file picker, run once:"
+  echo "  sudo install -Dm644 $PWD/data/vector.portal /usr/share/xdg-desktop-portal/portals/vector.portal && systemctl --user restart xdg-desktop-portal"
+fi
 update-desktop-database ~/.local/share/applications 2>/dev/null || true
 echo "installed: $(command -v vector)"
