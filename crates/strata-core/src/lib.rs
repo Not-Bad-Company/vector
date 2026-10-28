@@ -7,6 +7,7 @@ pub mod git;
 pub mod icons;
 pub mod listing;
 pub mod model;
+pub mod ops;
 pub mod search;
 pub mod selection;
 pub mod sort;
