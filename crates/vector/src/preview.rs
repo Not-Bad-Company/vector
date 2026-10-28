@@ -288,30 +288,49 @@ impl Preview {
         let weak = Rc::downgrade(self);
         let e = entry.clone();
         glib::MainContext::default().spawn_local(async move {
-            let Ok(rows) = gio::spawn_blocking(move || crate::details::gather(&e)).await else {
+            let q = e.clone();
+            let Ok(quick) = gio::spawn_blocking(move || crate::details::quick(&q)).await else {
                 return;
             };
             let Some(this) = weak.upgrade() else { return };
             if this.generation.get() != generation {
                 return;
             }
-            for (i, (k, v)) in rows.iter().enumerate() {
-                let kl = gtk::Label::new(Some(k));
-                kl.add_css_class("dim");
-                kl.set_xalign(0.0);
-                kl.set_valign(gtk::Align::Start);
-                let vl = gtk::Label::new(Some(v));
-                vl.set_xalign(0.0);
-                // no wrapping: a wrapped label asks for a huge height at its minimum width,
-                // which made the whole window taller than the screen
-                vl.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
-                vl.set_width_chars(8);
-                vl.set_tooltip_text(Some(v));
-                vl.set_hexpand(true);
-                this.details.attach(&kl, 0, i as i32, 1, 1);
-                this.details.attach(&vl, 1, i as i32, 1, 1);
+            this.fill_details(&quick);
+            drop(this);
+            let Ok(slow) = gio::spawn_blocking(move || crate::details::slow(&e)).await else {
+                return;
+            };
+            let Some(this) = weak.upgrade() else { return };
+            if this.generation.get() != generation || slow.is_empty() {
+                return;
             }
+            let all: Vec<_> = slow.into_iter().chain(quick).collect();
+            this.fill_details(&all);
         });
+    }
+
+    fn fill_details(&self, rows: &[(String, String)]) {
+        while let Some(c) = self.details.first_child() {
+            self.details.remove(&c);
+        }
+        for (i, (k, v)) in rows.iter().enumerate() {
+            let kl = gtk::Label::new(Some(k));
+            kl.add_css_class("dim");
+            kl.set_xalign(0.0);
+            kl.set_valign(gtk::Align::Start);
+            let vl = gtk::Label::new(Some(v));
+            vl.set_xalign(0.0);
+            // no wrapping: a wrapped label asks for a huge height at its minimum width
+            vl.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+            vl.set_width_chars(8);
+            // a long value (a path) must not widen the pane; it ellipsizes instead
+            vl.set_max_width_chars(38);
+            vl.set_tooltip_text(Some(v));
+            vl.set_hexpand(true);
+            self.details.attach(&kl, 0, i as i32, 1, 1);
+            self.details.attach(&vl, 1, i as i32, 1, 1);
+        }
     }
 }
 

@@ -31,10 +31,25 @@ struct Tab {
     button: gtk::Button,
 }
 
+/// File picker state (this window answers an app's open/save dialog).
+struct Pick {
+    kind: crate::portal::Kind,
+    multiple: bool,
+    directory: bool,
+    filters: Vec<crate::portal::NamedFilter>,
+    filter: usize,
+    filter_button: Option<gtk::Button>,
+    name: Option<gtk::Entry>,
+    respond: Option<crate::portal::Respond>,
+}
+
 struct Register {
     paths: Vec<PathBuf>,
     cut: bool,
 }
+
+/// One `:find`/`:grep` result: relative path, line (grep), matching text (grep).
+type Hit = (PathBuf, Option<u64>, String);
 
 /// Results of `:find` / `:grep`, shown in the panel above the command line.
 struct Picker {
@@ -85,6 +100,8 @@ pub struct Win {
     settings: RefCell<crate::settings::Settings>,
     /// Set while the line's text is changed by code, so `changed` doesn't restart completion.
     setting_line: Cell<bool>,
+    pick_slot: gtk::Box,
+    pick: RefCell<Option<Pick>>,
     notice: gtk::Label,
     notice_timer: RefCell<Option<glib::SourceId>>,
     weak_self: RefCell<std::rc::Weak<Win>>,
@@ -163,6 +180,10 @@ impl Win {
         main.append(&progress);
         main.append(&list_box);
         main.append(&cmd_box);
+        let pick_slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        pick_slot.add_css_class("pickbar");
+        pick_slot.set_visible(false);
+        main.append(&pick_slot);
         main.append(&status);
 
         let outer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -228,6 +249,8 @@ impl Win {
                 edit_poll: RefCell::new(None),
                 search_cancel: RefCell::new(None),
                 setting_line: Cell::new(false),
+                pick_slot,
+                pick: RefCell::new(None),
                 notice,
                 notice_timer: RefCell::new(None),
                 settings: RefCell::new(settings),
@@ -461,7 +484,6 @@ impl Win {
         let split = tab.panes.borrow().len() > 1;
         for (i, p) in tab.panes.borrow().iter().enumerate() {
             p.set_focused(!split || i == tab.active.get());
-            p.set_compact(split);
         }
     }
 
@@ -538,11 +560,14 @@ impl Win {
         let dir = pane.dir();
         self.sidebar.set_current(&dir);
         publish_cwd(&dir);
-        self.window.set_title(Some(&format!(
-            "{} — {}",
-            display_path(&dir),
-            vector_core::APP_NAME
-        )));
+        // a picker keeps the requesting app's title ("Upload a photo")
+        if self.pick.borrow().is_none() {
+            self.window.set_title(Some(&format!(
+                "{} — {}",
+                display_path(&dir),
+                vector_core::APP_NAME
+            )));
+        }
         while let Some(c) = self.crumbs.first_child() {
             self.crumbs.remove(&c);
         }
@@ -741,12 +766,38 @@ impl Win {
             let Some(win) = weak.upgrade() else {
                 return glib::Propagation::Proceed;
             };
+            // picker: ctrl+enter accepts (open the selection, save, or pick this folder)
+            if win.pick.borrow().is_some()
+                && matches!(keyval, gdk::Key::Return | gdk::Key::KP_Enter)
+                && state.contains(gdk::ModifierType::CONTROL_MASK)
+            {
+                win.accept_pick();
+                return glib::Propagation::Stop;
+            }
+            // typing in a text field (the save name): the field gets the keys, Esc leaves it
+            if win.dialog.borrow().is_none() && win.editing_text() {
+                if keyval == gdk::Key::Escape {
+                    win.pane().focus_view();
+                    return glib::Propagation::Stop;
+                }
+                return glib::Propagation::Proceed;
+            }
             match to_key(keyval, state) {
                 Some(k) if win.handle_key(k, false) => glib::Propagation::Stop,
                 _ => glib::Propagation::Proceed,
             }
         });
         self.window.add_controller(ctl);
+    }
+
+    /// Whether keyboard focus is in a text field other than the command line.
+    fn editing_text(&self) -> bool {
+        let Some(focus) = gtk::prelude::GtkWindowExt::focus(&self.window) else {
+            return false;
+        };
+        let in_cmd = focus.is_ancestor(&self.cmd_entry)
+            || focus == self.cmd_entry.clone().upcast::<gtk::Widget>();
+        !in_cmd && (focus.is::<gtk::Text>() || focus.is::<gtk::Entry>())
     }
 
     /// Handles one key. `synthetic` keys (from `--keys`) also type into the command line.
@@ -1130,6 +1181,13 @@ impl Win {
                 self.update_status();
             }
             Action::Escape => {
+                let nothing_to_clear = self.mode.get() == Mode::Normal
+                    && !pane.selection.borrow().has_selection()
+                    && pane.model.borrow().options().filter.is_empty();
+                if nothing_to_clear && self.pick.borrow().is_some() {
+                    self.finish_pick(None);
+                    return;
+                }
                 self.leave_visual();
                 pane.selection.borrow_mut().clear();
                 if !pane.model.borrow().options().filter.is_empty() {
@@ -1327,6 +1385,9 @@ impl Win {
             self.pane().open_dir(path);
             return;
         }
+        if self.pick_file(path) {
+            return;
+        }
         let uri = gio::File::for_path(path).uri();
         let ctx = WidgetExt::display(&self.window).app_launch_context();
         let weak = self.weak_self.borrow().clone();
@@ -1344,6 +1405,267 @@ impl Win {
                 }
             },
         );
+    }
+
+    /// Turns this window into a file picker for an app's open/save dialog.
+    pub fn set_picker(&self, req: crate::portal::Request, respond: crate::portal::Respond) {
+        use crate::portal::Kind;
+        self.window.set_title(Some(if req.title.is_empty() {
+            "pick a file"
+        } else {
+            &req.title
+        }));
+        let bar = &self.pick_slot;
+        while let Some(c) = bar.first_child() {
+            bar.remove(&c);
+        }
+        let title = gtk::Label::new(Some(&if req.title.is_empty() {
+            req.accept.clone()
+        } else {
+            req.title.to_lowercase()
+        }));
+        title.add_css_class("title");
+        bar.append(&title);
+        let filter_button = (!req.filters.is_empty()).then(|| {
+            let b = gtk::Button::new();
+            b.add_css_class("link");
+            b.set_tooltip_text(Some("file types (click to change)"));
+            let weak = self.weak_self.borrow().clone();
+            b.connect_clicked(move |_| {
+                if let Some(w) = weak.upgrade() {
+                    w.cycle_pick_filter();
+                }
+            });
+            bar.append(&b);
+            b
+        });
+        let hint = match (req.kind, req.directory) {
+            (Kind::Save, _) => "type a name · enter saves",
+            (_, true) => "enter opens · ctrl+enter picks this folder",
+            _ if req.multiple => "enter picks · space or v selects several · ctrl+enter picks them",
+            _ => "enter picks",
+        };
+        let hint = gtk::Label::new(Some(hint));
+        hint.add_css_class("dim");
+        hint.set_hexpand(true);
+        hint.set_xalign(0.0);
+        hint.set_margin_start(12);
+        hint.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        bar.append(&hint);
+        let name = (req.kind == Kind::Save).then(|| {
+            let e = gtk::Entry::new();
+            e.set_width_chars(36);
+            e.set_text(req.current_name.as_deref().unwrap_or(""));
+            let weak = self.weak_self.borrow().clone();
+            e.connect_activate(move |_| {
+                if let Some(w) = weak.upgrade() {
+                    w.accept_pick();
+                }
+            });
+            bar.append(&e);
+            e
+        });
+        for (label, primary) in [("cancel", false), (req.accept.as_str(), true)] {
+            let b = gtk::Button::with_label(label);
+            b.add_css_class("link");
+            if primary {
+                b.add_css_class("primary");
+            }
+            let weak = self.weak_self.borrow().clone();
+            b.connect_clicked(move |_| {
+                if let Some(w) = weak.upgrade() {
+                    if primary {
+                        w.accept_pick()
+                    } else {
+                        w.finish_pick(None)
+                    }
+                }
+            });
+            bar.append(&b);
+        }
+        bar.set_visible(true);
+        let filter = req.current_filter.unwrap_or(0);
+        *self.pick.borrow_mut() = Some(Pick {
+            kind: req.kind,
+            multiple: req.multiple,
+            directory: req.directory,
+            filters: req.filters,
+            filter,
+            filter_button,
+            name: name.clone(),
+            respond: Some(respond),
+        });
+        self.apply_pick_filter();
+        // closing the window cancels
+        let weak = self.weak_self.borrow().clone();
+        self.window.connect_close_request(move |_| {
+            if let Some(w) = weak.upgrade()
+                && let Some(r) = w.pick.borrow_mut().as_mut().and_then(|p| p.respond.take())
+            {
+                r(None);
+            }
+            glib::Propagation::Proceed
+        });
+        if let Some(e) = name {
+            e.grab_focus();
+            let text = e.text();
+            let stem = text
+                .rfind('.')
+                .filter(|&i| i > 0)
+                .map_or(text.chars().count(), |i| text[..i].chars().count());
+            e.select_region(0, stem as i32);
+        }
+    }
+
+    fn apply_pick_filter(&self) {
+        let (allow, label) = match self.pick.borrow().as_ref() {
+            Some(p) if !p.filters.is_empty() => {
+                let (name, allow) = &p.filters[p.filter.min(p.filters.len() - 1)];
+                let more = if p.filters.len() > 1 {
+                    format!(" ({}/{})", p.filter + 1, p.filters.len())
+                } else {
+                    String::new()
+                };
+                (
+                    Some(allow.clone()),
+                    format!("{}{more}", name.to_lowercase()),
+                )
+            }
+            _ => (None, String::new()),
+        };
+        if let Some(b) = self
+            .pick
+            .borrow()
+            .as_ref()
+            .and_then(|p| p.filter_button.clone())
+        {
+            b.set_label(&label);
+        }
+        let pane = self.pane();
+        pane.model.borrow_mut().set_allow(allow);
+        pane.refresh();
+    }
+
+    fn cycle_pick_filter(&self) {
+        if let Some(p) = self.pick.borrow_mut().as_mut()
+            && !p.filters.is_empty()
+        {
+            p.filter = (p.filter + 1) % p.filters.len();
+        }
+        self.apply_pick_filter();
+    }
+
+    /// A file was opened (Enter, l, double click) while picking: pick it (or the selection),
+    /// or in save mode take its name. Returns whether the picker handled it.
+    fn pick_file(&self, path: &Path) -> bool {
+        use crate::portal::Kind;
+        let (kind, multiple, directory, name) = match self.pick.borrow().as_ref() {
+            Some(p) => (p.kind, p.multiple, p.directory, p.name.clone()),
+            None => return false,
+        };
+        match kind {
+            Kind::Open if !directory => {
+                let pane = self.pane();
+                let mut files: Vec<PathBuf> = if multiple && pane.selection.borrow().has_selection()
+                {
+                    pane.targets()
+                        .into_iter()
+                        .filter(|e| !e.is_dir())
+                        .map(|e| e.path)
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                if files.is_empty() {
+                    files.push(path.to_path_buf());
+                }
+                self.finish_pick(Some(files));
+            }
+            Kind::Save => {
+                if let (Some(e), Some(n)) = (name, path.file_name()) {
+                    e.set_text(&n.to_string_lossy());
+                    e.grab_focus();
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+
+    /// The accept button: open the selection, save under the typed name, or pick the folder.
+    fn accept_pick(&self) {
+        use crate::portal::Kind;
+        let (kind, directory, name) = match self.pick.borrow().as_ref() {
+            Some(p) => (p.kind, p.directory, p.name.clone()),
+            None => return,
+        };
+        let pane = self.pane();
+        match kind {
+            Kind::Save => {
+                let typed = name.map(|e| e.text().to_string()).unwrap_or_default();
+                if typed.trim().is_empty() {
+                    self.notify_error("type a file name");
+                    return;
+                }
+                let target = resolve(&pane.dir(), typed.trim());
+                if target.exists() {
+                    let t = target.clone();
+                    self.show_dialog(
+                        &format!("replace {}?", file_name(&target)),
+                        &[],
+                        "the existing file is overwritten by the app",
+                        vec![
+                            cancel(),
+                            button("replace", "danger", move |w, _| {
+                                w.finish_pick(Some(vec![t.clone()]))
+                            }),
+                        ],
+                        None,
+                    );
+                    return;
+                }
+                self.finish_pick(Some(vec![target]));
+            }
+            _ if directory => {
+                let dirs: Vec<PathBuf> = pane
+                    .targets()
+                    .into_iter()
+                    .filter(|e| e.is_dir())
+                    .map(|e| e.path)
+                    .collect();
+                let explicit = pane.selection.borrow().has_selection();
+                self.finish_pick(Some(if explicit && !dirs.is_empty() {
+                    dirs
+                } else {
+                    vec![pane.dir()]
+                }));
+            }
+            _ => {
+                let files: Vec<PathBuf> = pane
+                    .targets()
+                    .into_iter()
+                    .filter(|e| !e.is_dir())
+                    .map(|e| e.path)
+                    .collect();
+                if files.is_empty() {
+                    self.notify("pick a file (enter on a folder opens it)");
+                    return;
+                }
+                self.finish_pick(Some(files));
+            }
+        }
+    }
+
+    fn finish_pick(&self, picked: Option<Vec<PathBuf>>) {
+        let respond = self
+            .pick
+            .borrow_mut()
+            .as_mut()
+            .and_then(|p| p.respond.take());
+        if let Some(r) = respond {
+            r(picked);
+        }
+        self.window.close();
     }
 
     /// `:cd ` in the command line with the current path filled in and selected, so typing or
@@ -1769,31 +2091,39 @@ impl Win {
             let r = root.clone();
             let q = query.clone();
             let res = gio::spawn_blocking(
-                move || -> Result<Vec<(PathBuf, Option<u64>, String)>, String> {
-                    if content {
-                        search::grep(&r, &q, &opts, &cancel, 500)
-                            .map(|v| {
-                                v.into_iter()
-                                    .map(|h| (h.path, Some(h.line), h.text))
-                                    .collect()
-                            })
-                            .map_err(|e| e.to_string())
-                    } else {
-                        Ok(search::find(&r, &q, &opts, &cancel, 500)
-                            .into_iter()
-                            .map(|h| (h.path, None, String::new()))
-                            .collect())
+                move || -> Result<(Vec<Hit>, bool), String> {
+                    let run = |opts: &SearchOptions| -> Result<Vec<Hit>, String> {
+                        if content {
+                            search::grep(&r, &q, opts, &cancel, 500)
+                                .map(|v| v.into_iter().map(|h| (h.path, Some(h.line), h.text)).collect())
+                                .map_err(|e| e.to_string())
+                        } else {
+                            Ok(search::find(&r, &q, opts, &cancel, 500)
+                                .into_iter()
+                                .map(|h| (h.path, None, String::new()))
+                                .collect())
+                        }
+                    };
+                    let found = run(&opts)?;
+                    // nothing outside hidden folders: look inside them too (~/.local, ~/.config…)
+                    if found.is_empty() && !opts.hidden {
+                        let all = SearchOptions { hidden: true, ..opts.clone() };
+                        return Ok((run(&all)?, true));
                     }
+                    Ok((found, false))
                 },
             )
             .await;
             let Some(win) = weak.upgrade() else { return };
             match res {
-                Ok(Ok(items)) if items.is_empty() => win.flash("no matches"),
-                Ok(Ok(items)) => {
+                Ok(Ok((items, _))) if items.is_empty() => {
+                    win.notify("no matches, hidden folders included")
+                }
+                Ok(Ok((items, in_hidden))) => {
                     win.flash(&format!(
-                        "{} matches · enter opens · esc closes",
-                        items.len()
+                        "{} matches{} · enter opens · esc closes",
+                        items.len(),
+                        if in_hidden { " in hidden folders" } else { "" }
                     ));
                     *win.picker.borrow_mut() = Some(Picker {
                         title: if content { "GREP" } else { "FIND" },

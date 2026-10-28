@@ -144,3 +144,80 @@ mod tests {
         assert!(biggest_files(t.path(), 0, true, &no, &seen).is_empty());
     }
 }
+
+/// Folder sizes remembered across runs, so a folder shows its last known size at once while a
+/// fresh measurement runs. One line per folder: `bytes<TAB>unix time<TAB>path`.
+#[derive(Debug, Default)]
+pub struct SizeIndex {
+    map: std::collections::HashMap<PathBuf, (u64, i64)>,
+}
+
+/// At most this many folders are kept; the oldest measurements go first.
+pub const INDEX_LIMIT: usize = 100_000;
+
+impl SizeIndex {
+    pub fn parse(text: &str) -> SizeIndex {
+        let map = text
+            .lines()
+            .filter_map(|l| {
+                let mut parts = l.splitn(3, '\t');
+                let size = parts.next()?.parse().ok()?;
+                let at = parts.next()?.parse().ok()?;
+                let path = parts.next().filter(|p| p.starts_with('/'))?;
+                Some((PathBuf::from(path), (size, at)))
+            })
+            .collect();
+        SizeIndex { map }
+    }
+
+    /// Serialised, newest first, at most [`INDEX_LIMIT`] folders. Paths that can't be written on
+    /// one line are left out.
+    pub fn render(&self) -> String {
+        let mut v: Vec<_> = self.map.iter().collect();
+        v.sort_by_key(|(_, (_, at))| std::cmp::Reverse(*at));
+        let mut out = String::new();
+        for (p, (size, at)) in v.into_iter().take(INDEX_LIMIT) {
+            let Some(s) = p.to_str().filter(|s| !s.contains(['\n', '\r', '\t'])) else {
+                continue;
+            };
+            out.push_str(&format!("{size}\t{at}\t{s}\n"));
+        }
+        out
+    }
+
+    /// Size and when it was measured (unix seconds).
+    pub fn get(&self, p: &Path) -> Option<(u64, i64)> {
+        self.map.get(p).copied()
+    }
+
+    pub fn insert(&mut self, p: &Path, size: u64, at: i64) {
+        self.map.insert(p.to_path_buf(), (size, at));
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod index_tests {
+    use super::*;
+
+    #[test]
+    fn round_trip_and_bad_lines() {
+        let mut i = SizeIndex::default();
+        i.insert(Path::new("/a b/c"), 42, 100);
+        i.insert(Path::new("/new"), 7, 200);
+        i.insert(Path::new("/bad\nname"), 1, 300);
+        let text = i.render();
+        assert_eq!(text, "7\t200\t/new\n42\t100\t/a b/c\n");
+        let back = SizeIndex::parse(&format!("{text}garbage\n1\tx\t/y\n5\t5\trelative\n"));
+        assert_eq!(back.len(), 2);
+        assert_eq!(back.get(Path::new("/a b/c")), Some((42, 100)));
+        assert!(SizeIndex::parse("").is_empty());
+    }
+}

@@ -9,6 +9,7 @@ mod dbus;
 mod details;
 mod fmt;
 mod pane;
+mod portal;
 mod preview;
 mod settings;
 mod sidebar;
@@ -35,6 +36,8 @@ struct Args {
     size: Option<(i32, i32)>,
     /// `--service`: no window; serve org.freedesktop.FileManager1 (D-Bus activation).
     service: bool,
+    /// `--portal`: no window; serve the xdg-desktop-portal FileChooser backend.
+    portal: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -64,6 +67,7 @@ fn parse_args() -> Result<Args, String> {
                 ));
             }
             "--service" => a.service = true,
+            "--portal" => a.portal = true,
             "-h" | "--help" => {
                 println!(
                     "usage: {} [FOLDER] [--snapshot OUT.png [--after MS] [--keys KEYS] [--size WxH]]",
@@ -129,6 +133,40 @@ fn main() -> glib::ExitCode {
             // the name stays owned for the life of the process
             let _ = dbus::own(open.clone());
         }
+        if args.portal {
+            let (app2, keep2, theme2) = (app.clone(), keep.clone(), theme.clone());
+            let show: portal::Show =
+                Rc::new(move |req: portal::Request, respond: portal::Respond| {
+                    let start = req
+                        .folder
+                        .clone()
+                        .filter(|p| p.is_dir())
+                        .unwrap_or_else(glib::home_dir);
+                    let win = window::Win::new(&app2, &start, theme2.clone());
+                    win.window.set_default_size(1100, 700);
+                    win.set_picker(req, respond);
+                    win.window.present();
+                    // tests: render the picker once it has settled
+                    if let Some(out) = std::env::var_os("VECTOR_PICK_SNAPSHOT") {
+                        let w = win.window.clone();
+                        glib::timeout_add_local_once(Duration::from_millis(1500), move || {
+                            if let Err(e) = snapshot(&w, std::path::Path::new(&out)) {
+                                eprintln!("vector: snapshot failed: {e}");
+                            }
+                        });
+                    }
+                    let k = keep2.clone();
+                    let ptr = Rc::downgrade(&win);
+                    win.window.connect_destroy(move |_| {
+                        k.borrow_mut()
+                            .retain(|w| !std::ptr::eq(Rc::as_ptr(w), ptr.as_ptr()));
+                    });
+                    keep2.borrow_mut().push(win);
+                });
+            let _ = portal::own(show);
+            std::mem::forget(app.hold());
+            return;
+        }
         if args.service {
             // started by D-Bus activation: stay up for ShowItems/ShowFolders calls
             std::mem::forget(app.hold());
@@ -154,6 +192,7 @@ fn main() -> glib::ExitCode {
     // GTK must not see our own options
     let code = app.run_with_args::<&str>(&[]);
     window::forget_cwd();
+    pane::save_index();
     code
 }
 

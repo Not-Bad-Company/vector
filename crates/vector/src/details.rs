@@ -14,7 +14,9 @@ const TEXT_LIMIT: u64 = 8 << 20;
 /// Folder sizes stop counting after this long.
 const SIZE_DEADLINE: Duration = Duration::from_millis(1500);
 
-pub fn gather(e: &Entry) -> Vec<Row> {
+/// Rows that need a scan or a helper program (folder totals, image header, ffprobe, pdfinfo,
+/// text statistics). Shown above the quick rows once ready.
+pub fn slow(e: &Entry) -> Vec<Row> {
     let mut rows: Vec<Row> = Vec::new();
     let ct = e.content_type.as_str();
     let p = &e.path;
@@ -52,6 +54,14 @@ pub fn gather(e: &Entry) -> Vec<Row> {
             }
         }
     }
+    rows
+}
+
+/// Rows from one stat call: shown at once.
+pub fn quick(e: &Entry) -> Vec<Row> {
+    let mut rows: Vec<Row> = Vec::new();
+    let ct = e.content_type.as_str();
+    let p = &e.path;
     if let Ok(m) = std::fs::symlink_metadata(p) {
         if !e.is_dir() {
             rows.push(("size".into(), format!("{} bytes", group_digits(e.size))));

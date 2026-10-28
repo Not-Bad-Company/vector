@@ -146,6 +146,18 @@ impl Pane {
             .set_factory(Some(&row_factory(Rc::downgrade(&pane))));
         pane.grid
             .set_factory(Some(&tile_factory(Rc::downgrade(&pane))));
+        // the list's horizontal adjustment follows the pane's real width: narrow panes drop
+        // the date column so names keep their room
+        if let Some(sw) = pane.list.parent().and_downcast::<gtk::ScrolledWindow>() {
+            let weak = Rc::downgrade(&pane);
+            sw.hadjustment().connect_changed(move |a| {
+                if let Some(p) = weak.upgrade()
+                    && a.page_size() > 0.0
+                {
+                    p.set_compact(a.page_size() < 720.0);
+                }
+            });
+        }
         pane.connect_signals();
         pane
     }
@@ -330,7 +342,12 @@ impl Pane {
             .map(|b| b.sort_before)
             .unwrap_or(self.model.borrow().options().sort);
         self.flat.set(false);
-        *self.biggest.borrow_mut() = Some(Biggest { roots, n, one_fs, sort_before: before });
+        *self.biggest.borrow_mut() = Some(Biggest {
+            roots,
+            n,
+            one_fs,
+            sort_before: before,
+        });
         self.model
             .borrow_mut()
             .set_sort(vector_core::sort::SortSpec {
@@ -353,28 +370,35 @@ impl Pane {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering};
         let explicit = only.is_some();
-        if !explicit && self.fs_info.get().1 {
-            return;
-        }
         let dirs: Vec<(String, PathBuf)> = only.unwrap_or_else(|| {
             self.model
                 .borrow()
                 .all()
                 .iter()
-                .filter(|e| e.is_dir() && !e.symlink)
+                .filter(|e| e.is_dir())
                 .map(|e| (e.name.clone(), e.path.clone()))
                 .collect()
         });
-        // sizes measured a moment ago are reused (going back and forth stays instant)
+        // the last known size shows at once; it is measured again when older than a few
+        // minutes (or when asked for with gs)
         let mut todo = Vec::new();
         for (name, path) in dirs {
-            match cached_size(&path) {
-                Some(n) => {
+            // a symlinked folder shows its target's size
+            let real = if self.model.borrow().find(&name).is_some_and(|e| e.symlink) {
+                std::fs::canonicalize(&path).unwrap_or(path)
+            } else {
+                path
+            };
+            match cached_size(&real) {
+                Some((n, age)) => {
                     self.model.borrow_mut().set_size(&name, n);
                     self.objects.borrow_mut().remove(&name);
-                    self.measured.borrow_mut().insert(name);
+                    self.measured.borrow_mut().insert(name.clone());
+                    if explicit || age > SIZE_FRESH_FOR {
+                        todo.push((name, real));
+                    }
                 }
-                None => todo.push((name, path)),
+                None => todo.push((name, real)),
             }
         }
         if let Some(c) = self.measure_cancel.borrow_mut().take() {
@@ -947,26 +971,74 @@ struct Biggest {
     sort_before: vector_core::sort::SortSpec,
 }
 
+/// Measurements younger than this are trusted without measuring again.
+const SIZE_FRESH_FOR: i64 = 300;
+
 thread_local! {
-    /// Folder sizes measured in the last few minutes, by path.
-    static SIZES: RefCell<HashMap<PathBuf, (u64, Instant)>> = RefCell::default();
+    /// Folder sizes from this and earlier runs (`~/.cache/vector/sizes`), loaded on first use.
+    static INDEX: RefCell<Option<vector_core::du::SizeIndex>> = const { RefCell::new(None) };
+    static SAVE_QUEUED: Cell<bool> = const { Cell::new(false) };
 }
 
-const SIZE_CACHE_FOR: std::time::Duration = std::time::Duration::from_secs(300);
+fn index_path() -> PathBuf {
+    glib::user_cache_dir()
+        .join(vector_core::APP_NAME)
+        .join("sizes")
+}
 
-fn cached_size(p: &Path) -> Option<u64> {
-    SIZES.with(|c| {
-        c.borrow()
-            .get(p)
-            .filter(|(_, t)| t.elapsed() < SIZE_CACHE_FOR)
-            .map(|(n, _)| *n)
+fn with_index<T>(f: impl FnOnce(&mut vector_core::du::SizeIndex) -> T) -> T {
+    INDEX.with(|i| {
+        let mut i = i.borrow_mut();
+        let idx = i.get_or_insert_with(|| {
+            // a few MB at most, read once
+            let text = std::fs::read_to_string(index_path()).unwrap_or_default();
+            vector_core::du::SizeIndex::parse(&text)
+        });
+        f(idx)
     })
 }
 
+fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
+}
+
+/// Last known size and its age in seconds.
+fn cached_size(p: &Path) -> Option<(u64, i64)> {
+    with_index(|i| i.get(p)).map(|(n, at)| (n, now() - at))
+}
+
 fn remember_size(p: &Path, n: u64) {
-    SIZES.with(|c| {
-        c.borrow_mut().insert(p.to_path_buf(), (n, Instant::now()));
+    with_index(|i| i.insert(p, n, now()));
+    // write the index a few seconds after the last change, off the main thread
+    if SAVE_QUEUED.with(|q| q.replace(true)) {
+        return;
+    }
+    glib::timeout_add_local_once(std::time::Duration::from_secs(5), || {
+        SAVE_QUEUED.with(|q| q.set(false));
+        let text = with_index(|i| i.render());
+        gio::spawn_blocking(move || save_index_text(&text));
     });
+}
+
+fn save_index_text(text: &str) {
+    let p = index_path();
+    if let Some(d) = p.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    // write then rename, so a crash never leaves half an index
+    let tmp = p.with_extension("tmp");
+    if std::fs::write(&tmp, text).is_ok() {
+        let _ = std::fs::rename(&tmp, &p);
+    }
+}
+
+/// Writes the size index now (at exit).
+pub fn save_index() {
+    if INDEX.with(|i| i.borrow().is_some()) {
+        save_index_text(&with_index(|i| i.render()));
+    }
 }
 
 fn same_device(a: &Path, b: &Path) -> bool {
@@ -1108,6 +1180,8 @@ fn row_factory(pane: Weak<Pane>) -> gtk::SignalListItemFactory {
         let name = label(&["name"]);
         name.set_hexpand(true);
         name.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+        // the name always keeps room for this many characters; other columns give way first
+        name.set_width_chars(16);
         let badge = label(&["badge"]);
         badge.set_xalign(0.5);
         let size = label(&["meta"]);
@@ -1115,6 +1189,7 @@ fn row_factory(pane: Weak<Pane>) -> gtk::SignalListItemFactory {
         size.set_xalign(1.0);
         let date = label(&["meta"]);
         date.set_width_chars(16);
+        date.set_ellipsize(gtk::pango::EllipsizeMode::End);
         date.set_xalign(1.0);
         for w in [&icon, &name, &badge, &size, &date] {
             row.append(w);

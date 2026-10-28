@@ -243,6 +243,16 @@ impl Filter {
         self.terms.is_empty()
     }
 
+    /// Whether a bare name passes the text and glob terms (other terms are ignored).
+    pub fn matches_name(&self, name: &str) -> bool {
+        let lower: Vec<char> = name.to_lowercase().chars().collect();
+        self.terms.iter().all(|t| match t {
+            Term::Text(s) => crate::model::matches_filter(name, s),
+            Term::Glob(p) => glob(p, &lower),
+            _ => true,
+        })
+    }
+
     /// Whether `e` passes; `now` is the current Unix time.
     pub fn matches(&self, e: &Entry, now: i64) -> bool {
         self.terms.iter().all(|t| term_matches(t, e, now))

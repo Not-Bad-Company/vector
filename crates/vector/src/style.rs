@@ -139,6 +139,9 @@ gridview > child:selected {{ border-left-color: {acc}; background: alpha({acc}, 
 .progress {{ min-height: 2px; }}
 progressbar trough {{ background: alpha({fg}, 0.08); min-height: 2px; border-radius: 0; }}
 progressbar progress {{ background: {acc}; min-height: 2px; border-radius: 0; }}
+.pickbar {{ border-top: 1px solid alpha({fg}, 0.08); padding: 6px 10px; }}
+.pickbar > .title {{ padding: 0 8px; }}
+.pickbar entry {{ margin: 0 8px; }}
 .cmdline {{ border-top: 1px solid alpha({fg}, 0.08); padding: 6px 10px; }}
 .cmdline entry {{ background: transparent; border: none; padding: 0 4px; min-height: 22px; }}
 .cmdline .prompt {{ color: {acc}; font-weight: bold; }}

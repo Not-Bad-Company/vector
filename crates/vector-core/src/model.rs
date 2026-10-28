@@ -36,6 +36,31 @@ pub struct DirModel {
     opts: ViewOptions,
     /// Names listed in the folder's `.hidden` file.
     hidden_names: std::collections::HashSet<String>,
+    /// File picker: only files matching one of these show (folders always do).
+    allow: Option<Vec<Allow>>,
+}
+
+/// One pattern of a file picker filter (xdg-desktop-portal: 0 = glob, 1 = MIME type).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Allow {
+    /// Case-insensitive glob on the name, like `*.png`.
+    Glob(String),
+    /// A MIME type or a supertype of the entry's, like `image/png` or `image/*`.
+    Mime(String),
+}
+
+impl Allow {
+    fn matches(&self, e: &Entry) -> bool {
+        match self {
+            Allow::Glob(g) => crate::filter::Filter::parse(g)
+                .map(|f| f.matches_name(&e.name))
+                .unwrap_or(false),
+            Allow::Mime(m) => match m.strip_suffix("/*") {
+                Some(top) => e.content_type.split('/').next() == Some(top),
+                None => e.content_type == *m || gio::content_type_is_a(&e.content_type, m),
+            },
+        }
+    }
 }
 
 impl DirModel {
@@ -46,6 +71,7 @@ impl DirModel {
             shown: Vec::new(),
             opts,
             hidden_names: Default::default(),
+            allow: None,
         }
     }
 
@@ -188,6 +214,12 @@ impl DirModel {
         }
     }
 
+    /// Restricts the files shown (file picker filters); `None` shows all.
+    pub fn set_allow(&mut self, allow: Option<Vec<Allow>>) {
+        self.allow = allow;
+        self.refilter();
+    }
+
     /// Hidden: a dotfile, a backup file, or listed in `.hidden`.
     pub fn is_hidden(&self, e: &Entry) -> bool {
         e.hidden || self.hidden_names.contains(&e.name)
@@ -202,7 +234,13 @@ impl DirModel {
         self.shown = (0..self.all.len())
             .filter(|&i| {
                 let e = &self.all[i];
-                (show_hidden || !self.is_hidden(e)) && filter.matches(e, now)
+                (show_hidden || !self.is_hidden(e))
+                    && filter.matches(e, now)
+                    && (e.is_dir()
+                        || self
+                            .allow
+                            .as_ref()
+                            .is_none_or(|a| a.iter().any(|x| x.matches(e))))
             })
             .collect();
     }
@@ -339,5 +377,24 @@ mod tests {
         assert_eq!(names(&m)[0], "Docs");
         assert_eq!(m.find("Docs").map(|e| e.size), Some(1_000));
         m.set_size("nope", 5);
+    }
+
+    #[test]
+    fn picker_allow_list() {
+        let mut m = sample();
+        m.set_allow(Some(vec![
+            Allow::Glob("*.TXT".into()),
+            Allow::Glob("b*".into()),
+        ]));
+        assert_eq!(names(&m), ["Docs", "a2.txt", "a10.txt", "b.txt"]);
+        m.set_allow(Some(vec![Allow::Glob("a1*".into())]));
+        assert_eq!(names(&m), ["Docs", "a10.txt"]);
+        let mut img = entry("p.png", Kind::File, 1, 1);
+        img.content_type = "image/png".into();
+        assert!(Allow::Mime("image/*".into()).matches(&img));
+        assert!(Allow::Mime("image/png".into()).matches(&img));
+        assert!(!Allow::Mime("video/*".into()).matches(&img));
+        m.set_allow(None);
+        assert_eq!(m.len(), 4);
     }
 }
