@@ -185,6 +185,12 @@ pub enum Action {
     EditFile,
     /// Copy the path of the selection, or of the folder, to the clipboard.
     CopyPath,
+    /// `X`: extract the archive(s) next to them, keeping the archive.
+    Extract,
+    /// `gX`: extract, then move the archive to the trash.
+    ExtractReplace,
+    /// `R`: the command line with `rename ` typed, for a pattern rename of the selection.
+    BatchRename,
     Quit,
 }
 
@@ -266,6 +272,9 @@ pub const BINDINGS: &[(&str, Action)] = &[
     ("M", Action::PinGlobal),
     ("e", Action::EditFile),
     ("Y", Action::CopyPath),
+    ("X", Action::Extract),
+    ("gX", Action::ExtractReplace),
+    ("R", Action::BatchRename),
     ("<F1>", Action::Help),
     ("<C-r>", Action::Reload),
     ("<F5>", Action::Reload),

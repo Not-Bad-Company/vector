@@ -36,6 +36,12 @@ pub enum Command {
     Hidden(Toggle),
     /// `:view [list|grid]`: show the folder as a list or a grid (no arg toggles).
     View(Option<bool>),
+    /// `:rename PATTERN`: rename the selection by a pattern (`photo-{n}`, `s/old/new/`).
+    BatchRename(String),
+    /// `:extract` (keep the archive) / `:extract!` (then trash it).
+    Extract {
+        replace: bool,
+    },
     Open(Option<String>),
     Term,
     /// `:e`: rename/delete/create in nvim as a buffer (oil style); `:e name`: open or create
@@ -93,8 +99,8 @@ pub const AGENTS: [&str; 7] = [
 
 /// Command names, in the order completion offers them.
 pub const COMMANDS: &[&str] = &[
-    "new", "mkdir", "find", "grep", "cd", "sort", "hidden", "view", "open", "term", "edit",
-    "touch", "filter", "flat", "biggest", "agent", "quit", "quitall",
+    "new", "mkdir", "find", "grep", "cd", "sort", "hidden", "view", "extract", "rename", "open",
+    "term", "edit", "touch", "filter", "flat", "biggest", "agent", "quit", "quitall",
 ];
 
 /// Parses what follows the `:` (a leading `:` is skipped too).
@@ -112,7 +118,7 @@ pub fn parse(line: &str) -> Result<Command, ParseError> {
     }
     let rest = line[split..].trim();
     let command = resolve(name)?;
-    if bang && command != "sort" {
+    if bang && !matches!(command, "sort" | "extract") {
         return Err(ParseError::BadArg {
             command,
             arg: "!".into(),
@@ -167,6 +173,8 @@ pub fn parse(line: &str) -> Result<Command, ParseError> {
                 arg: arg.into(),
             }),
         },
+        "extract" if arg.is_empty() => Ok(Command::Extract { replace: bang }),
+        "rename" => required(arg, "rename").map(|p| Command::BatchRename(p.to_string())),
         "view" => match arg.to_ascii_lowercase().as_str() {
             "" => Ok(Command::View(None)),
             "grid" => Ok(Command::View(Some(true))),
@@ -219,6 +227,10 @@ pub fn parse(line: &str) -> Result<Command, ParseError> {
 pub fn resolve(name: &str) -> Result<&'static str, ParseError> {
     if name == "q" {
         return Ok("quit");
+    }
+    // vim's :e, though :extract starts the same way
+    if name == "e" {
+        return Ok("edit");
     }
     if matches!(name, "qa" | "qall" | "quita" | "quital" | "quitall") {
         return Ok("quitall");
@@ -477,6 +489,12 @@ mod tests {
             Err(ParseError::BadArg { .. })
         ));
         assert_eq!(parse("view grid"), Ok(Command::View(Some(true))));
+        assert_eq!(parse("extract"), Ok(Command::Extract { replace: false }));
+        assert_eq!(
+            parse("rename photo-{n}"),
+            Ok(Command::BatchRename("photo-{n}".into()))
+        );
+        assert_eq!(parse("extract!"), Ok(Command::Extract { replace: true }));
         assert_eq!(parse("view list"), Ok(Command::View(Some(false))));
         assert_eq!(parse("view"), Ok(Command::View(None)));
         assert!(matches!(

@@ -112,7 +112,15 @@ const MAX_THUMBNAILERS: usize = 2;
 
 /// A thumbnail fitted into `size`×`size`, or `None` when the file can't be pictured (yet: an
 /// office document is pictured once it has been converted for viewing).
-pub async fn thumbnail(path: PathBuf, kind: Kind, size: i32) -> Option<gdk::Texture> {
+///
+/// Office documents not yet converted are converted first (in the background, one at a time,
+/// at low priority) while `wanted` says the thumbnail is still on screen.
+pub async fn thumbnail(
+    path: PathBuf,
+    kind: Kind,
+    size: i32,
+    wanted: impl Fn() -> bool,
+) -> Option<gdk::Texture> {
     let (p, k) = (path.clone(), kind);
     let (thumb, fresh, office) = gio::spawn_blocking(move || {
         let thumb = freedesktop(&p);
@@ -130,9 +138,10 @@ pub async fn thumbnail(path: PathBuf, kind: Kind, size: i32) -> Option<gdk::Text
     })
     .await
     .ok()?;
-    if kind == Kind::Office && office.is_none() {
-        return None;
-    }
+    let office = match (kind, office) {
+        (Kind::Office, None) => Some(self::office(path.clone(), wanted).await.ok()?),
+        (_, o) => o,
+    };
     if kind == Kind::Video && !fresh {
         while THUMBNAILERS.get() >= MAX_THUMBNAILERS {
             glib::timeout_future(std::time::Duration::from_millis(50)).await;
@@ -245,7 +254,11 @@ async fn convert(program: &str, path: &Path, out: &Path) -> Result<PathBuf, Stri
     .map_err(|e| e.to_string())?;
     let profile = glib::user_cache_dir().join("vector/view/libreoffice");
     let profile = gio::File::for_path(&profile).uri();
+    // low priority: conversions for the gallery shouldn't slow the desktop down
     let args = [
+        "nice",
+        "-n",
+        "15",
         program,
         &format!("-env:UserInstallation={profile}"),
         "--headless",

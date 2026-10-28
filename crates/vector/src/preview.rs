@@ -26,6 +26,34 @@ pub struct Preview {
     theme: vector_core::theme::Theme,
 }
 
+/// Files inside an archive larger than this are not copied out just to preview them.
+const ARCHIVE_PREVIEW_MAX: u64 = 64 << 20;
+/// Tar archives larger than this aren't read just to preview what is inside (enter opens them).
+const ARCHIVE_INDEX_MAX: u64 = 256 << 20;
+
+/// Details of an item inside an archive: what the archive's index says.
+fn archive_rows(e: &Entry) -> Vec<(String, String)> {
+    let mut rows = vec![("§archive".to_string(), String::new())];
+    if !e.is_dir() {
+        rows.push((
+            "size".into(),
+            format!("{} bytes", vector_core::details::group_digits(e.size)),
+        ));
+    }
+    rows.push((
+        "type".into(),
+        gio::content_type_get_description(&e.content_type).to_string(),
+    ));
+    if let Some(t) = glib::DateTime::from_unix_local(e.modified)
+        .ok()
+        .and_then(|d| d.format("%Y-%m-%d %H:%M").ok())
+    {
+        rows.push(("modified".into(), t.to_string()));
+    }
+    rows.push(("".into(), "read-only · X extracts".into()));
+    rows
+}
+
 /// Whether a refresh shows the same thing: same file, not modified since. A folder's size is
 /// left out: it changes while sizes are measured in the background, and the preview measures
 /// it itself.
@@ -105,13 +133,85 @@ impl Preview {
             return;
         };
         self.header.set_visible(true);
-        self.load_details(&entry, generation);
         self.icon.set_text(vector_core::icons::icon_for(
             &entry.name,
             entry.is_dir(),
             entry.symlink,
         ));
         self.title.set_text(&entry.name);
+        // inside an archive: what the archive says, and a preview of a read-only copy
+        if let Some((archive, inner)) = vector_core::archive::split(&entry.path)
+            .filter(|(_, inner)| !inner.as_os_str().is_empty())
+        {
+            self.fill_details(&archive_rows(&entry));
+            if entry.is_dir() {
+                self.show_archive_folder(entry, generation, archive, inner);
+            } else if entry.size <= ARCHIVE_PREVIEW_MAX {
+                let weak = Rc::downgrade(self);
+                glib::MainContext::default().spawn_local(async move {
+                    let copy = crate::thumbs::preview_work(move || {
+                        vector_core::archive::extract_one(&archive, &inner).ok()
+                    })
+                    .await
+                    .flatten();
+                    let Some(this) = weak.upgrade() else { return };
+                    if this.generation.get() != generation {
+                        return;
+                    }
+                    match copy {
+                        Some(path) => this.show_body(Entry { path, ..entry }, generation),
+                        None => this.no_preview(&entry),
+                    }
+                });
+            } else {
+                self.no_preview(&entry);
+            }
+            return;
+        }
+        // an archive file: what is inside, like a folder
+        if !entry.is_dir() && vector_core::archive::is_archive_name(&entry.path) {
+            self.load_details(&entry, generation);
+            // a zip has an index at the end; a big compressed tar would have to be unpacked
+            // whole just to show its contents
+            let zip = entry.extension().eq_ignore_ascii_case("zip");
+            if zip || entry.size <= ARCHIVE_INDEX_MAX {
+                let path = entry.path.clone();
+                self.show_archive_folder(entry, generation, path, PathBuf::new());
+            } else {
+                self.no_preview(&entry);
+            }
+            return;
+        }
+        // a name that says nothing (no extension): look at the contents first
+        if !entry.is_dir()
+            && (entry.content_type.is_empty() || gio::content_type_is_unknown(&entry.content_type))
+        {
+            let weak = Rc::downgrade(self);
+            glib::MainContext::default().spawn_local(async move {
+                let (p, t) = (entry.path.clone(), entry.content_type.clone());
+                let ct =
+                    crate::thumbs::preview_work(move || vector_core::entry::sniffed_type(&p, &t))
+                        .await
+                        .unwrap_or_default();
+                if let Some(this) = weak.upgrade()
+                    && this.generation.get() == generation
+                {
+                    let entry = Entry {
+                        content_type: ct,
+                        ..entry
+                    };
+                    this.load_details(&entry, generation);
+                    this.show_body(entry, generation);
+                }
+            });
+            return;
+        }
+        self.load_details(&entry, generation);
+        self.show_body(entry, generation);
+    }
+
+    /// The preview proper for a file or folder on disk (or a copy out of an archive).
+    fn show_body(self: &Rc<Self>, entry: Entry, generation: u64) {
         if entry.broken || entry.kind == Kind::Special {
             self.no_preview(&entry);
             return;
@@ -253,6 +353,69 @@ impl Preview {
         self.body.append(&scroll);
     }
 
+    /// The contents of a folder inside an archive (or of the archive itself).
+    fn show_archive_folder(
+        self: &Rc<Self>,
+        entry: Entry,
+        generation: u64,
+        archive: PathBuf,
+        inner: PathBuf,
+    ) {
+        let weak = Rc::downgrade(self);
+        glib::MainContext::default().spawn_local(async move {
+            let listed = crate::thumbs::preview_work(move || {
+                vector_core::archive::list(&archive, &inner).map_err(|e| e.to_string())
+            })
+            .await;
+            let Some(this) = weak.upgrade() else { return };
+            if this.generation.get() != generation {
+                return;
+            }
+            match listed {
+                Some(Ok(mut entries)) => {
+                    entries.sort_by(|a, b| {
+                        vector_core::sort::compare(a, b, &vector_core::sort::SortSpec::default())
+                    });
+                    this.fill_list(entries);
+                }
+                _ => this.no_preview(&entry),
+            }
+        });
+    }
+
+    /// A folder's contents under its title (at most 200, scrolling inside the preview).
+    fn fill_list(&self, mut entries: Vec<Entry>) {
+        entries.truncate(200);
+        // a long folder scrolls inside the preview; the details stay visible
+        let list = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        // inside the folder: lined up under its name, right of its icon
+        list.set_margin_start(30);
+        let scroll = gtk::ScrolledWindow::builder()
+            .child(&list)
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vexpand(true)
+            .build();
+        self.body.set_vexpand(true);
+        self.body.append(&scroll);
+        for child in entries {
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            let glyph = gtk::Label::new(Some(vector_core::icons::icon_for(
+                &child.name,
+                child.is_dir(),
+                child.symlink,
+            )));
+            let name = gtk::Label::new(Some(&child.name));
+            name.set_xalign(0.0);
+            name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            if child.hidden {
+                name.add_css_class("dim");
+            }
+            row.append(&glyph);
+            row.append(&name);
+            list.append(&row);
+        }
+    }
+
     fn show_folder(self: &Rc<Self>, entry: Entry, generation: u64) {
         let path = entry.path.clone();
         let weak = Rc::downgrade(self);
@@ -275,36 +438,8 @@ impl Preview {
                 return;
             };
             if this.generation.get() == generation {
-                if let Some(Ok(mut entries)) = result {
-                    entries.truncate(200);
-                    // a long folder scrolls inside the preview; the details stay visible
-                    let list = gtk::Box::new(gtk::Orientation::Vertical, 4);
-                    // inside the folder: lined up under its name, right of its icon
-                    list.set_margin_start(30);
-                    let scroll = gtk::ScrolledWindow::builder()
-                        .child(&list)
-                        .hscrollbar_policy(gtk::PolicyType::Never)
-                        .vexpand(true)
-                        .build();
-                    this.body.set_vexpand(true);
-                    this.body.append(&scroll);
-                    for child in entries {
-                        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-                        let glyph = gtk::Label::new(Some(vector_core::icons::icon_for(
-                            &child.name,
-                            child.is_dir(),
-                            child.symlink,
-                        )));
-                        let name = gtk::Label::new(Some(&child.name));
-                        name.set_xalign(0.0);
-                        name.set_ellipsize(gtk::pango::EllipsizeMode::End);
-                        if child.hidden {
-                            name.add_css_class("dim");
-                        }
-                        row.append(&glyph);
-                        row.append(&name);
-                        list.append(&row);
-                    }
+                if let Some(Ok(entries)) = result {
+                    this.fill_list(entries);
                 } else {
                     this.no_preview(&entry);
                 }

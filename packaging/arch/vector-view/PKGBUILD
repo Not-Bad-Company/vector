@@ -6,7 +6,7 @@ pkgdesc='Vector View: GTK4 viewer for images, videos (mpv), PDFs and office docu
 arch=('x86_64' 'aarch64')
 url='https://github.com/Not-Bad-Company/vector'
 license=('MIT')
-depends=('gtk4' 'glib2' 'gdk-pixbuf2' 'libjpeg-turbo' 'mpv' 'poppler-glib' 'cairo' 'libglvnd' 'graphene' 'glibc' 'libgcc' 'hicolor-icon-theme')
+depends=('gtk4' 'glib2' 'gdk-pixbuf2' 'libjpeg-turbo' 'libheif' 'xz' 'mpv' 'poppler-glib' 'cairo' 'libglvnd' 'graphene' 'glibc' 'libgcc' 'hicolor-icon-theme')
 makedepends=('cargo')
 optdepends=(
   'ttf-jetbrains-mono-nerd: the intended font and icons'

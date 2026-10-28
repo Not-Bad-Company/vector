@@ -5,7 +5,7 @@ set -euo pipefail
 # scratch space for the dummy tree, screenshots and a private config (never real files)
 DEV="${VECTOR_DEV:-${TMPDIR:-/tmp}/vector-dev}"
 out="$1"; mkdir -p $DEV/shots; keys="${2:-}"; dir="${3:-$DEV/tree}"; shift $(( $# < 3 ? $# : 3 ))
-bin="$(dirname "$0")/../target/release/vector-find"
+bin="$(dirname "$0")/../target/${PROFILE:-release}/vector-find"
 bin="$(realpath "$bin")"
 rm -rf "$out" $DEV/config/vector/settings.ini $DEV/state
 q() { printf '%q ' "$@"; }

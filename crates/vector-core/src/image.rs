@@ -28,7 +28,23 @@ pub fn dimensions(path: &Path) -> Option<(u32, u32, &'static str)> {
         .read_to_end(&mut head)
         .ok()?;
     let format = imagesize::image_type(&head).map_or("", format_name);
-    Some((size.width as u32, size.height as u32, format))
+    let (w, h) = (size.width as u32, size.height as u32);
+    // as shown: a photo stored sideways (EXIF orientation 5-8) is reported upright
+    if format == "JPEG" {
+        let mut buf = Vec::with_capacity(64 << 10);
+        File::open(path)
+            .ok()?
+            .take(64 << 10)
+            .read_to_end(&mut buf)
+            .ok()?;
+        if jpeg_exif(&buf)
+            .and_then(exif_orientation)
+            .is_some_and(|o| o >= 5)
+        {
+            return Some((h, w, format));
+        }
+    }
+    Some((w, h, format))
 }
 
 fn format_name(t: imagesize::ImageType) -> &'static str {
@@ -49,10 +65,11 @@ fn format_name(t: imagesize::ImageType) -> &'static str {
 }
 
 /// The image, at least `max` pixels on its long side when given (JPEGs are decoded at the
-/// smallest of 1/8, 1/4, 1/2 or full size that still covers it; PNGs are reduced after). Only
-/// JPEG and PNG; `None` for other formats or damaged files.
+/// smallest of 1/8, 1/4, 1/2 or full size that still covers it; HEIC/AVIF use their embedded
+/// thumbnail when it is big enough; the rest is reduced after). JPEG, PNG, WebP, HEIC and AVIF;
+/// `None` for other formats or damaged files.
 pub fn decode(path: &Path, max: Option<u32>) -> Option<Pixels> {
-    let mut head = [0u8; 8];
+    let mut head = [0u8; 16];
     {
         use std::io::Read;
         File::open(path).ok()?.read_exact(&mut head).ok()?;
@@ -61,6 +78,15 @@ pub fn decode(path: &Path, max: Option<u32>) -> Option<Pixels> {
         jpeg(path, max)?
     } else if head.starts_with(b"\x89PNG\r\n\x1a\n") {
         png(path)?
+    } else if head.starts_with(b"RIFF") && &head[8..12] == b"WEBP" {
+        webp(path)?
+    } else if &head[4..8] == b"ftyp"
+        && matches!(
+            &head[8..12],
+            b"heic" | b"heix" | b"heim" | b"heis" | b"mif1" | b"msf1" | b"avif" | b"avis"
+        )
+    {
+        heif(path, max)?
     } else {
         return None;
     };
@@ -130,22 +156,25 @@ fn jpeg(path: &Path, max: Option<u32>) -> Option<Pixels> {
         if w <= 0 || h <= 0 {
             return None;
         }
-        let num = match max {
-            Some(m) => [1, 2, 4, 8]
+        // libjpeg-turbo only takes reduced fractions (1/2, not 4/8)
+        let denom = match max {
+            Some(m) => [8, 4, 2, 1]
                 .into_iter()
-                .find(|n| (w.max(h) * n / 8) as u32 >= m)
-                .unwrap_or(8),
-            None => 8,
+                .find(|d| (w.max(h) / d) as u32 >= m)
+                .unwrap_or(1),
+            None => 1,
         };
-        let factor = ScalingFactor { num, denom: 8 };
-        if num != 8 {
-            tj3SetScalingFactor(tj.0, factor);
+        let factor = ScalingFactor { num: 1, denom };
+        if denom != 1 {
+            if tj3SetScalingFactor(tj.0, factor) != 0 {
+                return None;
+            }
             // previews: speed over the last bit of quality
             tj3Set(tj.0, TJPARAM_FASTDCT, 1);
             tj3Set(tj.0, TJPARAM_FASTUPSAMPLE, 1);
         }
         // TJSCALED: ceil(dimension * num / denom)
-        let (sw, sh) = ((w * num + 7) / 8, (h * num + 7) / 8);
+        let (sw, sh) = ((w + denom - 1) / denom, (h + denom - 1) / denom);
         let mut rgba = vec![0u8; sw as usize * sh as usize * 4];
         let r = tj3Decompress8(
             tj.0,
@@ -185,6 +214,161 @@ fn jpeg_exif(data: &[u8]) -> Option<&[u8]> {
         i += 2 + len;
     }
     None
+}
+
+fn webp(path: &Path) -> Option<Pixels> {
+    let mut d = image_webp::WebPDecoder::new(BufReader::new(File::open(path).ok()?)).ok()?;
+    let (w, h) = d.dimensions();
+    let alpha = d.has_alpha();
+    let mut buf = vec![0u8; d.output_buffer_size()?];
+    // animated: the first frame
+    d.read_image(&mut buf).ok()?;
+    let rgba = if alpha {
+        buf
+    } else {
+        buf.as_chunks::<3>()
+            .0
+            .iter()
+            .flat_map(|p| [p[0], p[1], p[2], 255])
+            .collect()
+    };
+    Some(Pixels {
+        width: w,
+        height: h,
+        rgba,
+    })
+}
+
+#[repr(C)]
+struct HeifError {
+    code: c_int,
+    subcode: c_int,
+    message: *const std::ffi::c_char,
+}
+
+#[link(name = "heif")]
+unsafe extern "C" {
+    fn heif_context_alloc() -> *mut c_void;
+    fn heif_context_free(ctx: *mut c_void);
+    fn heif_context_read_from_file(
+        ctx: *mut c_void,
+        filename: *const std::ffi::c_char,
+        options: *const c_void,
+    ) -> HeifError;
+    fn heif_context_get_primary_image_handle(ctx: *mut c_void, out: *mut *mut c_void) -> HeifError;
+    fn heif_image_handle_get_number_of_thumbnails(handle: *const c_void) -> c_int;
+    fn heif_image_handle_get_list_of_thumbnail_IDs(
+        handle: *const c_void,
+        ids: *mut u32,
+        count: c_int,
+    ) -> c_int;
+    fn heif_image_handle_get_thumbnail(
+        handle: *const c_void,
+        id: u32,
+        out: *mut *mut c_void,
+    ) -> HeifError;
+    fn heif_image_handle_get_width(handle: *const c_void) -> c_int;
+    fn heif_image_handle_get_height(handle: *const c_void) -> c_int;
+    fn heif_decode_image(
+        handle: *const c_void,
+        out: *mut *mut c_void,
+        colorspace: c_int,
+        chroma: c_int,
+        options: *const c_void,
+    ) -> HeifError;
+    fn heif_image_get_width(img: *const c_void, channel: c_int) -> c_int;
+    fn heif_image_get_height(img: *const c_void, channel: c_int) -> c_int;
+    fn heif_image_get_plane_readonly(
+        img: *const c_void,
+        channel: c_int,
+        stride: *mut c_int,
+    ) -> *const u8;
+    fn heif_image_release(img: *const c_void);
+    fn heif_image_handle_release(handle: *const c_void);
+}
+
+const HEIF_COLORSPACE_RGB: c_int = 1;
+const HEIF_CHROMA_INTERLEAVED_RGBA: c_int = 11;
+const HEIF_CHANNEL_INTERLEAVED: c_int = 10;
+
+/// HEIC and AVIF through libheif, in-process (rotation and mirroring applied by libheif). For
+/// a small `max`, the embedded thumbnail when it is at least that big.
+fn heif(path: &Path, max: Option<u32>) -> Option<Pixels> {
+    use std::os::unix::ffi::OsStrExt;
+    let name = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    // SAFETY: libheif objects created and released here, in order; the plane pointer is
+    // read only while its image is alive, within its reported size
+    unsafe {
+        let ctx = heif_context_alloc();
+        if ctx.is_null() {
+            return None;
+        }
+        let mut handle = std::ptr::null_mut();
+        let mut img = std::ptr::null_mut();
+        let mut thumb = std::ptr::null_mut();
+        let out = (|| {
+            if heif_context_read_from_file(ctx, name.as_ptr(), std::ptr::null()).code != 0
+                || heif_context_get_primary_image_handle(ctx, &mut handle).code != 0
+            {
+                return None;
+            }
+            let mut use_handle = handle as *const c_void;
+            if let Some(m) = max
+                && heif_image_handle_get_number_of_thumbnails(handle) > 0
+            {
+                let mut id = 0u32;
+                if heif_image_handle_get_list_of_thumbnail_IDs(handle, &mut id, 1) == 1
+                    && heif_image_handle_get_thumbnail(handle, id, &mut thumb).code == 0
+                    && heif_image_handle_get_width(thumb).max(heif_image_handle_get_height(thumb))
+                        as u32
+                        >= m
+                {
+                    use_handle = thumb;
+                }
+            }
+            if heif_decode_image(
+                use_handle,
+                &mut img,
+                HEIF_COLORSPACE_RGB,
+                HEIF_CHROMA_INTERLEAVED_RGBA,
+                std::ptr::null(),
+            )
+            .code
+                != 0
+            {
+                return None;
+            }
+            let w = heif_image_get_width(img, HEIF_CHANNEL_INTERLEAVED);
+            let h = heif_image_get_height(img, HEIF_CHANNEL_INTERLEAVED);
+            let mut stride: c_int = 0;
+            let plane = heif_image_get_plane_readonly(img, HEIF_CHANNEL_INTERLEAVED, &mut stride);
+            if plane.is_null() || w <= 0 || h <= 0 || stride < w * 4 {
+                return None;
+            }
+            let mut rgba = Vec::with_capacity(w as usize * h as usize * 4);
+            for y in 0..h as usize {
+                let row =
+                    std::slice::from_raw_parts(plane.add(y * stride as usize), w as usize * 4);
+                rgba.extend_from_slice(row);
+            }
+            Some(Pixels {
+                width: w as u32,
+                height: h as u32,
+                rgba,
+            })
+        })();
+        if !img.is_null() {
+            heif_image_release(img);
+        }
+        if !thumb.is_null() {
+            heif_image_handle_release(thumb);
+        }
+        if !handle.is_null() {
+            heif_image_handle_release(handle);
+        }
+        heif_context_free(ctx);
+        out
+    }
 }
 
 fn png(path: &Path) -> Option<Pixels> {

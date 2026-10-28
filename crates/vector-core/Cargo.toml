@@ -18,6 +18,13 @@ gix.workspace = true
 mlua = { workspace = true, optional = true }
 png = "0.18"
 imagesize = "0.15"
+image-webp = "0.2"
+zip = { version = "9", default-features = false, features = ["deflate", "bzip2", "zstd"] }
+tar = "0.4"
+flate2 = "1"
+xz2 = "0.1"
+zstd = "0.13"
+bzip2 = "0.6"
 
 [features]
 # the Lua config engine (vector's init.lua); off for vector-view, whose libmpv brings LuaJIT

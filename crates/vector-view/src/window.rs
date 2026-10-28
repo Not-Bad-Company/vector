@@ -679,7 +679,10 @@ impl Win {
             }
         };
         facts.push(playlist::size(item.size));
-        facts.push(playlist::ext(&item.path));
+        let ext = playlist::ext(&item.path);
+        if !ext.is_empty() {
+            facts.push(ext);
+        }
         match item.kind {
             Kind::Image if self.canvas.texture().is_some() => {
                 facts.push(format!("{}%", self.canvas.percent()))
@@ -1049,7 +1052,19 @@ impl Win {
                     if pic.widget_name() != key {
                         return;
                     }
-                    let Some(t) = crate::load::thumbnail(path.clone(), kind, 256).await else {
+                    // still showing this file in the gallery?
+                    let wanted = {
+                        let (pic, key, stack) =
+                            (pic.downgrade(), key.clone(), me.stack.downgrade());
+                        move || {
+                            pic.upgrade().is_some_and(|p| p.widget_name() == key)
+                                && stack.upgrade().is_some_and(|s| {
+                                    s.visible_child_name().as_deref() == Some("grid")
+                                })
+                        }
+                    };
+                    let Some(t) = crate::load::thumbnail(path.clone(), kind, 256, wanted).await
+                    else {
                         return;
                     };
                     let mut thumbs = me.thumbs.borrow_mut();

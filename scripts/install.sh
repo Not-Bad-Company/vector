@@ -35,6 +35,10 @@ if [ "$which" != view ]; then
     sed "s|@BIN@|$BIN|" data/org.freedesktop.FileManager1.service.in \
       > ~/.local/share/dbus-1/services/org.freedesktop.FileManager1.service
   fi
+  # a running file-picker backend keeps the old binary: stop it, the next dialog starts the new one
+  pkill -f -- "$BIN --portal" 2>/dev/null || true
+  pkill -f -- "$BIN --service" 2>/dev/null || true
+  pkill -f -- "$HOME/.local/bin/vector-fm --" 2>/dev/null || true
   if [ ! -f /usr/share/xdg-desktop-portal/portals/vector.portal ]; then
     echo "to use Vector Find as the file picker, run once:"
     echo "  sudo install -Dm644 $PWD/data/vector.portal /usr/share/xdg-desktop-portal/portals/vector.portal && systemctl --user restart xdg-desktop-portal"

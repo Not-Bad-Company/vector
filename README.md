@@ -106,6 +106,13 @@ Three rules shaped it:
 * **Sizes everywhere**: folder sizes are measured in the background and remembered between runs; sort by size, or list the biggest files below a folder, on the system disk or on every drive (`:biggest`)
 * **Preview pane** (`i`) for images, video, PDF, audio (waveform, click to seek, play/pause), source code with syntax highlighting, and folders, with details such as dimensions, duration, codecs, page count, line endings and encoding
 * **A filter language** (`/`): text, globs, file type, size, age, negation
+* **Archives as folders**: zip and tar (gz, xz, zst, bz2) open with `enter` like a folder, without
+  extracting anything; files inside preview and open from a private read-only copy; `y` and `p`
+  copy things out; `X` extracts next to the archive, `gX` extracts and moves the archive to the
+  trash. Nothing in an archive is run, nothing is written outside the chosen folder, and no
+  existing file is overwritten
+* **Rename by pattern**: select, press `R`, type `holiday-{n:2}` or `s/2024/2025/`, check the
+  list, apply; one `u` undoes it all
 * **Search**: fuzzy file names with `:find`, file contents with `:grep`, every file below a folder with `:flat`
 * **Git status** next to file names inside repositories
 * **Terminal panel** (`F4`): your shell under the file list, in the folder shown, following you while it sits at the prompt
@@ -188,19 +195,19 @@ rest of the folder with the arrow keys.
 On Arch Linux:
 
 ```sh
-sudo pacman -S gtk4 gtksourceview5 vte4 mpv poppler-glib ttf-jetbrains-mono-nerd ffmpeg poppler ffmpegthumbnailer
+sudo pacman -S gtk4 gtksourceview5 vte4 mpv poppler-glib libjpeg-turbo libheif ttf-jetbrains-mono-nerd ffmpeg poppler ffmpegthumbnailer
 ```
 
 On Fedora:
 
 ```sh
-sudo dnf install gtk4-devel gtksourceview5-devel vte291-gtk4-devel mpv-libs-devel poppler-glib-devel jetbrains-mono-fonts ffmpeg poppler-utils mpv
+sudo dnf install gtk4-devel gtksourceview5-devel vte291-gtk4-devel mpv-libs-devel poppler-glib-devel turbojpeg-devel libheif-devel xz-devel jetbrains-mono-fonts ffmpeg poppler-utils mpv
 ```
 
 On Debian (testing) and Ubuntu (25.10 or newer, for GTK 4.20):
 
 ```sh
-sudo apt install libgtk-4-dev libgtksourceview-5-dev libvte-2.91-gtk4-dev libmpv-dev libpoppler-glib-dev ffmpeg poppler-utils mpv
+sudo apt install libgtk-4-dev libgtksourceview-5-dev libvte-2.91-gtk4-dev libmpv-dev libpoppler-glib-dev libturbojpeg0-dev libheif-dev liblzma-dev ffmpeg poppler-utils mpv
 ```
 
 ### Installation
@@ -308,6 +315,8 @@ are on the keyboard. Press `?` in Vector Find for the same list.
 | `y` `x` `p` | copy, cut, paste (also `ctrl+c` `ctrl+x` `ctrl+v`, and with other apps) |
 | `d` / `D` | move to trash / delete permanently (asks first) |
 | `r` `F2` | rename |
+| `R` | rename the selection by a pattern (`:rename …`) |
+| `X` / `gX` | extract the archive next to it / and move the archive to the trash |
 | `u` `.` | undo, repeat |
 | `v` `space` `ctrl+a` | select a range, mark one (and move to the next), select all |
 | `e` | edit the file in `$EDITOR` |
@@ -346,6 +355,8 @@ are on the keyboard. Press `?` in Vector Find for the same list.
 | `:filter expr` | set the filter |
 | `:hidden [on\|off]` | hidden files |
 | `:view [list\|grid]` | list or grid view (no argument switches) |
+| `:rename PATTERN` | rename the selection: `photo-{n}` (`{n}`, `{n:3}`, `{N}`, `{name}`, `{ext}`, `{date}`; the old extension is kept unless the pattern has a dot or `{ext}`), or `s/old/new/` |
+| `:extract` `:extract!` | extract the archive(s); `!` then moves the archive to the trash |
 | `:open [name]` | open with the default app |
 | `:term` | terminal here |
 | `:agent [name]` | start a coding agent (claude, codex, gemini, aider…) in the terminal panel |
@@ -487,9 +498,10 @@ end)
 - [x] File picker portal and FileManager1
 - [x] Lua configuration
 - [x] Vector View: images, videos, PDFs and office documents
-- [ ] Archive browsing (zip, tar) as folders
+- [x] Archive browsing (zip, tar) as folders
+- [x] Batch rename with patterns
 - [ ] Remote locations (sftp, smb) in the sidebar
-- [ ] Batch tools: bulk rename with patterns, checksums
+- [ ] Checksums
 - [ ] Translations
 
 See the [open issues](https://github.com/Not-Bad-Company/vector/issues) for proposed features and

@@ -99,10 +99,50 @@ impl Entry {
     }
 }
 
+/// The type of a file whose name says nothing (no or unknown extension): sniffed from its
+/// first bytes. Any other type is returned as it is. Blocking (reads 4 KB).
+pub fn sniffed_type(path: &Path, name_type: &str) -> String {
+    if !name_type.is_empty() && !gio::content_type_is_unknown(name_type) {
+        return name_type.to_string();
+    }
+    use std::io::Read;
+    // only regular files: opening a fifo would wait forever
+    if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
+        return name_type.to_string();
+    }
+    let mut head = Vec::with_capacity(4096);
+    if let Ok(f) = std::fs::File::open(path) {
+        let _ = f.take(4096).read_to_end(&mut head);
+    }
+    gio::content_type_guess(Some(path), head.as_slice())
+        .0
+        .to_string()
+}
+
 /// Lowercase-free extension of a file name ("" when none); the caller compares case-insensitively.
 pub fn extension_of(name: &str) -> &str {
     match name.rfind('.') {
         Some(0) | None => "",
         Some(i) => &name[i + 1..],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn sniffs_files_without_a_telling_name() {
+        let d = tempfile::tempdir().unwrap();
+        let png = d.path().join("picture");
+        std::fs::write(
+            &png,
+            b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01\x08\x02\0\0\0",
+        )
+        .unwrap();
+        assert_eq!(
+            super::sniffed_type(&png, "application/octet-stream"),
+            "image/png"
+        );
+        // a type the name already gives is kept
+        assert_eq!(super::sniffed_type(&png, "text/plain"), "text/plain");
     }
 }

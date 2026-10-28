@@ -1291,22 +1291,41 @@ impl Win {
                 if paths.is_empty() {
                     return;
                 }
-                let cut = action == Action::Cut;
+                // an archive is read-only: taking things out of it is always a copy
+                let cut = action == Action::Cut && !pane.in_archive.get();
                 self.notify(&format!(
                     "{} {} · p or ctrl+v pastes",
                     if cut { "cut" } else { "copied" },
                     count_label(&paths)
                 ));
-                self.set_file_clipboard(&paths, cut);
+                // paths inside an archive mean nothing to other apps: keep them in vector
+                if !pane.in_archive.get() {
+                    self.set_file_clipboard(&paths, cut);
+                }
                 *self.register.borrow_mut() = Some(Register { paths, cut });
                 self.update_marks();
                 self.leave_visual();
                 pane.selection.borrow_mut().clear();
                 pane.push_selection(false);
             }
+            Action::Paste
+            | Action::Trash
+            | Action::DeletePermanently
+            | Action::Rename
+            | Action::Edit
+                if self.read_only() => {}
             Action::Paste => {
                 self.last_change.set(Some(action));
                 self.paste();
+            }
+            Action::BatchRename if self.read_only() => {}
+            Action::BatchRename => {
+                self.enter_line(Mode::Command);
+                self.cmd_entry.set_text("rename ");
+                self.cmd_entry.set_position(-1);
+            }
+            Action::Extract | Action::ExtractReplace => {
+                self.extract_archives(action == Action::ExtractReplace)
             }
             Action::Trash => {
                 self.last_change.set(Some(action));
@@ -1400,6 +1419,8 @@ impl Win {
             Action::FolderSize => self.folder_sizes(),
             Action::Edit => self.run_command(Command::Edit(None)),
             Action::EditFile => match pane.cursor_entry() {
+                // inside an archive: a read-only copy, in its viewer
+                Some(e) if !e.is_dir() && pane.in_archive.get() => self.open_file(&e.path),
                 Some(e) if !e.is_dir() => self.open_in_editor(&e.path),
                 Some(_) => self.flash("e edits files; ge edits the names in this folder"),
                 None => {}
@@ -1676,6 +1697,10 @@ impl Win {
         let pane = self.pane();
         let dir = pane.dir();
         match c {
+            Command::New(_) | Command::Mkdir(_) | Command::Edit(_) if self.read_only() => {}
+            Command::Extract { replace } => self.extract_archives(replace),
+            Command::BatchRename(_) if self.read_only() => {}
+            Command::BatchRename(pattern) => self.batch_rename(&pattern),
             Command::New(name) => {
                 self.ops.submit(Op::NewFile {
                     path: dir.join(name),
@@ -1806,7 +1831,38 @@ impl Win {
         if self.pick_file(path) {
             return;
         }
+        // an archive opens like a folder; nothing in it is extracted or run
+        if vector_core::archive::is_archive_name(path) && path.is_file() {
+            self.pane().open_dir(path);
+            return;
+        }
+        if let Some((archive, inner)) = vector_core::archive::split(path)
+            && !inner.as_os_str().is_empty()
+        {
+            self.open_from_archive(archive, inner);
+            return;
+        }
         let ct = self.content_type_of(path);
+        if ct.is_empty() || gio::content_type_is_unknown(&ct) {
+            // the name says nothing (no extension): look at the contents first
+            let weak = self.weak_self.borrow().clone();
+            let p = path.to_path_buf();
+            glib::spawn_future_local(async move {
+                let (q, t) = (p.clone(), ct.clone());
+                let sniffed = gio::spawn_blocking(move || vector_core::entry::sniffed_type(&q, &t))
+                    .await
+                    .unwrap_or(ct);
+                if let Some(win) = weak.upgrade() {
+                    win.open_typed(&p, sniffed);
+                }
+            });
+            return;
+        }
+        self.open_typed(path, ct);
+    }
+
+    /// Opens a file of a known type with its default app, or asks which app to use.
+    fn open_typed(&self, path: &Path, ct: String) {
         let Some(app) = gio::AppInfo::default_for_type(&ct, false) else {
             // nothing is set up for this type: ask instead of failing quietly
             self.open_with_dialog(path.to_path_buf(), &ct);
@@ -1834,8 +1890,146 @@ impl Win {
         });
     }
 
-    /// The type of a file: what the listing sniffed from its contents when it is in the folder
-    /// shown (a name without an extension is still a picture), else a guess from the name.
+    /// Inside an archive nothing can be changed; says so (and how to get the files out).
+    fn read_only(&self) -> bool {
+        let ro = self.pane().in_archive.get();
+        if ro {
+            self.flash("read-only: this is inside an archive · X extracts it, y and p copy out");
+        }
+        ro
+    }
+
+    /// Opens a file from inside an archive: a read-only copy of just that file, in a private
+    /// folder, handed to its usual app.
+    fn open_from_archive(&self, archive: PathBuf, inner: PathBuf) {
+        let weak = self.weak_self.borrow().clone();
+        glib::spawn_future_local(async move {
+            let r =
+                gio::spawn_blocking(move || vector_core::archive::extract_one(&archive, &inner))
+                    .await;
+            let Some(win) = weak.upgrade() else { return };
+            match r {
+                Ok(Ok(copy)) => win.open_file(&copy),
+                Ok(Err(e)) => win.flash_error(&format!("can't open from the archive: {e}")),
+                Err(_) => win.flash_error("can't open from the archive"),
+            }
+        });
+    }
+
+    /// Copies items from inside archives into `dest` (extracting just them).
+    fn copy_out(&self, paths: Vec<PathBuf>, dest: PathBuf) {
+        if vector_core::archive::split(&dest).is_some() {
+            self.flash("read-only: this is inside an archive");
+            return;
+        }
+        self.flash("copying out of the archive…");
+        let weak = self.weak_self.borrow().clone();
+        glib::spawn_future_local(async move {
+            let d = dest.clone();
+            let r = gio::spawn_blocking(move || -> std::io::Result<usize> {
+                let cancel = std::sync::atomic::AtomicBool::new(false);
+                let mut n = 0;
+                for p in &paths {
+                    let Some((archive, inner)) = vector_core::archive::split(p) else {
+                        continue;
+                    };
+                    let strip = inner.parent().unwrap_or(Path::new("")).to_path_buf();
+                    n += vector_core::archive::extract(&archive, &inner, &strip, &d, &cancel)?
+                        .written;
+                }
+                Ok(n)
+            })
+            .await;
+            let Some(win) = weak.upgrade() else { return };
+            match r {
+                Ok(Ok(n)) => {
+                    win.notify(&format!("copied {n} file{} out of the archive", plural(n)));
+                    win.pane().reload();
+                }
+                Ok(Err(e)) => win.flash_error(&format!("copy out of the archive: {e}")),
+                Err(_) => win.flash_error("copy out of the archive failed"),
+            }
+        });
+    }
+
+    /// `X` / `:extract`: extracts the archives under the cursor or selected, next to them (an
+    /// archive holding one folder becomes that folder, anything else a folder named after the
+    /// archive; never over existing files). `replace` then moves each archive to the trash.
+    /// Inside an archive, the selection is copied out next to the archive instead.
+    fn extract_archives(&self, replace: bool) {
+        let pane = self.pane();
+        let targets = pane.targets();
+        if pane.in_archive.get() {
+            let Some((archive, _)) = vector_core::archive::split(&pane.dir()) else {
+                return;
+            };
+            let dest = archive.parent().unwrap_or(Path::new("/")).to_path_buf();
+            let paths: Vec<PathBuf> = targets.into_iter().map(|e| e.path).collect();
+            if !paths.is_empty() {
+                self.copy_out(paths, dest);
+            }
+            return;
+        }
+        let archives: Vec<PathBuf> = targets
+            .into_iter()
+            .filter(|e| !e.is_dir() && vector_core::archive::is_archive_name(&e.path))
+            .map(|e| e.path)
+            .collect();
+        if archives.is_empty() {
+            self.flash("X extracts zip and tar archives");
+            return;
+        }
+        self.leave_visual();
+        for archive in archives {
+            let name = file_name(&archive);
+            self.flash(&format!("extracting {name}…"));
+            let weak = self.weak_self.borrow().clone();
+            glib::spawn_future_local(async move {
+                let a = archive.clone();
+                let r = gio::spawn_blocking(
+                    move || -> std::io::Result<(PathBuf, vector_core::archive::Extracted)> {
+                        let (dest, from) = vector_core::archive::plan(&a)?;
+                        std::fs::create_dir_all(&dest)?;
+                        let cancel = std::sync::atomic::AtomicBool::new(false);
+                        let r = vector_core::archive::extract(&a, &from, &from, &dest, &cancel)?;
+                        Ok((dest, r))
+                    },
+                )
+                .await;
+                let Some(win) = weak.upgrade() else { return };
+                match r {
+                    Ok(Ok((dest, r))) => {
+                        let n = r.written;
+                        let mut msg =
+                            format!("extracted {n} file{} to {}", plural(n), file_name(&dest));
+                        let left = r.skipped + r.existing;
+                        if left > 0 {
+                            msg.push_str(&format!(" · {left} left out (links or unsafe names)"));
+                        }
+                        // the archive only goes when everything in it came out
+                        if replace && left > 0 {
+                            msg.push_str(&format!(" · {name} kept"));
+                        } else if replace {
+                            match gio::File::for_path(&archive)
+                                .trash_future(glib::Priority::DEFAULT)
+                                .await
+                            {
+                                Ok(()) => msg.push_str(&format!(" · {name} moved to the trash")),
+                                Err(e) => msg.push_str(&format!(" · {name} kept: {}", e.message())),
+                            }
+                        }
+                        win.notify(&msg);
+                        win.pane().reload();
+                    }
+                    Ok(Err(e)) => win.flash_error(&format!("extract {name}: {e}")),
+                    Err(_) => win.flash_error(&format!("extract {name} failed")),
+                }
+            });
+        }
+    }
+
+    /// The type of a file as the listing has it (from its name), else a guess from the name.
+    /// Unknown types are sniffed from the contents by the caller.
     fn content_type_of(&self, path: &Path) -> String {
         let pane = self.pane();
         let model = pane.model.borrow();
@@ -1907,8 +2101,9 @@ impl Win {
             let (apps, launch) = (apps.clone(), launch.clone());
             button("open", "primary", move |win, text| {
                 let q = text.unwrap_or_default();
-                if let Some(app) = apps.iter().find(|a| matches(a, q.trim())) {
-                    launch(win, app);
+                match apps.iter().find(|a| matches(a, q.trim())) {
+                    Some(app) => launch(win, app),
+                    None => win.flash_error(&format!("no app matches \"{}\"", q.trim())),
                 }
             })
         };
@@ -2470,6 +2665,18 @@ impl Win {
 
     /// Copies or moves `paths` into `dest`, asking first when names are taken.
     fn transfer(&self, paths: Vec<PathBuf>, dest: PathBuf, cut: bool) {
+        // dropped or pasted into an archive: it is read-only
+        if vector_core::archive::split(&dest).is_some() {
+            self.flash("read-only: this is inside an archive");
+            return;
+        }
+        if paths
+            .iter()
+            .any(|p| vector_core::archive::split(p).is_some_and(|(_, i)| !i.as_os_str().is_empty()))
+        {
+            self.copy_out(paths, dest);
+            return;
+        }
         let weak = self.weak_self.borrow().clone();
         glib::spawn_future_local(async move {
             let (p, d) = (paths.clone(), dest.clone());
@@ -2907,6 +3114,71 @@ impl Win {
         *self.edit_poll.borrow_mut() = Some(id);
     }
 
+    /// `:rename PATTERN`: new names for the selection (or the item under the cursor), shown in
+    /// the same confirmation as `ge` and applied the same way (swaps and clashes handled, one
+    /// undo).
+    fn batch_rename(&self, pattern: &str) {
+        let pane = self.pane();
+        if pane.is_flat() {
+            self.flash_error("rename works in one folder; leave the flat view first (:flat)");
+            return;
+        }
+        let targets: std::collections::HashSet<String> =
+            pane.targets().into_iter().map(|e| e.name).collect();
+        if targets.is_empty() {
+            self.flash("select what to rename (v or space), then :rename photo-{n}");
+            return;
+        }
+        let model = pane.model.borrow();
+        let picked: Vec<&vector_core::entry::Entry> =
+            model.iter().filter(|e| targets.contains(&e.name)).collect();
+        let items: Vec<vector_core::rename::Item> = picked
+            .iter()
+            .map(|e| vector_core::rename::Item {
+                name: &e.name,
+                dir: e.is_dir(),
+                modified: e.modified,
+            })
+            .collect();
+        let new = match vector_core::rename::apply(pattern, &items) {
+            Ok(n) => n,
+            Err(e) => {
+                drop(model);
+                self.flash_error(&e);
+                return;
+            }
+        };
+        let renamed: std::collections::HashMap<&str, &str> = picked
+            .iter()
+            .zip(&new)
+            .map(|(e, n)| (e.name.as_str(), n.as_str()))
+            .collect();
+        let listed: Vec<edit::Listed> = model
+            .iter()
+            .enumerate()
+            .map(|(i, e)| edit::Listed {
+                id: i + 1,
+                name: e.name.clone(),
+                is_dir: e.is_dir(),
+            })
+            .collect();
+        // the buffer `ge` would show, with the new names typed in
+        let edited: Vec<edit::Listed> = listed
+            .iter()
+            .map(|l| edit::Listed {
+                id: l.id,
+                name: renamed
+                    .get(l.name.as_str())
+                    .map_or_else(|| l.name.clone(), |n| n.to_string()),
+                is_dir: l.is_dir,
+            })
+            .collect();
+        drop(model);
+        let dir = pane.dir();
+        let text = edit::render(&display_path(&dir), &edited);
+        self.finish_edit(&dir, &listed, &text);
+    }
+
     fn finish_edit(&self, dir: &Path, listed: &[edit::Listed], text: &str) {
         match edit::plan(listed, text) {
             Err(e) => self.flash_error(&format!("edit not applied: {e}")),
@@ -3045,7 +3317,8 @@ impl Win {
                     ("y x p", "copy, cut, paste (ctrl+c/x/v too)"),
                     ("d", "move to trash"),
                     ("D", "delete permanently"),
-                    ("r", "rename"),
+                    ("r R", "rename, rename by pattern"),
+                    ("X gX", "extract archive (gX: then trash it)"),
                     ("e", "edit file in $EDITOR"),
                     ("Y", "copy folder path"),
                     ("m M", "pin here, pin everywhere"),
@@ -3207,6 +3480,8 @@ impl Win {
             ("new-tab", Action::NewTab),
             ("pin-here", Action::PinHere),
             ("pin-global", Action::PinGlobal),
+            ("extract", Action::Extract),
+            ("extract-replace", Action::ExtractReplace),
         ];
         for &(name, action) in simple {
             let a = gio::SimpleAction::new(name, None);
@@ -3331,6 +3606,19 @@ impl Win {
         }
         if has_items {
             edit_items.append(Some("rename"), Some("win.rename"));
+        }
+        if targets
+            .iter()
+            .any(|e| !e.is_dir() && vector_core::archive::is_archive_name(&e.path))
+            || pane.in_archive.get()
+        {
+            edit_items.append(Some("extract here"), Some("win.extract"));
+            if !pane.in_archive.get() {
+                edit_items.append(
+                    Some("extract, archive to trash"),
+                    Some("win.extract-replace"),
+                );
+            }
         }
         menu.append_section(None, &edit_items);
         let more = gio::Menu::new();
@@ -3555,4 +3843,8 @@ fn resolve(cwd: &Path, typed: &str) -> PathBuf {
         }
     }
     out
+}
+
+fn plural(n: usize) -> &'static str {
+    if n == 1 { "" } else { "s" }
 }

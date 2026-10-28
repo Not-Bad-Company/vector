@@ -1,5 +1,6 @@
 //! vector-core: everything in vector that is not drawing.
 
+pub mod archive;
 pub mod bookmarks;
 pub mod command;
 pub mod details;
@@ -16,6 +17,7 @@ pub mod model;
 pub mod ops;
 pub mod pins;
 pub mod pool;
+pub mod rename;
 #[cfg(feature = "script")]
 pub mod script;
 pub mod search;

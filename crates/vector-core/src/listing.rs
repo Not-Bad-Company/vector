@@ -55,8 +55,14 @@ pub fn parse_hidden_file(text: &str) -> std::collections::HashSet<String> {
         .collect()
 }
 
-/// Starts listing `dir` on a worker thread.
+/// Starts listing `dir` on a worker thread. A folder inside a zip or tar archive (or the
+/// archive itself) is read from the archive's index, without extracting anything.
 pub fn spawn(dir: &Path) -> Listing {
+    // (a folder merely named like an archive is listed as a folder: split checks it's a file)
+    if dir.ancestors().any(crate::archive::is_archive_name) && crate::archive::split(dir).is_some()
+    {
+        return spawn_archive(dir);
+    }
     let (tx, rx) = async_channel::unbounded();
     let cancel = gio::Cancellable::new();
     let worker_cancel = cancel.clone();
@@ -85,6 +91,32 @@ pub fn spawn(dir: &Path) -> Listing {
             cancel,
         };
     }
+    Listing {
+        dir: dir.to_path_buf(),
+        events: rx,
+        cancel,
+    }
+}
+
+fn spawn_archive(dir: &Path) -> Listing {
+    let (tx, rx) = async_channel::unbounded();
+    let cancel = gio::Cancellable::new();
+    let path = dir.to_path_buf();
+    let _ = std::thread::Builder::new()
+        .name("vector-list".into())
+        .spawn(move || {
+            let last = match crate::archive::split(&path) {
+                Some((archive, inner)) => match crate::archive::list(&archive, &inner) {
+                    Ok(entries) => {
+                        let _ = tx.send_blocking(ListEvent::Batch(entries));
+                        ListEvent::Done
+                    }
+                    Err(e) => ListEvent::Error(format!("can't read the archive: {e}")),
+                },
+                None => ListEvent::Error("no such folder".into()),
+            };
+            let _ = tx.send_blocking(last);
+        });
     Listing {
         dir: dir.to_path_buf(),
         events: rx,

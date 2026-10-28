@@ -53,6 +53,21 @@ pub fn kind(p: &Path) -> Option<Kind> {
     }
 }
 
+/// The kind of a file without an extension, from its contents (its first 4 KB). Blocking.
+fn sniff(path: &Path) -> Option<Kind> {
+    if !ext(path).is_empty() {
+        return None;
+    }
+    let ct = vector_core::entry::sniffed_type(path, "");
+    match ct.as_str() {
+        "image/gif" => Some(Kind::Video),
+        "application/pdf" => Some(Kind::Pdf),
+        t if t.starts_with("image/") => Some(Kind::Image),
+        t if t.starts_with("video/") => Some(Kind::Video),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Order {
     Name,
@@ -107,7 +122,7 @@ pub struct Item {
 
 impl Item {
     pub fn new(path: PathBuf) -> Option<Item> {
-        let kind = kind(&path)?;
+        let kind = kind(&path).or_else(|| sniff(&path))?;
         let m = std::fs::metadata(&path).ok().filter(|m| m.is_file())?;
         let modified = m
             .modified()
@@ -281,6 +296,22 @@ mod tests {
         assert_eq!(Order::Type.next(), Order::Name);
         assert_eq!(Order::parse("newest\n"), Some(Order::Newest));
         assert_eq!(Order::parse("bogus"), None);
+    }
+
+    #[test]
+    fn files_without_extension_by_content() {
+        let d = std::env::temp_dir().join(format!("vector-view-sniff-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let png = d.join("picture");
+        std::fs::write(
+            &png,
+            b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01\x08\x02\0\0\0",
+        )
+        .unwrap();
+        std::fs::write(d.join("notes"), b"just text").unwrap();
+        assert_eq!(Item::new(png).map(|i| i.kind), Some(Kind::Image));
+        assert!(Item::new(d.join("notes")).is_none());
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]

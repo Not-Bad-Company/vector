@@ -92,6 +92,8 @@ fn parse_args() -> Result<Args, String> {
 }
 
 fn main() -> glib::ExitCode {
+    // copies of files viewed inside archives last run are not needed any more
+    std::thread::spawn(vector_core::archive::clear_cache);
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {

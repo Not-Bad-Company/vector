@@ -62,6 +62,8 @@ pub struct Pane {
     git: RefCell<HashMap<String, Badge>>,
     /// Folders whose size is known (their entry's `size` holds it).
     measured: RefCell<std::collections::HashSet<String>>,
+    /// The folder shown is inside a zip or tar archive (read-only, no sizes, git or watching).
+    pub in_archive: Cell<bool>,
     measure_cancel: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
     /// Free bytes on this folder's file system, and whether it is a network mount.
     pub fs_info: Cell<(Option<u64>, bool)>,
@@ -137,6 +139,7 @@ impl Pane {
             forward: RefCell::default(),
             git: RefCell::default(),
             measured: RefCell::default(),
+            in_archive: Cell::new(false),
             measure_cancel: RefCell::new(None),
             fs_info: Cell::new((None, false)),
             progress: Cell::new(None),
@@ -571,6 +574,8 @@ impl Pane {
             ..opts
         };
         *self.model.borrow_mut() = DirModel::new(dir, opts);
+        self.in_archive
+            .set(vector_core::archive::split(dir).is_some());
         self.model
             .borrow_mut()
             .set_pinned(crate::pinstore::in_folder(dir));
@@ -685,9 +690,11 @@ impl Pane {
                         p.listing.replace(None);
                         p.refresh();
                         p.progress.set(None);
-                        p.load_git();
-                        // free space, then folder sizes (skipped on network mounts)
-                        p.load_fs_info();
+                        if !p.in_archive.get() {
+                            p.load_git();
+                            // free space, then folder sizes (skipped on network mounts)
+                            p.load_fs_info();
+                        }
                         (p.on_event)(PaneEvent::Dir);
                         return;
                     }
