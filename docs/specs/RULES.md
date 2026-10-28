@@ -8,8 +8,8 @@
 - Doc comments on public items, short and plain. Match the style of `src/sort.rs`.
 - Implement the general logic. Never special-case a test input.
 
-## Privacy (hard limits)
+## Test data
 
-- Never list, open, read, search or index anything under `/home/daanh` except this source tree.
+- Tests and experiments never touch real user files.
 - Tests create their own files with `tempfile::tempdir()` (available as a dev-dependency).
-- For manual experiments use only `/tmp/claude-1000/vector-test/` (a generated dummy tree).
+- For manual experiments use the dummy tree from `scripts/make-test-tree.sh`.
