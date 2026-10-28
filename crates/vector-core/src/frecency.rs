@@ -188,7 +188,7 @@ mod tests {
         for _ in 0..(MAX_TOTAL as usize + 5) {
             f.visit(Path::new("/often"), 0);
         }
-        assert!(f.dirs.get(Path::new("/once")).is_none());
+        assert!(!f.dirs.contains_key(Path::new("/once")));
         assert!(f.dirs[Path::new("/often")].0 < MAX_TOTAL);
         f.forget(Path::new("/often"));
         assert!(f.top(1, 0, |_| false).is_empty());
