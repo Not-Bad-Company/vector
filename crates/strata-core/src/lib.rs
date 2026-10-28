@@ -5,6 +5,7 @@ pub mod edit;
 pub mod entry;
 pub mod git;
 pub mod icons;
+pub mod listing;
 pub mod model;
 pub mod search;
 pub mod selection;
