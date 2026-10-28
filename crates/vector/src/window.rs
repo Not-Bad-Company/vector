@@ -711,19 +711,24 @@ impl Win {
         // the full path, every part clickable, like nvim's winbar: home (or the root) first,
         // the folder itself last and bold
         let home = glib::home_dir();
-        let (mut acc, first, rest): (PathBuf, String, Vec<String>) =
-            match dir.strip_prefix(&home) {
-                Ok(below) => (
-                    home.clone(),
-                    "\u{F02DC} ~".into(),
-                    below.iter().map(|s| s.to_string_lossy().into_owned()).collect(),
-                ),
-                Err(_) => (
-                    PathBuf::from("/"),
-                    "\u{F02CA}".into(),
-                    dir.iter().skip(1).map(|s| s.to_string_lossy().into_owned()).collect(),
-                ),
-            };
+        let (mut acc, first, rest): (PathBuf, String, Vec<String>) = match dir.strip_prefix(&home) {
+            Ok(below) => (
+                home.clone(),
+                "\u{F02DC} ~".into(),
+                below
+                    .iter()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .collect(),
+            ),
+            Err(_) => (
+                PathBuf::from("/"),
+                "\u{F02CA}".into(),
+                dir.iter()
+                    .skip(1)
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .collect(),
+            ),
+        };
         let parts: Vec<String> = std::iter::once(first).chain(rest).collect();
         let n = parts.len();
         for (i, part) in parts.into_iter().enumerate() {
