@@ -37,10 +37,15 @@ pub enum PaneEvent {
     Focus,
     /// Listing error.
     Error(String),
+    /// A column header was clicked: sort by it (again: reverse).
+    SortBy(vector_core::sort::SortKey),
 }
 
 pub struct Pane {
     pub root: gtk::Box,
+    header: gtk::Box,
+    /// Why the folder couldn't be listed.
+    error: RefCell<Option<String>>,
     stack: gtk::Stack,
     list: gtk::ListView,
     grid: gtk::GridView,
@@ -108,10 +113,15 @@ impl Pane {
         stack.add_named(&empty, Some("empty"));
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
         root.add_css_class("pane");
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        header.add_css_class("colheader");
+        root.append(&header);
         root.append(&stack);
 
         let pane = Rc::new(Pane {
             root,
+            header,
+            error: RefCell::new(None),
             stack,
             list,
             grid,
@@ -159,6 +169,7 @@ impl Pane {
             });
         }
         pane.connect_signals();
+        pane.build_header();
         pane
     }
 
@@ -282,10 +293,16 @@ impl Pane {
         self.rebind();
     }
 
-    pub fn set_compact(&self, compact: bool) {
+    pub fn set_compact(self: &Rc<Self>, compact: bool) {
         if self.compact.replace(compact) != compact {
+            self.build_header();
             self.rebind();
         }
+    }
+
+    /// Re-draws the column titles (after the sort changed).
+    pub fn sort_changed(self: &Rc<Self>) {
+        self.build_header();
     }
 
     pub fn set_focused(&self, focused: bool) {
@@ -539,6 +556,7 @@ impl Pane {
         }
         self.progress.set(None);
         self.fs_info.set((None, false));
+        *self.error.borrow_mut() = None;
         *self.want_cursor.borrow_mut() = None;
         self.store.remove_all();
         self.loading.set(true);
@@ -637,6 +655,9 @@ impl Pane {
                         return;
                     }
                     Some(ListEvent::Error(e)) => {
+                        if p.model.borrow().total() == 0 {
+                            *p.error.borrow_mut() = Some(e.clone());
+                        }
                         p.loading.set(false);
                         p.listing.replace(None);
                         p.refresh();
@@ -802,22 +823,143 @@ impl Pane {
 
     fn update_stack(&self) {
         let empty = self.model.borrow().is_empty();
-        if empty && !self.loading.get() {
-            let filtered = !self.model.borrow().options().filter.is_empty();
-            self.empty.set_text(if filtered {
-                "no matches"
+        // a slow folder must not look empty, and an unreadable one must say why
+        let text = if let Some(e) = self.error.borrow().as_ref() {
+            Some(format!("can't open this folder: {e}"))
+        } else if empty && self.loading.get() {
+            Some(match self.progress.get() {
+                Some(n) => format!("scanning… {} files", vector_core::details::group_digits(n)),
+                None => "loading…".to_string(),
+            })
+        } else if empty {
+            let m = self.model.borrow();
+            Some(if !m.options().filter.is_empty() {
+                format!("nothing matches {}", m.options().filter)
+            } else if m.total() > 0 {
+                format!("{} hidden items · ctrl+h shows them", m.total())
             } else {
-                "empty folder"
-            });
-            self.stack.set_visible_child_name("empty");
+                "empty folder".to_string()
+            })
         } else {
-            self.stack
-                .set_visible_child_name(if self.grid_mode.get() { "grid" } else { "list" });
+            None
+        };
+        match text {
+            Some(t) => {
+                self.empty.set_text(&t);
+                self.stack.set_visible_child_name("empty");
+            }
+            None => self.stack.set_visible_child_name(if self.grid_mode.get() {
+                "grid"
+            } else {
+                "list"
+            }),
+        }
+        self.header.set_visible(!self.grid_mode.get());
+    }
+
+    /// Column titles over the list; the sorted one is highlighted with its direction, and a
+    /// click sorts by that column (again: reverse).
+    fn build_header(self: &Rc<Self>) {
+        use vector_core::sort::SortKey;
+        while let Some(c) = self.header.first_child() {
+            self.header.remove(&c);
+        }
+        let sort = self.model.borrow().options().sort;
+        let col = |text: &str, key: SortKey, width: i32, xalign: f32, hexpand: bool| {
+            let active = sort.key == key;
+            // name and type read a→z, size and date biggest/newest first
+            let natural_down = matches!(key, SortKey::Size | SortKey::Modified);
+            let arrow = if active {
+                if sort.reverse ^ natural_down {
+                    " ↓"
+                } else {
+                    " ↑"
+                }
+            } else {
+                ""
+            };
+            let l = gtk::Label::new(Some(&format!("{text}{arrow}")));
+            l.set_xalign(xalign);
+            l.set_hexpand(hexpand);
+            if width > 0 {
+                l.set_width_chars(width);
+            }
+            if active {
+                l.add_css_class("ok");
+            }
+            l.set_cursor_from_name(Some("pointer"));
+            let click = gtk::GestureClick::new();
+            let weak = Rc::downgrade(self);
+            click.connect_released(move |_, _, _, _| {
+                if let Some(p) = weak.upgrade() {
+                    (p.on_event)(PaneEvent::SortBy(key));
+                }
+            });
+            l.add_controller(click);
+            l
+        };
+        let icon = gtk::Label::new(None);
+        icon.add_css_class("icon");
+        self.header.append(&icon);
+        self.header
+            .append(&col("name", SortKey::Name, 16, 0.0, true));
+        let badge = gtk::Label::new(None);
+        badge.add_css_class("badge");
+        self.header.append(&badge);
+        self.header
+            .append(&col("size", SortKey::Size, 9, 1.0, false));
+        let date = col("modified", SortKey::Modified, 16, 1.0, false);
+        date.set_visible(!self.compact.get());
+        self.header.append(&date);
+    }
+
+    /// Gives a just-bound row the cursor mark if it is the cursor row.
+    fn register_row(&self, w: &gtk::Widget, pos: u32) {
+        let cur = {
+            let m = self.model.borrow();
+            self.selection.borrow().cursor(&m).map(|c| c as u32)
+        };
+        if cur == Some(pos) {
+            w.add_css_class("cursor");
+        } else {
+            w.remove_css_class("cursor");
+        }
+    }
+
+    /// Marks the cursor row (accent) apart from other selected rows (grey). Walks the rows
+    /// GTK has on screen; each knows the position it is bound to.
+    fn mark_cursor(&self) {
+        let cur = {
+            let m = self.model.borrow();
+            self.selection.borrow().cursor(&m).map(|c| c as u32)
+        };
+        for view in [
+            self.list.upcast_ref::<gtk::Widget>(),
+            self.grid.upcast_ref(),
+        ] {
+            let mut row = view.first_child();
+            while let Some(r) = row {
+                if let Some(content) = r.first_child() {
+                    // SAFETY: only ever set to Cell<u32> by the factories below
+                    let pos = unsafe {
+                        content
+                            .data::<Cell<u32>>("vector-pos")
+                            .map(|c| c.as_ref().get())
+                    };
+                    if pos.is_some() && pos == cur {
+                        content.add_css_class("cursor");
+                    } else {
+                        content.remove_css_class("cursor");
+                    }
+                }
+                row = r.next_sibling();
+            }
         }
     }
 
     /// Copies the core selection into the GTK selection and scrolls to the cursor.
     pub fn push_selection(&self, scroll: bool) {
+        self.mark_cursor();
         let model = self.model.borrow();
         let s = self.selection.borrow();
         let n = model.len() as u32;
@@ -1206,6 +1348,7 @@ fn row_factory(pane: Weak<Pane>) -> gtk::SignalListItemFactory {
             return;
         };
         set_pos(&row, item.position());
+        pane.register_row(&row, item.position());
         let labels: Vec<gtk::Label> =
             std::iter::successors(row.first_child(), |w| w.next_sibling())
                 .filter_map(|w| w.downcast::<gtk::Label>().ok())
@@ -1300,6 +1443,9 @@ fn tile_factory(pane: Weak<Pane>) -> gtk::SignalListItemFactory {
             return;
         };
         set_pos(&tile, item.position());
+        if let Some(p) = pane.upgrade() {
+            p.register_row(&tile, item.position());
+        }
         let Some(pic_stack) = tile.first_child().and_downcast::<gtk::Stack>() else {
             return;
         };

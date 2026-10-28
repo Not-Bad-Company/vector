@@ -21,7 +21,7 @@ window.vector {{
 .root {{ background: alpha({bg}, 0.97); }}
 window.vector * {{ border-radius: 0; outline: none; -gtk-icon-shadow: none; }}
 .title {{ color: {acc}; font-weight: bold; }}
-.dim {{ opacity: 0.5; }}
+.dim {{ opacity: 0.6; }}
 .faint {{ opacity: 0.32; }}
 .crit {{ color: {red}; }}
 .warn {{ color: {yellow}; }}
@@ -95,11 +95,18 @@ listview > row {{
   transition: background 120ms ease;
 }}
 listview > row:hover {{ background: alpha({fg}, 0.06); }}
-listview > row:selected {{ border-left-color: {acc}; background: alpha({acc}, 0.08); color: {fg}; }}
-listview > row:selected:hover {{ background: alpha({acc}, 0.13); }}
-.pane:not(.focused-pane) listview > row:selected {{ border-left-color: alpha({fg}, 0.5); background: alpha({fg}, 0.06); }}
+/* selected rows are grey (like the panels' .row.sel); the cursor row has the accent */
+/* the marks sit on the row's content: selected rows grey (like the panels' .row.sel), the
+   cursor row in the accent; an unfocused split pane shows its cursor grey */
+listview > row:selected {{ background: transparent; border-left-color: transparent; color: {fg}; }}
+listview > row:selected > .file {{ box-shadow: inset 2px 0 alpha({fg}, 0.45); background: alpha({fg}, 0.08); }}
+listview > row > .file.cursor {{ box-shadow: inset 2px 0 {acc}; background: alpha({acc}, 0.10); }}
+.pane:not(.focused-pane) listview > row > .file.cursor {{ box-shadow: inset 2px 0 alpha({fg}, 0.45); background: alpha({fg}, 0.06); }}
+.colheader {{ padding: 6px 16px 5px 16px; border-bottom: 1px solid alpha({fg}, 0.08); }}
+.colheader label {{ opacity: 0.6; }}
+.colheader label.ok {{ opacity: 1; }}
 .file {{ padding: 7px 16px 7px 14px; }}
-.file .meta {{ opacity: 0.5; }}
+.file .meta {{ opacity: 0.6; }}
 .file.hidden-file .name {{ opacity: 0.6; }}
 .file .badge {{ min-width: 14px; }}
 .file.marked .icon {{ color: {acc}; }}
@@ -118,7 +125,8 @@ gridview > child {{
   background: transparent;
 }}
 gridview > child:hover {{ background: alpha({fg}, 0.06); }}
-gridview > child:selected {{ border-left-color: {acc}; background: alpha({acc}, 0.08); color: {fg}; }}
+gridview > child:selected {{ background: alpha({fg}, 0.08); border-left-color: alpha({fg}, 0.45); color: {fg}; }}
+gridview > child > .tile.cursor {{ box-shadow: inset 0 -2px {acc}; }}
 .tile .big-icon {{ font-size: 34px; min-height: 64px; }}
 .tile picture {{ border: 1px solid alpha({fg}, 0.12); }}
 .drop-target {{ background: alpha({acc}, 0.10); }}

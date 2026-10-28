@@ -540,6 +540,11 @@ impl Win {
                 }
             }
             PaneEvent::Error(e) => self.flash_error(&e),
+            PaneEvent::SortBy(key) => {
+                let cur = pane.model.borrow().options().sort;
+                let reverse = cur.key == key && !cur.reverse;
+                self.run_command(Command::Sort { key, reverse });
+            }
         }
     }
 
@@ -681,10 +686,15 @@ impl Win {
             parts.push(format!("filter {}", m.options().filter));
         }
         let s = m.options().sort;
+        let down = s.reverse
+            ^ matches!(
+                s.key,
+                vector_core::sort::SortKey::Size | vector_core::sort::SortKey::Modified
+            );
         parts.push(format!(
-            "{}{}",
+            "{} {}",
             s.key.label(),
-            if s.reverse { " ↓" } else { "" }
+            if down { "↓" } else { "↑" }
         ));
         if let Some(free) = pane.fs_info.get().0 {
             parts.push(format!("{} free", crate::fmt::size(free)));
@@ -1314,6 +1324,7 @@ impl Win {
                 };
                 pane.model.borrow_mut().set_sort(spec);
                 pane.refresh();
+                pane.sort_changed();
                 self.save_settings();
             }
             Command::Hidden(t) => {
@@ -2090,29 +2101,34 @@ impl Win {
         glib::spawn_future_local(async move {
             let r = root.clone();
             let q = query.clone();
-            let res = gio::spawn_blocking(
-                move || -> Result<(Vec<Hit>, bool), String> {
-                    let run = |opts: &SearchOptions| -> Result<Vec<Hit>, String> {
-                        if content {
-                            search::grep(&r, &q, opts, &cancel, 500)
-                                .map(|v| v.into_iter().map(|h| (h.path, Some(h.line), h.text)).collect())
-                                .map_err(|e| e.to_string())
-                        } else {
-                            Ok(search::find(&r, &q, opts, &cancel, 500)
-                                .into_iter()
-                                .map(|h| (h.path, None, String::new()))
-                                .collect())
-                        }
-                    };
-                    let found = run(&opts)?;
-                    // nothing outside hidden folders: look inside them too (~/.local, ~/.config…)
-                    if found.is_empty() && !opts.hidden {
-                        let all = SearchOptions { hidden: true, ..opts.clone() };
-                        return Ok((run(&all)?, true));
+            let res = gio::spawn_blocking(move || -> Result<(Vec<Hit>, bool), String> {
+                let run = |opts: &SearchOptions| -> Result<Vec<Hit>, String> {
+                    if content {
+                        search::grep(&r, &q, opts, &cancel, 500)
+                            .map(|v| {
+                                v.into_iter()
+                                    .map(|h| (h.path, Some(h.line), h.text))
+                                    .collect()
+                            })
+                            .map_err(|e| e.to_string())
+                    } else {
+                        Ok(search::find(&r, &q, opts, &cancel, 500)
+                            .into_iter()
+                            .map(|h| (h.path, None, String::new()))
+                            .collect())
                     }
-                    Ok((found, false))
-                },
-            )
+                };
+                let found = run(&opts)?;
+                // nothing outside hidden folders: look inside them too (~/.local, ~/.config…)
+                if found.is_empty() && !opts.hidden {
+                    let all = SearchOptions {
+                        hidden: true,
+                        ..opts.clone()
+                    };
+                    return Ok((run(&all)?, true));
+                }
+                Ok((found, false))
+            })
             .await;
             let Some(win) = weak.upgrade() else { return };
             match res {
