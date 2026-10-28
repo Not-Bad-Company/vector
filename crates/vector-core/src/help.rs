@@ -76,7 +76,7 @@ pub const FIND: &[Topic] = &[
             ),
             (
                 "left",
-                "places (numbered: g1…g9), recent folders, drives, pins; b adds this folder to places, right click hides, renames or reorders",
+                "places (numbered: g1…g9), recent folders, drives, pins; b adds this folder to places; drag your own places to reorder them; right click hides or renames",
             ),
             (
                 "right",

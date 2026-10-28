@@ -3164,6 +3164,15 @@ impl Win {
                         if !report.created.is_empty() {
                             win.pane().select_paths(&report.created);
                         }
+                        // folder sizes above whatever changed are out of date now
+                        for p in &report.touched {
+                            crate::pane::sizes_changed(p);
+                        }
+                        if !report.touched.is_empty() {
+                            for p in win.all_panes() {
+                                p.remeasure();
+                            }
+                        }
                         win.update_status();
                     }
                 }

@@ -65,6 +65,31 @@ pub enum Op {
 }
 
 impl Op {
+    /// The paths this operation changes (for an undo: the paths it moves back or removes).
+    pub fn touched(&self) -> Vec<PathBuf> {
+        match self {
+            Op::Copy { sources, dest, .. } | Op::Move { sources, dest, .. } => {
+                let mut v = sources.clone();
+                v.push(dest.clone());
+                v
+            }
+            Op::Trash { paths } | Op::DeletePermanently { paths } => paths.clone(),
+            Op::Rename { path, .. } | Op::Mkdir { path } | Op::NewFile { path } => {
+                vec![path.clone()]
+            }
+            Op::ApplyEdit { dir, .. } => vec![dir.join(".")],
+            Op::Undo(u) => u
+                .steps
+                .iter()
+                .flat_map(|s| match s {
+                    UndoStep::Restore(t) => vec![t.orig.clone(), t.file.clone()],
+                    UndoStep::MoveBack { now, back } => vec![now.clone(), back.clone()],
+                    UndoStep::RemoveCreated(p) => vec![p.clone()],
+                })
+                .collect(),
+        }
+    }
+
     /// Short lowercase description for the status line.
     pub fn label(&self) -> String {
         fn n(v: &[PathBuf]) -> String {
@@ -179,6 +204,9 @@ pub struct Report {
     pub cancelled: bool,
     /// Whether an undo record was pushed.
     pub undoable: bool,
+    /// Every path the operation may have added, removed or changed (sources and
+    /// destinations), so remembered folder sizes above them can be dropped.
+    pub touched: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -238,7 +266,9 @@ impl OpQueue {
                         label: label.clone(),
                     });
                     let mut w = Worker::new(job.id, &tx, &job.cancel);
+                    let touched = job.op.touched();
                     let (mut report, record) = w.run(job.op);
+                    report.touched = touched;
                     report.label = label;
                     report.cancelled = job.cancel.is_cancelled();
                     if let Some(record) = record.filter(|u| !u.steps.is_empty())

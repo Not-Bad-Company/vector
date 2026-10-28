@@ -243,6 +243,52 @@ impl Sidebar {
         moved
     }
 
+    /// Your own places can be dragged onto each other to reorder them.
+    fn make_draggable(&self, row: &gtk::Box, path: &Path) {
+        let drag = gtk::DragSource::new();
+        drag.set_actions(gtk::gdk::DragAction::MOVE);
+        let value = format!("{PLACE_DRAG}{}", path.display());
+        drag.connect_prepare(move |_, _, _| {
+            Some(gtk::gdk::ContentProvider::for_value(&value.to_value()))
+        });
+        let r = row.downgrade();
+        drag.connect_drag_begin(move |src, _| {
+            if let Some(r) = r.upgrade() {
+                src.set_icon(Some(&gtk::WidgetPaintable::new(Some(&r))), 0, 0);
+            }
+        });
+        row.add_controller(drag);
+
+        let drop = gtk::DropTarget::new(glib::Type::STRING, gtk::gdk::DragAction::MOVE);
+        let target = path.to_path_buf();
+        let weak = self.weak.borrow().clone();
+        drop.connect_drop(move |d, value, _, _| {
+            if let Some(w) = d.widget() {
+                w.remove_css_class("drop-target");
+            }
+            let (Some(s), Ok(v)) = (weak.upgrade(), value.get::<String>()) else {
+                return false;
+            };
+            let Some(from) = v.strip_prefix(PLACE_DRAG).map(PathBuf::from) else {
+                return false;
+            };
+            s.edit_bookmarks(|t| bookmarks::move_to(t, &from, &target), "moved");
+            true
+        });
+        drop.connect_enter(|d, _, _| {
+            if let Some(w) = d.widget() {
+                w.add_css_class("drop-target");
+            }
+            gtk::gdk::DragAction::MOVE
+        });
+        drop.connect_leave(|d| {
+            if let Some(w) = d.widget() {
+                w.remove_css_class("drop-target");
+            }
+        });
+        row.add_controller(drop);
+    }
+
     /// Takes a standard place off the sidebar (`:places reset` brings it back).
     fn hide_place(&self, p: PathBuf) {
         self.hidden.borrow_mut().push(p);
@@ -377,6 +423,9 @@ impl Sidebar {
             let num = gtk::Label::new(None);
             num.add_css_class("place-num");
             row.append(&num);
+        }
+        if parent == &self.bookmark_rows {
+            self.make_draggable(&row, &path);
         }
         let click = gtk::GestureClick::new();
         let callback = self.on_open.clone();
@@ -927,6 +976,9 @@ impl Eject {
         }
     }
 }
+
+/// What a dragged place carries, before its path (so file drops elsewhere ignore it).
+const PLACE_DRAG: &str = "vector-place:";
 
 /// The standard places the user hid, one path per line.
 fn hidden_path() -> PathBuf {

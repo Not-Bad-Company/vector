@@ -194,6 +194,16 @@ impl SizeIndex {
         self.map.insert(p.to_path_buf(), (size, at));
     }
 
+    /// Something at `p` changed: every remembered folder above it (and `p` itself) is out of
+    /// date. Their sizes still show, but count as too old, so they are measured again.
+    pub fn stale_above(&mut self, p: &Path) {
+        for a in p.ancestors() {
+            if let Some(e) = self.map.get_mut(a) {
+                e.1 = 0;
+            }
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.map.len()
     }
@@ -219,5 +229,18 @@ mod index_tests {
         assert_eq!(back.len(), 2);
         assert_eq!(back.get(Path::new("/a b/c")), Some((42, 100)));
         assert!(SizeIndex::parse("").is_empty());
+    }
+
+    #[test]
+    fn a_change_makes_every_folder_above_it_stale() {
+        let mut i = SizeIndex::default();
+        for p in ["/home", "/home/u", "/home/u/big", "/home/u/other"] {
+            i.insert(Path::new(p), 10, 100);
+        }
+        i.stale_above(Path::new("/home/u/big/movie.mkv"));
+        assert_eq!(i.get(Path::new("/home/u/big")), Some((10, 0)));
+        assert_eq!(i.get(Path::new("/home/u")), Some((10, 0)));
+        assert_eq!(i.get(Path::new("/home")), Some((10, 0)));
+        assert_eq!(i.get(Path::new("/home/u/other")), Some((10, 100)));
     }
 }

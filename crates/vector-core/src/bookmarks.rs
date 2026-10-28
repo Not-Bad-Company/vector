@@ -129,6 +129,26 @@ pub fn shift(text: &str, path: &std::path::Path, up: bool) -> String {
     lines.iter().map(|l| format!("{l}\n")).collect()
 }
 
+/// Moves the bookmark of `path` to where the one of `target` is (dragging it onto that row):
+/// moving down it lands after it, moving up before it.
+pub fn move_to(text: &str, path: &std::path::Path, target: &std::path::Path) -> String {
+    let mut lines: Vec<&str> = text.lines().collect();
+    let find = |p: &std::path::Path, lines: &[&str]| {
+        lines
+            .iter()
+            .position(|l| line_path(l).as_deref() == Some(p))
+    };
+    let (Some(i), Some(j)) = (find(path, &lines), find(target, &lines)) else {
+        return text.to_string();
+    };
+    if i == j {
+        return text.to_string();
+    }
+    let line = lines.remove(i);
+    lines.insert(j, line);
+    lines.iter().map(|l| format!("{l}\n")).collect()
+}
+
 /// Returns the GTK bookmarks file under the user's XDG config directory.
 pub fn default_path() -> PathBuf {
     glib::user_config_dir().join("gtk-3.0").join("bookmarks")
@@ -220,6 +240,19 @@ mod tests {
             shift(&renamed, std::path::Path::new("/tmp/a b"), true),
             renamed
         );
+        let three = add(&renamed, std::path::Path::new("/c"), None);
+        let p = |s: &str| std::path::PathBuf::from(s);
+        let order = |t: &str| parse(t).into_iter().map(|b| b.path).collect::<Vec<_>>();
+        // down: lands after the target; up: before it
+        assert_eq!(
+            order(&move_to(&three, &p("/tmp/a b"), &p("/c"))),
+            [p("/tmp/new é"), p("/c"), p("/tmp/a b")]
+        );
+        assert_eq!(
+            order(&move_to(&three, &p("/c"), &p("/tmp/a b"))),
+            [p("/c"), p("/tmp/a b"), p("/tmp/new é")]
+        );
+        assert_eq!(move_to(&three, &p("/c"), &p("/nope")), three);
         let removed = remove(&renamed, std::path::Path::new("/tmp/a b"));
         assert!(!removed.contains("a%20b") && removed.contains("sftp://"));
     }

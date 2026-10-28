@@ -454,12 +454,14 @@ impl Pane {
             } else {
                 path
             };
+            // a folder changed since it was measured (something added or removed right in it)
+            let modified = self.model.borrow().find(&name).map_or(0, |e| e.modified);
             match cached_size(&real) {
                 Some((n, age)) => {
                     self.model.borrow_mut().set_size(&name, n);
                     self.objects.borrow_mut().remove(&name);
                     self.measured.borrow_mut().insert(name.clone());
-                    if explicit || age > SIZE_FRESH_FOR {
+                    if explicit || age > SIZE_FRESH_FOR || modified > now() - age {
                         todo.push((name, real));
                     }
                 }
@@ -513,6 +515,14 @@ impl Pane {
                 p.schedule_refresh();
             }
         });
+    }
+
+    /// After files changed: measures again the folders in view whose size is now out of date.
+    pub fn remeasure(self: &Rc<Self>) {
+        // the free space changed too; it then measures, as after a listing
+        if !self.loading.get() && !self.in_archive.get() && !self.is_biggest() {
+            self.load_fs_info();
+        }
     }
 
     fn is_measuring(&self) -> bool {
@@ -817,6 +827,8 @@ impl Pane {
         if touches_hidden_file {
             self.reload_hidden_names();
         }
+        // this folder's contents changed: the sizes remembered for it and above are old
+        sizes_changed(&self.dir());
         match change {
             DirChange::Upsert(e) => {
                 self.objects.borrow_mut().remove(&e.name);
@@ -1321,8 +1333,19 @@ fn cached_size(p: &Path) -> Option<(u64, i64)> {
     with_index(|i| i.get(p)).map(|(n, at)| (n, now() - at))
 }
 
+/// Something at `p` was added, removed or changed: the remembered sizes of the folders above
+/// it are measured again next time.
+pub fn sizes_changed(p: &Path) {
+    with_index(|i| i.stale_above(p));
+    queue_index_save();
+}
+
 fn remember_size(p: &Path, n: u64) {
     with_index(|i| i.insert(p, n, now()));
+    queue_index_save();
+}
+
+fn queue_index_save() {
     // write the index a few seconds after the last change, off the main thread
     if SAVE_QUEUED.with(|q| q.replace(true)) {
         return;
