@@ -1,0 +1,14 @@
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - run: pacman -Syu --noconfirm --needed gtk4 gtksourceview5 vte4 rust gcc pkgconf git
+      - uses: actions/checkout@v4
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: VECTOR_NO_CLIPBOARD=1 cargo test --locked

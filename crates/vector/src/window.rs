@@ -2676,7 +2676,7 @@ impl Win {
             self.flash_error(&format!("edit: {}", e.message()));
             return;
         }
-        self.flash("editing in nvim — save and quit to apply");
+        self.flash("editing in your editor — save and quit to apply");
         if let Some(id) = self.edit_poll.borrow_mut().take() {
             id.remove();
         }
@@ -2836,7 +2836,7 @@ impl Win {
                     ("d", "move to trash"),
                     ("D", "delete permanently"),
                     ("r", "rename"),
-                    ("e", "edit file in nvim"),
+                    ("e", "edit file in $EDITOR"),
                     ("Y", "copy folder path"),
                     ("m M", "pin here, pin everywhere"),
                     ("u .", "undo, repeat"),
@@ -2861,14 +2861,14 @@ impl Win {
                 &[
                     (":", "commands, tab completes"),
                     (":flat", "every file below this folder"),
-                    ("ge", "edit names in nvim"),
+                    ("ge", "edit names in $EDITOR"),
                     ("gs", "folder size"),
                     ("gm", "menu"),
                     ("gx", "terminal here"),
                     ("F4", "terminal panel (keeps its state)"),
                     (":agent", "claude, codex, aider… in this folder"),
                     ("ctrl+l", "type or paste a path"),
-                    (":e name", "open or create a file in nvim"),
+                    (":e name", "open or create a file in $EDITOR"),
                 ],
             ),
         ];
@@ -3127,7 +3127,7 @@ impl Win {
         more.append(Some("new folder"), Some("win.new-folder"));
         more.append(Some("new file"), Some("win.new-file"));
         more.append(Some("open terminal here"), Some("win.terminal"));
-        more.append(Some("edit names in nvim"), Some("win.edit"));
+        more.append(Some("edit names in editor"), Some("win.edit"));
         menu.append_section(None, &more);
         let only = gio::Menu::new();
         if let Some(e) = targets.first() {

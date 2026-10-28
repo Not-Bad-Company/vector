@@ -73,9 +73,13 @@ fn parse_args() -> Result<Args, String> {
             }
             "--service" => a.service = true,
             "--portal" => a.portal = true,
+            "-V" | "--version" => {
+                println!("vector-fm {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
             "-h" | "--help" => {
                 println!(
-                    "usage: vector-fm [FOLDER]\n\n  --service    serve org.freedesktop.FileManager1 (D-Bus activation)\n  --portal     serve the xdg-desktop-portal file chooser\n\ndevelopment:\n  --snapshot OUT.png [--after MS] [--keys KEYS] [--size WxH]"
+                    "usage: vector-fm [FOLDER]\n\n  --service    serve org.freedesktop.FileManager1 (D-Bus activation)\n  --portal     serve the xdg-desktop-portal file chooser\n  --version    print the version\n\ndevelopment:\n  --snapshot OUT.png [--after MS] [--keys KEYS] [--size WxH]"
                 );
                 std::process::exit(0);
             }

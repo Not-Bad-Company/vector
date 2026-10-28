@@ -557,14 +557,21 @@ impl Sidebar {
         self.rows
             .borrow_mut()
             .retain(|(_, row)| row.parent().as_ref() != Some(self.devices.upcast_ref()));
-        for mount in self.monitor.mounts() {
+        // test runs and screenshots leave the machine's own drives out
+        let hide = std::env::var_os("VECTOR_HIDE_DEVICES").is_some();
+        let (mounts, volumes) = if hide {
+            (Vec::new(), Vec::new())
+        } else {
+            (self.monitor.mounts(), self.monitor.volumes())
+        };
+        for mount in mounts {
             if let Some(path) = mount.root().path() {
                 let action =
                     (mount.can_unmount() || mount.can_eject()).then(|| Eject::Mount(mount.clone()));
                 self.add_row(&self.devices, path, &mount.name(), "\u{F02CA}", action);
             }
         }
-        for volume in self.monitor.volumes() {
+        for volume in volumes {
             if volume.get_mount().is_none() && volume.can_mount() {
                 let volume_mount = volume.clone();
                 let name = volume.name().to_string();
