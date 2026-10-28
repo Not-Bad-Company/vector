@@ -82,6 +82,7 @@ pub struct Win {
     pending_label: gtk::Label,
     message: gtk::Label,
     info: gtk::Label,
+    bar: Segments,
     progress: gtk::ProgressBar,
     cmd_box: gtk::Box,
     prompt: gtk::Label,
@@ -153,6 +154,7 @@ impl Win {
         let preview_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
         preview_box.append(preview.widget());
         let settings = crate::settings::Settings::load();
+        crate::pane::set_numbers(settings.numbers);
         preview_box.set_visible(settings.preview);
         // the preview can be dragged wider or narrower
         let body = gtk::Paned::new(gtk::Orientation::Horizontal);
@@ -176,9 +178,21 @@ impl Win {
         info.add_css_class("dim");
         let status = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         status.add_css_class("statusline");
-        for w in [&mode_label, &message, &pending_label, &info] {
+        status.add_css_class("lualine");
+        // nvim's lualine: the mode block, the git branch, the message; on the right what the
+        // folder holds, the sort, and the position in the mode's colour again
+        let bar = Segments::new(&status);
+        status.append(&mode_label);
+        status.append(&bar.after_mode);
+        status.append(&bar.branch);
+        status.append(&bar.after_branch);
+        for w in [&message, &pending_label, &info] {
             status.append(w);
         }
+        status.append(&bar.before_sort);
+        status.append(&bar.sort);
+        status.append(&bar.before_pos);
+        status.append(&bar.pos);
         let progress = gtk::ProgressBar::new();
         progress.add_css_class("progress");
         progress.set_visible(false);
@@ -288,6 +302,7 @@ impl Win {
                 pending_label,
                 message,
                 info,
+                bar,
                 progress,
                 cmd_box,
                 prompt,
@@ -693,24 +708,38 @@ impl Win {
         while let Some(c) = self.crumbs.first_child() {
             self.crumbs.remove(&c);
         }
-        // the full path, every part clickable
-        let mut acc = PathBuf::from("/");
-        let parts: Vec<String> = std::iter::once("/".to_string())
-            .chain(dir.iter().skip(1).map(|s| s.to_string_lossy().into_owned()))
-            .collect();
+        // the full path, every part clickable, like nvim's winbar: home (or the root) first,
+        // the folder itself last and bold
+        let home = glib::home_dir();
+        let (mut acc, first, rest): (PathBuf, String, Vec<String>) =
+            match dir.strip_prefix(&home) {
+                Ok(below) => (
+                    home.clone(),
+                    "\u{F02DC} ~".into(),
+                    below.iter().map(|s| s.to_string_lossy().into_owned()).collect(),
+                ),
+                Err(_) => (
+                    PathBuf::from("/"),
+                    "\u{F02CA}".into(),
+                    dir.iter().skip(1).map(|s| s.to_string_lossy().into_owned()).collect(),
+                ),
+            };
+        let parts: Vec<String> = std::iter::once(first).chain(rest).collect();
         let n = parts.len();
         for (i, part) in parts.into_iter().enumerate() {
             if i > 0 {
                 acc.push(&part);
-                // no separator right after the root "/"
-                if i > 1 {
-                    let sep = gtk::Label::new(Some("/"));
-                    sep.add_css_class("crumb-sep");
-                    self.crumbs.append(&sep);
-                }
+                let sep = gtk::Label::new(Some("\u{203A}"));
+                sep.add_css_class("crumb-sep");
+                self.crumbs.append(&sep);
             }
-            let b = gtk::Button::with_label(&part);
+            let b = gtk::Button::with_label(&if i == n - 1 && i > 0 {
+                format!("\u{F0770} {part}")
+            } else {
+                part
+            });
             b.add_css_class("link");
+            b.add_css_class("crumb");
             if i == n - 1 {
                 b.add_css_class("primary");
             }
@@ -745,7 +774,7 @@ impl Win {
                 (n, Some(parent)) if n > 0 => format!("{}/{name}", parent.to_string_lossy()),
                 _ => name,
             };
-            t.button.set_label(&format!("{} {label}", i + 1));
+            t.button.set_label(&format!("{} \u{F024B} {label}", i + 1));
             t.button.set_tooltip_text(Some(&display_path(&d)));
             if i == self.current.get() {
                 t.button.add_css_class("primary");
@@ -771,11 +800,15 @@ impl Win {
         };
         self.mode_label
             .set_text(picker_title.unwrap_or(mode.label()));
-        if mode == Mode::Normal && picker_title.is_none() {
-            self.mode_label.remove_css_class("active");
-        } else {
-            self.mode_label.add_css_class("active");
-        }
+        let colour = match (picker_title, mode) {
+            (Some("RENAME"), _) => "m-rename",
+            (Some("SIDEBAR"), _) => "m-sidebar",
+            (Some(_), _) | (None, Mode::Filter) => "m-filter",
+            (None, Mode::Normal) => "m-normal",
+            (None, Mode::Visual) => "m-visual",
+            (None, Mode::Command) => "m-command",
+        };
+        self.bar.set_mode(colour);
         self.pending_label
             .set_text(&self.keymap.borrow().pending_text());
         let pane = self.pane();
@@ -795,11 +828,14 @@ impl Win {
             }
         }
         let nsel = sel.selected_names().count();
-        if nsel > 0 {
-            parts.push(format!("{nsel} selected"));
+        self.bar.pos.set_text(&if nsel > 0 {
+            format!("{nsel} selected")
         } else if let (Some(i), false) = (sel.cursor(&m), m.is_empty()) {
-            parts.push(format!("{}/{}", i + 1, m.len()));
-        }
+            format!("{}/{}", i + 1, m.len())
+        } else {
+            "0/0".into()
+        });
+        self.bar.set_branch(pane.branch.borrow().as_deref());
         if let Some(n) = pane.progress.get() {
             parts.push(format!(
                 "scanning {} files",
@@ -829,7 +865,9 @@ impl Win {
         } else {
             s.key.label()
         };
-        parts.push(format!("{key} {}", if down { "↓" } else { "↑" }));
+        self.bar
+            .sort
+            .set_text(&format!("{key} {}", if down { "↓" } else { "↑" }));
         if let Some(free) = pane.fs_info.get().0 {
             parts.push(format!("{} free", crate::fmt::size(free)));
         }
@@ -884,6 +922,7 @@ impl Win {
             terminal: self.term.is_open(),
             #[cfg(not(feature = "terminal"))]
             terminal: false,
+            numbers: crate::pane::numbers(),
         };
         if *self.settings.borrow() != s {
             s.save();
@@ -1829,6 +1868,20 @@ impl Win {
                 } else {
                     "hiding hidden files"
                 });
+            }
+            Command::Number(t) => {
+                let on = match t {
+                    Toggle::Toggle => !crate::pane::numbers(),
+                    Toggle::On => true,
+                    Toggle::Off => false,
+                };
+                crate::pane::set_numbers(on);
+                for tab in self.tabs.borrow().iter() {
+                    for p in tab.panes.borrow().iter() {
+                        p.numbers_changed();
+                    }
+                }
+                self.save_settings();
             }
             Command::View(grid) => {
                 let grid = grid.unwrap_or(!pane.is_grid());
@@ -3939,4 +3992,97 @@ fn resolve(cwd: &Path, typed: &str) -> PathBuf {
 
 fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
+}
+
+/// The statusline's coloured blocks and the slanted edges between them.
+struct Segments {
+    status: gtk::Box,
+    after_mode: gtk::DrawingArea,
+    branch: gtk::Label,
+    after_branch: gtk::DrawingArea,
+    before_sort: gtk::DrawingArea,
+    sort: gtk::Label,
+    before_pos: gtk::DrawingArea,
+    pos: gtk::Label,
+}
+
+impl Segments {
+    fn new(status: &gtk::Box) -> Segments {
+        let seg = |classes: &[&str]| {
+            let l = gtk::Label::new(None);
+            for c in classes {
+                l.add_css_class(c);
+            }
+            l
+        };
+        Segments {
+            status: status.clone(),
+            after_mode: slant(false, &["from-mode"]),
+            branch: seg(&["seg"]),
+            after_branch: slant(false, &["from-seg"]),
+            before_sort: slant(true, &["to-seg"]),
+            sort: seg(&["seg"]),
+            before_pos: slant(true, &["to-mode", "on-seg"]),
+            pos: seg(&["zone"]),
+        }
+    }
+
+    /// `m-normal`, `m-visual`…: the colour of the mode block and the position block.
+    fn set_mode(&self, class: &str) {
+        for c in [
+            "m-normal",
+            "m-visual",
+            "m-command",
+            "m-filter",
+            "m-sidebar",
+            "m-rename",
+        ] {
+            if c != class {
+                self.status.remove_css_class(c);
+            }
+        }
+        self.status.add_css_class(class);
+        self.after_mode.queue_draw();
+        self.before_pos.queue_draw();
+    }
+
+    fn set_branch(&self, branch: Option<&str>) {
+        self.branch
+            .set_text(&branch.map(|b| format!("\u{E725} {b}")).unwrap_or_default());
+        self.branch.set_visible(branch.is_some());
+        self.after_branch.set_visible(branch.is_some());
+        // the mode block slants into the branch block, or straight into the bar
+        if branch.is_some() {
+            self.after_mode.add_css_class("on-seg");
+        } else {
+            self.after_mode.remove_css_class("on-seg");
+        }
+    }
+}
+
+/// A slanted edge between two statusline blocks, drawn in its CSS `color` over its CSS
+/// background: `\` after a block on the left, `/` before one on the right.
+fn slant(right: bool, classes: &[&str]) -> gtk::DrawingArea {
+    let area = gtk::DrawingArea::new();
+    area.add_css_class("slant");
+    for c in classes {
+        area.add_css_class(c);
+    }
+    area.set_content_width(10);
+    area.set_draw_func(move |area, cr, w, h| {
+        let (w, h) = (w as f64, h as f64);
+        cr.set_source_color(&area.color());
+        if right {
+            cr.move_to(w, 0.0);
+            cr.line_to(w, h);
+            cr.line_to(0.0, h);
+        } else {
+            cr.move_to(0.0, 0.0);
+            cr.line_to(w, 0.0);
+            cr.line_to(0.0, h);
+        }
+        cr.close_path();
+        let _ = cr.fill();
+    });
+    area
 }

@@ -24,6 +24,12 @@ pub struct Theme {
     pub color2: String,
     /// Yellow, used for warnings.
     pub color3: String,
+    /// Blue.
+    pub color4: String,
+    /// Magenta.
+    pub color5: String,
+    /// Cyan.
+    pub color6: String,
 }
 
 impl Default for Theme {
@@ -35,6 +41,9 @@ impl Default for Theme {
             color1: "#bf616a".into(),
             color2: "#a3be8c".into(),
             color3: "#ebcb8b".into(),
+            color4: "#81a1c1".into(),
+            color5: "#b48ead".into(),
+            color6: "#88c0d0".into(),
         }
     }
 }
@@ -54,6 +63,9 @@ impl Theme {
                 "color1" => &mut theme.color1,
                 "color2" => &mut theme.color2,
                 "color3" => &mut theme.color3,
+                "color4" => &mut theme.color4,
+                "color5" => &mut theme.color5,
+                "color6" => &mut theme.color6,
                 _ => continue,
             };
             *slot = value;

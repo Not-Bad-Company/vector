@@ -60,6 +60,8 @@ pub struct Pane {
     back: RefCell<Vec<PathBuf>>,
     forward: RefCell<Vec<PathBuf>>,
     git: RefCell<HashMap<String, Badge>>,
+    /// The git branch this folder is on, for the statusline.
+    pub branch: RefCell<Option<String>>,
     /// Folders whose size is known (their entry's `size` holds it).
     measured: RefCell<std::collections::HashSet<String>>,
     /// The folder shown is inside a zip or tar archive (read-only, no sizes, git or watching).
@@ -142,6 +144,7 @@ impl Pane {
             back: RefCell::default(),
             forward: RefCell::default(),
             git: RefCell::default(),
+            branch: RefCell::default(),
             measured: RefCell::default(),
             in_archive: Cell::new(false),
             sort_before_trash: Cell::new(None),
@@ -616,6 +619,7 @@ impl Pane {
         *self.selection.borrow_mut() = Selection::default();
         self.objects.borrow_mut().clear();
         self.git.borrow_mut().clear();
+        self.branch.borrow_mut().take();
         self.measured.borrow_mut().clear();
         if let Some(c) = self.measure_cancel.borrow_mut().take() {
             c.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -784,12 +788,22 @@ impl Pane {
         let weak = Rc::downgrade(self);
         glib::spawn_future_local(async move {
             let d = dir.clone();
-            let Ok(Some(badges)) = gio::spawn_blocking(move || vector_core::git::badges(&d)).await
+            let Ok((branch, badges)) = gio::spawn_blocking(move || {
+                (vector_core::git::branch(&d), vector_core::git::badges(&d))
+            })
+            .await
             else {
                 return;
             };
             let Some(p) = weak.upgrade() else { return };
-            if p.dir() == dir && !badges.is_empty() {
+            if p.dir() != dir {
+                return;
+            }
+            if branch.is_some() {
+                *p.branch.borrow_mut() = branch;
+                (p.on_event)(PaneEvent::Cursor);
+            }
+            if let Some(badges) = badges.filter(|b| !b.is_empty()) {
                 *p.git.borrow_mut() = badges;
                 p.rebind();
             }
@@ -1006,6 +1020,12 @@ impl Pane {
             }
             return;
         }
+        if numbers() {
+            let lnum = gtk::Label::new(None);
+            lnum.add_css_class("lnum");
+            lnum.set_width_chars(LNUM_CHARS);
+            self.header.append(&lnum);
+        }
         let icon = gtk::Label::new(None);
         icon.add_css_class("icon");
         self.header.append(&icon);
@@ -1057,11 +1077,13 @@ impl Pane {
             let m = self.model.borrow();
             self.selection.borrow().cursor(&m).map(|c| c as u32)
         };
-        if cur == Some(pos) {
-            w.add_css_class("cursor");
-        } else {
-            w.remove_css_class("cursor");
-        }
+        paint_row(w, Some(pos), cur);
+    }
+
+    /// The line numbers were switched on or off.
+    pub fn numbers_changed(self: &Rc<Self>) {
+        self.build_header();
+        self.rebind();
     }
 
     /// Marks the cursor row (accent) apart from other selected rows (grey). Walks the rows
@@ -1078,12 +1100,7 @@ impl Pane {
             let mut row = view.first_child();
             while let Some(r) = row {
                 if let Some(content) = r.first_child() {
-                    let pos = position_of(&content);
-                    if pos.is_some() && pos == cur {
-                        content.add_css_class("cursor");
-                    } else {
-                        content.remove_css_class("cursor");
-                    }
+                    paint_row(&content, position_of(&content), cur);
                 }
                 row = r.next_sibling();
             }
@@ -1466,6 +1483,75 @@ fn badge_text(b: Option<Badge>) -> (&'static str, &'static str) {
     }
 }
 
+/// Whether list rows carry relative line numbers, like nvim's `relativenumber` (`:number`).
+static NUMBERS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Width of the line number gutter, in characters.
+const LNUM_CHARS: i32 = 3;
+
+pub fn numbers() -> bool {
+    NUMBERS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn set_numbers(on: bool) {
+    NUMBERS.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Marks the cursor row and numbers the row: its own number on the cursor row, the distance
+/// to the cursor on the others (what `5j` would take).
+fn paint_row(w: &gtk::Widget, pos: Option<u32>, cur: Option<u32>) {
+    if pos.is_some() && pos == cur {
+        w.add_css_class("cursor");
+    } else {
+        w.remove_css_class("cursor");
+    }
+    let Some(lnum) = w
+        .first_child()
+        .filter(|c| c.has_css_class("lnum"))
+        .and_downcast::<gtk::Label>()
+    else {
+        return;
+    };
+    let text = match (pos, cur) {
+        (Some(p), Some(c)) if p == c => (p + 1).to_string(),
+        (Some(p), Some(c)) => p.abs_diff(c).to_string(),
+        (Some(p), None) => (p + 1).to_string(),
+        _ => String::new(),
+    };
+    lnum.set_text(&text);
+}
+
+/// Colours a row or tile by what the file is (folder, image, video…), from the theme.
+fn set_kind(w: &gtk::Widget, e: &Entry) {
+    use vector_core::filter::Class;
+    for (n, _) in Class::ALL {
+        w.remove_css_class(&format!("k-{n}"));
+    }
+    w.remove_css_class("k-link");
+    if e.symlink {
+        w.add_css_class("k-link");
+    }
+    if let Some(c) = Class::of(e) {
+        w.add_css_class(&format!("k-{}", c.name()));
+    }
+}
+
+/// Small sizes fade, big ones stand out: yellow from 1 GB, red from 10 GB.
+fn size_class(e: &Entry, text: &str) -> Option<&'static str> {
+    const GB: u64 = 1 << 30;
+    if text.is_empty() || e.broken {
+        None
+    } else if e.size >= 10 * GB {
+        Some("sz-huge")
+    } else if e.size >= GB {
+        Some("sz-big")
+    } else if e.size < 1 << 20 {
+        Some("sz-small")
+    } else {
+        None
+    }
+}
+
 fn row_factory(pane: Weak<Pane>) -> gtk::SignalListItemFactory {
     let f = gtk::SignalListItemFactory::new();
     let p = pane.clone();
@@ -1475,6 +1561,9 @@ fn row_factory(pane: Weak<Pane>) -> gtk::SignalListItemFactory {
         };
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         row.add_css_class("file");
+        let lnum = label(&["lnum"]);
+        lnum.set_width_chars(LNUM_CHARS);
+        lnum.set_xalign(1.0);
         let icon = label(&["icon"]);
         let name = label(&["name"]);
         name.set_hexpand(true);
@@ -1493,7 +1582,7 @@ fn row_factory(pane: Weak<Pane>) -> gtk::SignalListItemFactory {
         date.set_xalign(1.0);
         let dot = label(&["sep-dot"]);
         dot.set_text("·");
-        for w in [&icon, &name, &badge, &size, &dot, &date] {
+        for w in [&lnum, &icon, &name, &badge, &size, &dot, &date] {
             row.append(w);
         }
         item.set_child(Some(&row));
@@ -1507,14 +1596,16 @@ fn row_factory(pane: Weak<Pane>) -> gtk::SignalListItemFactory {
         else {
             return;
         };
-        pane.register_row(&row, item.position());
         let labels: Vec<gtk::Label> =
             std::iter::successors(row.first_child(), |w| w.next_sibling())
                 .filter_map(|w| w.downcast::<gtk::Label>().ok())
                 .collect();
-        let [icon, name, badge, size, dot, date] = labels.as_slice() else {
+        let [lnum, icon, name, badge, size, dot, date] = labels.as_slice() else {
             return;
         };
+        lnum.set_visible(numbers());
+        pane.register_row(&row, item.position());
+        set_kind(&row, &e);
         match crate::iconstore::get(&e.path) {
             Some(g) => icon.set_text(&g),
             None => icon.set_text(vector_core::icons::icon_for(&e.name, e.is_dir(), e.symlink)),
@@ -1561,6 +1652,12 @@ fn row_factory(pane: Weak<Pane>) -> gtk::SignalListItemFactory {
             fmt::size(e.size)
         };
         size.set_text(&s);
+        for c in ["sz-small", "sz-big", "sz-huge"] {
+            size.remove_css_class(c);
+        }
+        if let Some(c) = size_class(&e, &s) {
+            size.add_css_class(c);
+        }
         // the date column shows the date the folder is sorted by
         let by_added = pane.model.borrow().options().sort.key == vector_core::sort::SortKey::Added;
         date.set_text(&fmt::date(if by_added { e.added } else { e.modified }));
@@ -1636,6 +1733,7 @@ fn tile_factory(pane: Weak<Pane>) -> gtk::SignalListItemFactory {
             return;
         };
         name.set_text(&e.name);
+        set_kind(&tile, &e);
         icon.set_text(vector_core::icons::icon_for(&e.name, e.is_dir(), e.symlink));
         pic_stack.set_visible_child_name("icon");
         picture.set_paintable(None::<&gdk::Paintable>);

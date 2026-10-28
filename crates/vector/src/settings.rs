@@ -15,6 +15,8 @@ pub struct Settings {
     pub sort: SortSpec,
     /// The terminal panel was open.
     pub terminal: bool,
+    /// Relative line numbers in the list.
+    pub numbers: bool,
 }
 
 impl Default for Settings {
@@ -25,6 +27,7 @@ impl Default for Settings {
             show_hidden: false,
             sort: SortSpec::default(),
             terminal: false,
+            numbers: true,
         }
     }
 }
@@ -50,6 +53,7 @@ impl Settings {
         s.grid = b("grid", s.grid);
         s.show_hidden = b("hidden", s.show_hidden);
         s.terminal = b("terminal", s.terminal);
+        s.numbers = b("numbers", s.numbers);
         s.sort.reverse = b("sort-reverse", s.sort.reverse);
         s.sort.key = match kf.string(GROUP, "sort").as_deref().unwrap_or("") {
             "size" => SortKey::Size,
@@ -68,6 +72,7 @@ impl Settings {
         kf.set_boolean(GROUP, "grid", self.grid);
         kf.set_boolean(GROUP, "hidden", self.show_hidden);
         kf.set_boolean(GROUP, "terminal", self.terminal);
+        kf.set_boolean(GROUP, "numbers", self.numbers);
         kf.set_string(GROUP, "sort", self.sort.key.label());
         kf.set_boolean(GROUP, "sort-reverse", self.sort.reverse);
         let p = path();

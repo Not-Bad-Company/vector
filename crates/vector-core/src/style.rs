@@ -11,7 +11,8 @@ pub const FONT: &str = "'JetBrainsMonoNL Nerd Font', 'JetBrainsMono Nerd Font', 
 pub fn css(t: &Theme) -> String {
     let (bg, fg, acc) = (&t.background, &t.foreground, &t.accent);
     let (red, green, yellow) = (&t.color1, &t.color2, &t.color3);
-    format!(
+    let (blue, magenta, cyan) = (&t.color4, &t.color5, &t.color6);
+    let mut css = format!(
         r#"
 window.vector {{
   background: transparent;
@@ -49,7 +50,7 @@ scrolledwindow, viewport {{ background: transparent; }}
 .row .meta {{ opacity: 0.5; }}
 
 /* ── header: tabs and path bar ── */
-.header {{ border-bottom: 1px solid alpha({fg}, 0.08); padding: 0 8px; min-height: 34px; }}
+.header {{ background: alpha({fg}, 0.035); border-bottom: 1px solid alpha({fg}, 0.08); padding: 0 8px; min-height: 34px; }}
 .tabs {{ border-bottom: 1px solid alpha({fg}, 0.08); padding: 0 8px; }}
 button.link {{
   background: none; border: none; box-shadow: none; border-radius: 0; outline: none;
@@ -74,7 +75,9 @@ button.link.danger:hover {{ color: {red}; opacity: 1; }}
 .tab.active {{ border-bottom-color: {acc}; }}
 .tab:hover button.x {{ opacity: 0.55; }}
 .tab:hover button.x:hover {{ opacity: 1; }}
-.crumb-sep {{ opacity: 0.32; }}
+.crumb-sep {{ opacity: 0.32; padding: 0 2px; }}
+button.link.crumb {{ padding: 3px 6px; opacity: 0.75; }}
+button.link.crumb.primary {{ font-weight: bold; opacity: 1; }}
 
 entry {{
   background: alpha({fg}, 0.06);
@@ -109,15 +112,31 @@ listview > row:selected {{ background: transparent; border-left-color: transpare
 listview > row:selected > .file {{ box-shadow: inset 2px 0 alpha({fg}, 0.45); background: alpha({fg}, 0.08); }}
 listview > row > .file.cursor {{ box-shadow: inset 2px 0 {acc}; background: alpha({acc}, 0.10); }}
 .pane:not(.focused-pane) listview > row > .file.cursor {{ box-shadow: inset 2px 0 alpha({fg}, 0.45); background: alpha({fg}, 0.06); }}
-.colheader {{ padding: 6px 16px 5px 16px; border-bottom: 1px solid alpha({fg}, 0.08); }}
+.colheader {{ padding: 6px 16px 5px 10px; border-bottom: 1px solid alpha({fg}, 0.08); }}
 .colheader label {{ opacity: 0.6; }}
 .colheader label.ok {{ opacity: 1; }}
-.file {{ padding: 7px 16px 7px 14px; }}
+.file {{ padding: 7px 16px 7px 8px; }}
 .file .meta {{ opacity: 0.6; }}
 .file.hidden-file .name {{ opacity: 0.6; }}
 .file .badge {{ min-width: 14px; }}
 .file .sep-dot, .colheader .sep-dot {{ opacity: 0.32; }}
 .file.marked .icon {{ color: {acc}; }}
+/* what a file is, by colour, like nvim-web-devicons: folders bold in the accent */
+.k-dir .icon, .k-dir .big-icon {{ color: {acc}; }}
+.file.k-dir .name, .tile.k-dir .name {{ font-weight: bold; }}
+.k-image .icon, .k-image .big-icon {{ color: {magenta}; }}
+.k-video .icon, .k-video .big-icon {{ color: {red}; }}
+.k-audio .icon, .k-audio .big-icon {{ color: {cyan}; }}
+.k-doc .icon, .k-doc .big-icon {{ color: {blue}; }}
+.k-archive .icon, .k-archive .big-icon {{ color: {yellow}; }}
+.k-code .icon, .k-code .big-icon {{ color: {green}; }}
+.k-link .name {{ font-style: italic; }}
+/* relative line numbers: the cursor row's own number stands out, like nvim's CursorLineNr */
+.lnum {{ opacity: 0.28; font-size: 11px; }}
+.file.cursor .lnum {{ opacity: 1; color: {yellow}; font-weight: bold; }}
+.file .meta.sz-small {{ opacity: 0.4; }}
+.file .meta.sz-big {{ opacity: 1; color: {yellow}; }}
+.file .meta.sz-huge {{ opacity: 1; color: {red}; font-weight: bold; }}
 .file.cut .name, .file.cut .meta {{ opacity: 0.45; }}
 .notice {{
   background: {bg};
@@ -157,13 +176,20 @@ gridview > child > .tile.cursor {{ background: alpha({acc}, 0.16); }}
 .statusline > label {{ padding: 0 10px; }}
 .mode {{ padding: 4px 10px; opacity: 0.6; font-weight: bold; }}
 .mode.active {{ background: {acc}; color: {bg}; opacity: 1; }}
+/* vector-find's statusline is nvim's lualine: coloured blocks with slanted edges */
+.statusline.lualine {{ min-height: 24px; }}
+.statusline.lualine > label.seg {{ background: alpha({fg}, 0.13); }}
+.statusline.lualine > label.mode, .statusline.lualine > label.zone {{ padding: 0 12px; opacity: 1; font-weight: bold; color: {bg}; }}
+.statusline.lualine > .slant {{ min-width: 10px; }}
+.statusline.lualine > .slant.on-seg {{ background: alpha({fg}, 0.13); }}
+.statusline.lualine > .slant.from-seg, .statusline.lualine > .slant.to-seg {{ color: alpha({fg}, 0.13); }}
 .progress {{ min-height: 2px; }}
 progressbar trough {{ background: alpha({fg}, 0.08); min-height: 2px; border-radius: 0; }}
 progressbar progress {{ background: {acc}; min-height: 2px; border-radius: 0; }}
 .pickbar {{ border-top: 1px solid alpha({fg}, 0.08); padding: 6px 10px; }}
 .pickbar > .title {{ padding: 0 8px; }}
 .pickbar entry {{ margin: 0 8px; }}
-.cmdline {{ border-top: 1px solid alpha({fg}, 0.08); padding: 6px 10px; }}
+.cmdline {{ border-top: 1px solid alpha({fg}, 0.08); padding: 6px 12px; }}
 .cmdline entry {{ background: transparent; border: none; padding: 0 4px; min-height: 22px; }}
 .cmdline .prompt {{ color: {acc}; font-weight: bold; }}
 .completions {{ border-top: 1px solid alpha({fg}, 0.08); padding: 4px 0; }}
@@ -220,5 +246,20 @@ scrollbar slider {{ background: alpha({fg}, 0.22); border-radius: 0; min-width: 
 scrollbar slider:hover {{ background: alpha({fg}, 0.4); }}
 paned > separator {{ background: alpha({fg}, 0.08); background-image: none; min-width: 1px; min-height: 1px; margin: 0; padding: 0; border: none; box-shadow: none; }}
 "#
-    )
+    );
+    // the mode's colour on the mode block, the position block and their edges
+    for (mode, colour) in [
+        ("normal", acc),
+        ("visual", magenta),
+        ("command", yellow),
+        ("filter", green),
+        ("sidebar", cyan),
+        ("rename", red),
+    ] {
+        css += &format!(
+            ".statusline.m-{mode} > .mode, .statusline.m-{mode} > .zone {{ background: {colour}; }}\n\
+             .statusline.m-{mode} > .slant.from-mode, .statusline.m-{mode} > .slant.to-mode {{ color: {colour}; }}\n"
+        );
+    }
+    css
 }

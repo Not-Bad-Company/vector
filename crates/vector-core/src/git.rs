@@ -14,6 +14,18 @@ pub enum Badge {
     Conflicted,
 }
 
+/// The branch `dir` is on (or the short commit when detached); `None` outside a repo.
+pub fn branch(dir: &Path) -> Option<String> {
+    if dir.components().any(|c| c.as_os_str() == ".git") {
+        return None;
+    }
+    let repo = gix::discover(dir).ok()?;
+    match repo.head_name().ok()? {
+        Some(name) => Some(name.shorten().to_string()),
+        None => Some(repo.head_id().ok()?.shorten().ok()?.to_string()),
+    }
+}
+
 /// Badges for the direct children of `dir`, keyed by child file name.
 /// A child folder gets the highest-priority badge of anything changed below it.
 /// Unchanged and ignored entries are absent. `None` when `dir` is not inside a git work tree

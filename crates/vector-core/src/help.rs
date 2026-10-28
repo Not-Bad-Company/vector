@@ -273,6 +273,7 @@ pub const FIND: &[Topic] = &[
             (":filter expr", "set the filter"),
             (":view list|grid", "list or grid"),
             (":hidden on|off", "hidden files"),
+            (":number on|off", "relative line numbers, like nvim"),
             (":flat", "every file below this folder in one list"),
             (":biggest [n] [here|/|all]", "the biggest files"),
             (":new :touch :mkdir", "create a file or a folder"),

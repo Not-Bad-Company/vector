@@ -34,6 +34,8 @@ pub enum Command {
         reverse: bool,
     },
     Hidden(Toggle),
+    /// `:number [on|off]`: relative line numbers in the list.
+    Number(Toggle),
     /// `:view [list|grid]`: show the folder as a list or a grid (no arg toggles).
     View(Option<bool>),
     /// `:restore`: put trashed items back where they came from.
@@ -110,6 +112,7 @@ pub const COMMANDS: &[&str] = &[
     "cd",
     "sort",
     "hidden",
+    "number",
     "view",
     "extract",
     "rename",
@@ -198,6 +201,15 @@ pub fn parse(line: &str) -> Result<Command, ParseError> {
                 arg: arg.into(),
             }),
         },
+        "number" => match arg.to_ascii_lowercase().as_str() {
+            "" => Ok(Command::Number(Toggle::Toggle)),
+            "on" | "true" => Ok(Command::Number(Toggle::On)),
+            "off" | "false" => Ok(Command::Number(Toggle::Off)),
+            _ => Err(ParseError::BadArg {
+                command: "number",
+                arg: arg.into(),
+            }),
+        },
         "extract" if arg.is_empty() => Ok(Command::Extract { replace: bang }),
         "restore" if arg.is_empty() => Ok(Command::Restore),
         "empty-trash" if arg.is_empty() => Ok(Command::EmptyTrash),
@@ -258,6 +270,10 @@ pub fn resolve(name: &str) -> Result<&'static str, ParseError> {
     // vim's :e, though :extract starts the same way
     if name == "e" {
         return Ok("edit");
+    }
+    // :n stays :new now that :number starts the same way
+    if name == "n" {
+        return Ok("new");
     }
     if matches!(name, "qa" | "qall" | "quita" | "quital" | "quitall") {
         return Ok("quitall");
@@ -367,7 +383,7 @@ pub fn complete(line: &str, ctx: &CompletionCtx<'_>) -> Completion {
     }
     let candidates = match name {
         "sort" => prefixed(&["name", "size", "mtime", "type"], arg),
-        "hidden" => prefixed(&["on", "off"], arg),
+        "hidden" | "number" => prefixed(&["on", "off"], arg),
         "view" => prefixed(&["list", "grid"], arg),
         "biggest" => prefixed(&["here", "/", "all"], arg),
         "agent" => prefixed(&AGENTS, arg),
