@@ -5,6 +5,7 @@
 //! `--after MS` (default 800) and after feeding `--keys "<vim notation>"` once the folder has
 //! loaded. `--size WxH` sets the window size.
 
+mod dbus;
 mod details;
 mod fmt;
 mod pane;
@@ -32,6 +33,8 @@ struct Args {
     after: u64,
     keys: String,
     size: Option<(i32, i32)>,
+    /// `--service`: no window; serve org.freedesktop.FileManager1 (D-Bus activation).
+    service: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -60,6 +63,7 @@ fn parse_args() -> Result<Args, String> {
                     h.parse().map_err(|_| "bad height")?,
                 ));
             }
+            "--service" => a.service = true,
             "-h" | "--help" => {
                 println!(
                     "usage: {} [FOLDER] [--snapshot OUT.png [--after MS] [--keys KEYS] [--size WxH]]",
@@ -99,24 +103,51 @@ fn main() -> glib::ExitCode {
                 gtk::STYLE_PROVIDER_PRIORITY_USER,
             );
         }
+        // opens a window; windows are dropped from `keep` when they close
+        let open: dbus::Open = {
+            let (app, keep, theme, size) = (app.clone(), keep.clone(), theme.clone(), args.size);
+            Rc::new(move |dir: PathBuf, select: Option<PathBuf>| {
+                let win = window::Win::new(&app, &dir, theme.clone());
+                if let Some((w, h)) = size {
+                    win.window.set_default_size(w, h);
+                }
+                if let Some(item) = select {
+                    win.pane().select_paths(std::slice::from_ref(&item));
+                }
+                win.window.present();
+                let k = keep.clone();
+                let ptr = Rc::downgrade(&win);
+                win.window.connect_destroy(move |_| {
+                    k.borrow_mut().retain(|w| !std::ptr::eq(Rc::as_ptr(w), ptr.as_ptr()));
+                });
+                keep.borrow_mut().push(win);
+            })
+        };
+        if args.snapshot.is_none() {
+            // test runs leave the bus name to the real file manager
+            std::mem::forget(dbus::own(open.clone()));
+        }
+        if args.service {
+            // started by D-Bus activation: stay up for ShowItems/ShowFolders calls
+            std::mem::forget(app.hold());
+            return;
+        }
         let start = args
             .path
             .clone()
             .map(|p| std::path::absolute(&p).unwrap_or(p))
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(glib::home_dir);
-        let win = window::Win::new(app, &start, theme);
-        if let Some((w, h)) = args.size {
-            win.window.set_default_size(w, h);
-        }
-        win.window.present();
+        open(start, None);
         if std::env::var_os("VECTOR_TIMING").is_some() {
             watch_stalls();
         }
-        if args.snapshot.is_some() || !args.keys.is_empty() {
-            schedule_script(win.clone(), args.clone(), app.clone());
+        let first = keep.borrow().last().cloned();
+        if let Some(win) = first
+            && (args.snapshot.is_some() || !args.keys.is_empty())
+        {
+            schedule_script(win, args.clone(), app.clone());
         }
-        keep.borrow_mut().push(win);
     });
     // GTK must not see our own options
     let code = app.run_with_args::<&str>(&[]);
