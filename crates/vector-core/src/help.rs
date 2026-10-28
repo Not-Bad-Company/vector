@@ -424,7 +424,10 @@ pub const VIEW: &[Topic] = &[
                 "bottom",
                 "buttons (hover shows their key), the timeline for videos",
             ),
-            ("tab", "hide or show both bars"),
+            (
+                "tab",
+                "hide or show both bars (in fullscreen: keep them shown)",
+            ),
         ],
     },
     Topic {
@@ -494,7 +497,10 @@ pub const VIEW: &[Topic] = &[
             ("ctrl+c", "copy the image, frame or page"),
             ("i", "details: size, dimensions, codecs, pages"),
             ("del del", "move to the trash (press twice)"),
-            ("f  double click", "fullscreen"),
+            (
+                "f  double click",
+                "fullscreen: the bars hide, and come back when the pointer nears the top or bottom edge",
+            ),
             ("esc  q", "leave fullscreen, close"),
         ],
     },

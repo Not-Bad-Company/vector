@@ -127,6 +127,16 @@ pub struct Win {
     grid_sel: gtk::SingleSelection,
     notice: gtk::Label,
     notice_timer: RefCell<Option<glib::SourceId>>,
+    /// The window's column: header, stage, bottom bars. In fullscreen the bars leave it and
+    /// float over the stage, sliding in when the pointer nears the top or bottom edge.
+    root: gtk::Box,
+    stage: gtk::Overlay,
+    top_bar: gtk::Revealer,
+    bottom_bar: gtk::Revealer,
+    /// Hides the floating bars a moment after the pointer left the edges.
+    bars_timer: RefCell<Option<glib::SourceId>>,
+    /// Tab in fullscreen: the floating bars stay.
+    bars_pinned: Cell<bool>,
     help: Rc<crate::help::HelpPanel>,
     info: gtk::Revealer,
     info_rows: gtk::Grid,
@@ -315,12 +325,26 @@ impl Win {
         statusline.set_center_widget(Some(&center));
         statusline.set_end_widget(Some(&end));
 
+        let top_bar = gtk::Revealer::new();
+        top_bar.set_transition_type(gtk::RevealerTransitionType::SlideDown);
+        top_bar.set_transition_duration(140);
+        top_bar.set_reveal_child(true);
+        top_bar.set_valign(gtk::Align::Start);
+        top_bar.set_child(Some(&header));
+        let bottom = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        bottom.append(&timeline);
+        bottom.append(&statusline);
+        let bottom_bar = gtk::Revealer::new();
+        bottom_bar.set_transition_type(gtk::RevealerTransitionType::SlideUp);
+        bottom_bar.set_transition_duration(140);
+        bottom_bar.set_reveal_child(true);
+        bottom_bar.set_valign(gtk::Align::End);
+        bottom_bar.set_child(Some(&bottom));
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
         root.add_css_class("root");
-        root.append(&header);
+        root.append(&top_bar);
         root.append(&overlay);
-        root.append(&timeline);
-        root.append(&statusline);
+        root.append(&bottom_bar);
         window.set_child(Some(&root));
 
         let order = std::fs::read_to_string(order_file())
@@ -346,6 +370,12 @@ impl Win {
             grid_sel,
             notice,
             notice_timer: RefCell::default(),
+            root,
+            stage: overlay,
+            top_bar,
+            bottom_bar,
+            bars_timer: RefCell::default(),
+            bars_pinned: Cell::new(false),
             help,
             info,
             info_rows,
@@ -440,9 +470,20 @@ impl Win {
         let w = Rc::downgrade(&win);
         win.window.connect_fullscreened_notify(move |_| {
             if let Some(w) = w.upgrade() {
+                w.place_bars();
                 w.update_chrome();
             }
         });
+        // fullscreen: the bars come when the pointer nears the top or bottom edge
+        let motion = gtk::EventControllerMotion::new();
+        motion.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let w = Rc::downgrade(&win);
+        motion.connect_motion(move |_, _, y| {
+            if let Some(w) = w.upgrade() {
+                w.edge_motion(y);
+            }
+        });
+        win.window.add_controller(motion);
         let w = Rc::downgrade(&win);
         win.window.connect_close_request(move |_| {
             if let Some(w) = w.upgrade() {
@@ -847,7 +888,74 @@ impl Win {
         self.notice.add_css_class("crit");
     }
 
+    /// Puts the bars in the window's column, or over the stage in fullscreen (hidden until
+    /// the pointer comes near them).
+    fn place_bars(&self) {
+        let full = self.window.is_fullscreen();
+        let floating = self.top_bar.parent().as_ref() == Some(self.stage.upcast_ref());
+        if full == floating {
+            return;
+        }
+        for bar in [&self.top_bar, &self.bottom_bar] {
+            if full {
+                self.root.remove(bar);
+                self.stage.add_overlay(bar);
+                bar.add_css_class("floating");
+            } else {
+                self.stage.remove_overlay(bar);
+                bar.remove_css_class("floating");
+            }
+        }
+        if !full {
+            self.root.prepend(&self.top_bar);
+            self.root.append(&self.bottom_bar);
+        }
+        self.bars_pinned.set(false);
+        self.reveal_bars(!full);
+    }
+
+    fn reveal_bars(&self, show: bool) {
+        if let Some(id) = self.bars_timer.borrow_mut().take() {
+            id.remove();
+        }
+        self.top_bar.set_reveal_child(show);
+        self.bottom_bar.set_reveal_child(show);
+    }
+
+    /// Pointer at height `y`: near an edge in fullscreen shows the bars, elsewhere they go
+    /// a second later.
+    fn edge_motion(&self, y: f64) {
+        if !self.window.is_fullscreen() || self.bars_pinned.get() {
+            return;
+        }
+        let h = self.window.height() as f64;
+        // the edge zone grows to the bar's own height while it is out
+        let top = (self.header.height() as f64).max(48.0);
+        let bottom = (self.bottom_bar.child().map_or(0, |c| c.height()) as f64).max(64.0);
+        if y <= top || y >= h - bottom {
+            self.reveal_bars(true);
+        } else if self.top_bar.reveals_child() && self.bars_timer.borrow().is_none() {
+            let me = self.weak.borrow().clone();
+            let id = glib::timeout_add_local_once(Duration::from_millis(1000), move || {
+                if let Some(me) = me.upgrade() {
+                    me.bars_timer.borrow_mut().take();
+                    if !me.bars_pinned.get() {
+                        me.top_bar.set_reveal_child(false);
+                        me.bottom_bar.set_reveal_child(false);
+                    }
+                }
+            });
+            *self.bars_timer.borrow_mut() = Some(id);
+        }
+    }
+
     fn toggle_bars(&self) {
+        if self.window.is_fullscreen() {
+            let pin = !self.top_bar.reveals_child() || !self.bars_pinned.get();
+            self.bars_pinned.set(pin);
+            self.reveal_bars(pin);
+            return;
+        }
         let show = !self.header.is_visible();
         self.header.set_visible(show);
         self.statusline.set_visible(show);

@@ -108,6 +108,8 @@ button.link.danger-hover:hover {{ color: {red}; }}
 .tile .big-icon {{ font-size: 40px; }}
 .empty {{ font-size: 13px; }}
 .notice {{ background: {bg}; }}
+/* fullscreen: the bars float over the picture */
+.floating .header, .floating .statusline, .floating .timeline {{ background-color: alpha({bg}, 0.94); }}
 "#
     )
 }
