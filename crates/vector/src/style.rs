@@ -142,6 +142,8 @@ gridview > child > .tile.cursor {{ box-shadow: inset 0 -2px {acc}; }}
 /* ── preview ── */
 .preview {{ padding: 14px 16px; }}
 .details {{ margin-top: 14px; }}
+.termpanel {{ padding: 8px 0 0 14px; min-height: 220px; }}
+.termpanel vte-terminal {{ background: transparent; }}
 .playhead {{ background: {fg}; min-width: 2px; }}
 .wave {{ border: 1px solid alpha({fg}, 0.12); background: alpha({fg}, 0.03); }}
 .details-section {{ font-weight: bold; margin-bottom: 2px; }}
@@ -196,7 +198,7 @@ popover.menu separator {{ background: alpha({fg}, 0.08); margin: 4px 0; }}
 scrollbar {{ background: transparent; border: none; }}
 scrollbar slider {{ background: alpha({fg}, 0.22); border-radius: 0; min-width: 4px; min-height: 4px; border: none; }}
 scrollbar slider:hover {{ background: alpha({fg}, 0.4); }}
-paned > separator {{ background: alpha({fg}, 0.08); min-width: 1px; min-height: 1px; }}
+paned > separator {{ background: alpha({fg}, 0.08); background-image: none; min-width: 1px; min-height: 1px; margin: 0; padding: 0; border: none; box-shadow: none; }}
 "#
     )
 }

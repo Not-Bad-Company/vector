@@ -15,4 +15,10 @@ glib.workspace = true
 gio.workspace = true
 gtk.workspace = true
 sourceview5.workspace = true
+vte4 = { workspace = true, optional = true }
 async-channel.workspace = true
+
+[features]
+default = ["terminal"]
+# the terminal panel (F4); needs VTE for GTK4 (Arch: vte4)
+terminal = ["dep:vte4"]

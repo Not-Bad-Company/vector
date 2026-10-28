@@ -105,6 +105,8 @@ pub struct Win {
     pick: RefCell<Option<Pick>>,
     /// The rename card is open (statusline shows RENAME).
     renaming: Cell<bool>,
+    #[cfg(feature = "terminal")]
+    term: Rc<crate::termpanel::TermPanel>,
     /// Keyboard focus is in the sidebar, on this row.
     side_cursor: Cell<Option<usize>>,
     notice: gtk::Label,
@@ -186,6 +188,24 @@ impl Win {
         let main = gtk::Box::new(gtk::Orientation::Vertical, 0);
         main.append(&tab_bar);
         main.append(&header);
+        #[cfg(feature = "terminal")]
+        let term = {
+            let t = crate::termpanel::TermPanel::new(&theme);
+            t.widget.set_visible(false);
+            t
+        };
+        // the terminal panel sits under the list, in a split the user can drag
+        #[cfg(feature = "terminal")]
+        {
+            let split = gtk::Paned::new(gtk::Orientation::Vertical);
+            split.set_start_child(Some(&body));
+            split.set_end_child(Some(&term.widget));
+            split.set_resize_end_child(false);
+            split.set_shrink_end_child(false);
+            split.set_vexpand(true);
+            main.append(&split);
+        }
+        #[cfg(not(feature = "terminal"))]
         main.append(&body);
         main.append(&progress);
         main.append(&list_box);
@@ -279,6 +299,8 @@ impl Win {
                 pick: RefCell::new(None),
                 renaming: Cell::new(false),
                 side_cursor: Cell::new(None),
+                #[cfg(feature = "terminal")]
+                term,
                 notice,
                 notice_timer: RefCell::new(None),
                 settings: RefCell::new(settings),
@@ -286,6 +308,10 @@ impl Win {
             }
         });
         win.sidebar.set_pinned(&crate::pinstore::global());
+        #[cfg(feature = "terminal")]
+        if win.settings.borrow().terminal {
+            win.term.open(&win.pane().dir());
+        }
         // audio from the preview stops with the window
         let weak = Rc::downgrade(&win);
         win.window.connect_close_request(move |_| {
@@ -622,6 +648,8 @@ impl Win {
         let dir = pane.dir();
         self.sidebar.set_current(&dir);
         publish_cwd(&dir);
+        #[cfg(feature = "terminal")]
+        self.term.follow(&dir);
         // a picker keeps the requesting app's title ("Upload a photo")
         if self.pick.borrow().is_none() {
             self.window.set_title(Some(&format!(
@@ -824,6 +852,10 @@ impl Win {
             grid: pane.is_grid(),
             show_hidden: o.show_hidden,
             sort: o.sort,
+            #[cfg(feature = "terminal")]
+            terminal: self.term.is_open(),
+            #[cfg(not(feature = "terminal"))]
+            terminal: false,
         };
         if *self.settings.borrow() != s {
             s.save();
@@ -852,6 +884,18 @@ impl Win {
             let Some(win) = weak.upgrade() else {
                 return glib::Propagation::Proceed;
             };
+            // the terminal panel gets every key except the one that toggles it
+            #[cfg(feature = "terminal")]
+            if win.term.has_focus() {
+                let toggle = keyval == gdk::Key::F4
+                    || (keyval == gdk::Key::grave
+                        && state.contains(gdk::ModifierType::CONTROL_MASK));
+                if toggle {
+                    win.run_action(Action::ToggleTerminal, 1);
+                    return glib::Propagation::Stop;
+                }
+                return glib::Propagation::Proceed;
+            }
             // picker: ctrl+enter accepts (open the selection, save, or pick this folder)
             if win.pick.borrow().is_some()
                 && matches!(keyval, gdk::Key::Return | gdk::Key::KP_Enter)
@@ -1341,6 +1385,7 @@ impl Win {
             Action::Reload => pane.reload(),
             Action::PathEdit => self.type_path(),
             Action::Help => self.show_help(),
+            Action::ToggleTerminal => self.toggle_terminal(),
             Action::PinHere | Action::PinGlobal => {
                 let items: Vec<PathBuf> = pane.targets().into_iter().map(|e| e.path).collect();
                 if items.is_empty() {
@@ -1379,6 +1424,55 @@ impl Win {
                 self.show_menu(&w, x, y);
             }
             Action::Quit => self.window.close(),
+        }
+    }
+
+    /// F4: open and focus the terminal; again (from inside it): hide it.
+    #[cfg(feature = "terminal")]
+    fn toggle_terminal(&self) {
+        if self.term.is_open() && self.term.has_focus() {
+            self.term.close();
+            self.pane().focus_view();
+        } else {
+            self.term.open(&self.pane().dir());
+            self.term.focus();
+        }
+        self.save_settings();
+    }
+
+    #[cfg(not(feature = "terminal"))]
+    fn toggle_terminal(&self) {
+        self.notify("this build has no terminal panel (built without VTE)");
+    }
+
+    /// `:agent`: a coding agent in this folder, in the terminal panel when there is one.
+    fn start_agent(&self, name: Option<String>) {
+        let found = match name {
+            Some(n) => glib::find_program_in_path(&n).map(|_| n),
+            None => vector_core::command::AGENTS
+                .iter()
+                .find(|a| glib::find_program_in_path(a).is_some())
+                .map(|a| a.to_string()),
+        };
+        let Some(agent) = found else {
+            self.notify_error("no coding agent found (claude, codex, gemini, aider, opencode…)");
+            return;
+        };
+        #[cfg(feature = "terminal")]
+        {
+            self.term.open(&self.pane().dir());
+            self.term.focus();
+            self.term.run(&agent);
+            self.save_settings();
+        }
+        #[cfg(not(feature = "terminal"))]
+        {
+            let launcher = gio::SubprocessLauncher::new(gio::SubprocessFlags::NONE);
+            launcher.set_cwd(&self.pane().dir());
+            if let Some(argv) = crate::terminal::argv(&[OsStr::new(&agent)]) {
+                let refs: Vec<&OsStr> = argv.iter().map(|a| a.as_os_str()).collect();
+                let _ = launcher.spawn(&refs);
+            }
         }
     }
 
@@ -1522,6 +1616,7 @@ impl Win {
             Command::Quit => self.quit_one(),
             Command::QuitAll => self.window.close(),
             Command::Find(q) => self.search(q, false),
+            Command::Agent(name) => self.start_agent(name),
             Command::Filter(f) => self.set_filter(&f),
             Command::Biggest { n, scope } => {
                 use vector_core::command::Scope;
@@ -2659,6 +2754,8 @@ impl Win {
                     ("gs", "folder size"),
                     ("gm", "menu"),
                     ("gx", "terminal here"),
+                    ("F4", "terminal panel (keeps its state)"),
+                    (":agent", "claude, codex, aider… in this folder"),
                     ("ctrl+l", "type or paste a path"),
                     (":e name", "open or create a file in nvim"),
                 ],

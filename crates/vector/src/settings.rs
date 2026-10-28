@@ -13,6 +13,8 @@ pub struct Settings {
     pub grid: bool,
     pub show_hidden: bool,
     pub sort: SortSpec,
+    /// The terminal panel was open.
+    pub terminal: bool,
 }
 
 const GROUP: &str = "view";
@@ -35,6 +37,7 @@ impl Settings {
         s.preview = b("preview", s.preview);
         s.grid = b("grid", s.grid);
         s.show_hidden = b("hidden", s.show_hidden);
+        s.terminal = b("terminal", s.terminal);
         s.sort.reverse = b("sort-reverse", s.sort.reverse);
         s.sort.key = match kf.string(GROUP, "sort").as_deref().unwrap_or("") {
             "size" => SortKey::Size,
@@ -51,6 +54,7 @@ impl Settings {
         kf.set_boolean(GROUP, "preview", self.preview);
         kf.set_boolean(GROUP, "grid", self.grid);
         kf.set_boolean(GROUP, "hidden", self.show_hidden);
+        kf.set_boolean(GROUP, "terminal", self.terminal);
         kf.set_string(GROUP, "sort", self.sort.key.label());
         kf.set_boolean(GROUP, "sort-reverse", self.sort.reverse);
         let p = path();

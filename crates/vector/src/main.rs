@@ -17,6 +17,8 @@ mod settings;
 mod sidebar;
 mod style;
 mod terminal;
+#[cfg(feature = "terminal")]
+mod termpanel;
 mod thumbs;
 mod window;
 

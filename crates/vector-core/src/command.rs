@@ -49,6 +49,8 @@ pub enum Command {
         n: usize,
         scope: Scope,
     },
+    /// `:agent [name]`: start a coding agent (claude, codex, gemini, aider…) in this folder.
+    Agent(Option<String>),
     Quit,
     /// `:qa`: close the window.
     QuitAll,
@@ -76,10 +78,21 @@ impl std::fmt::Display for ParseError {
     }
 }
 
+/// Coding agents `:agent` knows, tried in this order when none is named.
+pub const AGENTS: [&str; 7] = [
+    "claude",
+    "codex",
+    "gemini",
+    "aider",
+    "opencode",
+    "cursor-agent",
+    "amp",
+];
+
 /// Command names, in the order completion offers them.
 pub const COMMANDS: &[&str] = &[
     "new", "mkdir", "find", "grep", "cd", "sort", "hidden", "open", "term", "edit", "touch",
-    "filter", "flat", "biggest", "quit", "quitall",
+    "filter", "flat", "biggest", "agent", "quit", "quitall",
 ];
 
 /// Parses what follows the `:` (a leading `:` is skipped too).
@@ -163,6 +176,7 @@ pub fn parse(line: &str) -> Result<Command, ParseError> {
         "flat" if arg.is_empty() => Ok(Command::Flat),
         "quit" if arg.is_empty() => Ok(Command::Quit),
         "quitall" if arg.is_empty() => Ok(Command::QuitAll),
+        "agent" => Ok(Command::Agent((!arg.is_empty()).then(|| arg.to_owned()))),
         "biggest" => {
             let (mut n, mut scope) = (100, Scope::Here);
             for word in arg.split_whitespace() {
@@ -305,6 +319,7 @@ pub fn complete(line: &str, ctx: &CompletionCtx<'_>) -> Completion {
         "sort" => prefixed(&["name", "size", "mtime", "type"], arg),
         "hidden" => prefixed(&["on", "off"], arg),
         "biggest" => prefixed(&["here", "/", "all"], arg),
+        "agent" => prefixed(&AGENTS, arg),
         "cd" => path_candidates(arg, ctx, true),
         "open" | "new" | "touch" | "mkdir" | "edit" => path_candidates(arg, ctx, false),
         _ => Vec::new(),
@@ -578,5 +593,11 @@ mod tests {
         );
         assert!(matches!(parse("biggest x"), Err(ParseError::BadArg { .. })));
         assert!(matches!(parse("biggest 0"), Err(ParseError::BadArg { .. })));
+    }
+
+    #[test]
+    fn agent() {
+        assert_eq!(parse("agent"), Ok(Command::Agent(None)));
+        assert_eq!(parse("ag codex"), Ok(Command::Agent(Some("codex".into()))));
     }
 }

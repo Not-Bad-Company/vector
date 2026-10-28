@@ -160,6 +160,8 @@ pub enum Action {
     Menu,
     /// The key cheat sheet.
     Help,
+    /// Show, focus or hide the terminal panel.
+    ToggleTerminal,
     /// Pin the item in its folder (it stays on top there).
     PinHere,
     /// Pin the item everywhere (sidebar).
@@ -242,6 +244,8 @@ pub const BINDINGS: &[(&str, Action)] = &[
     ("gx", Action::Terminal),
     ("gm", Action::Menu),
     ("?", Action::Help),
+    ("<F4>", Action::ToggleTerminal),
+    ("<C-`>", Action::ToggleTerminal),
     ("m", Action::PinHere),
     ("M", Action::PinGlobal),
     ("e", Action::EditFile),
