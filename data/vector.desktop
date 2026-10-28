@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Vector
+GenericName=File Manager
+Comment=Browse files with the mouse or nvim-style keys
+Exec=vector %U
+Icon=vector
+Terminal=false
+Categories=System;FileManager;Utility;
+MimeType=inode/directory;
+StartupWMClass=dev.vector.Vector
+Keywords=files;folders;browser;explorer;

@@ -1,6 +1,6 @@
 # command.rs — the `:` command line: parser and tab completion
 
-File: `crates/strata-core/src/command.rs`. Pure logic, no I/O (directory listing is injected).
+File: `crates/vector-core/src/command.rs`. Pure logic, no I/O (directory listing is injected).
 
 ## Parser
 

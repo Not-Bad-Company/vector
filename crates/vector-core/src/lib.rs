@@ -1,4 +1,4 @@
-//! strata-core: everything in strata that is not drawing.
+//! vector-core: everything in vector that is not drawing.
 
 pub mod bookmarks;
 pub mod command;
@@ -20,4 +20,4 @@ pub mod theme;
 mod test_support;
 
 /// Program name, shown in titles and used for config paths. Rename here and in Cargo.toml.
-pub const APP_NAME: &str = "strata";
+pub const APP_NAME: &str = "vector";

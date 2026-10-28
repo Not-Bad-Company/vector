@@ -1,6 +1,6 @@
 # edit.rs — `:edit`, oil.nvim style: a folder as a text buffer, diffed into file operations
 
-File: `crates/strata-core/src/edit.rs`. Pure logic, no I/O. The app writes the buffer to a temp
+File: `crates/vector-core/src/edit.rs`. Pure logic, no I/O. The app writes the buffer to a temp
 file, opens it in nvim, reads it back after nvim exits, calls `plan`, shows `describe` in a
 confirmation dialog, and only then executes the changes.
 
@@ -65,7 +65,7 @@ pub fn describe(plan: &Plan) -> Vec<String>;
 - Order: all Deletes first, then directory Creates (parents before children), then Renames, then
   file Creates. Renames whose target is the source of another pending rename are ordered after
   it; cycles (swap a↔b, rotations) are broken by first renaming one member to a temporary name
-  `.strata-tmp-N` (N the smallest number not in `original` and not used as a target), then the
+  `.vector-tmp-N` (N the smallest number not in `original` and not used as a target), then the
   rest, then temp → final.
 - Moving into a directory that is itself renamed in the same plan: execute the dir rename
   first and use its new name in the move target (target paths in the plan are final names).

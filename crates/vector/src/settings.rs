@@ -1,12 +1,13 @@
 //! View settings that survive a restart: preview pane, list or grid, hidden files, sort.
-//! Stored as a small key file in `$XDG_CONFIG_HOME/strata/settings.ini`.
+//! Stored as a small key file in `$XDG_CONFIG_HOME/vector/settings.ini`.
 
 use std::path::PathBuf;
 
 use gtk::glib;
-use strata_core::sort::{SortKey, SortSpec};
+use vector_core::sort::{SortKey, SortSpec};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Defaults: preview off (`i` shows it), list view, hidden files hidden, sorted by name.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Settings {
     pub preview: bool,
     pub grid: bool,
@@ -14,22 +15,11 @@ pub struct Settings {
     pub sort: SortSpec,
 }
 
-impl Default for Settings {
-    fn default() -> Self {
-        Settings {
-            preview: false,
-            grid: false,
-            show_hidden: false,
-            sort: SortSpec::default(),
-        }
-    }
-}
-
 const GROUP: &str = "view";
 
 fn path() -> PathBuf {
     glib::user_config_dir()
-        .join(strata_core::APP_NAME)
+        .join(vector_core::APP_NAME)
         .join("settings.ini")
 }
 

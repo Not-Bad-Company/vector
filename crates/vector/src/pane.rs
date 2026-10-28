@@ -9,11 +9,11 @@ use std::time::Instant;
 
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
-use strata_core::entry::Entry;
-use strata_core::git::Badge;
-use strata_core::listing::{self, DirChange, ListEvent, Listing, Watcher};
-use strata_core::model::{DirModel, ViewOptions};
-use strata_core::selection::Selection;
+use vector_core::entry::Entry;
+use vector_core::git::Badge;
+use vector_core::listing::{self, DirChange, ListEvent, Listing, Watcher};
+use vector_core::model::{DirModel, ViewOptions};
+use vector_core::selection::Selection;
 
 use crate::fmt;
 
@@ -66,7 +66,7 @@ pub struct Pane {
     /// Name to put the cursor on once it shows up (after going to the parent folder).
     want_cursor: RefCell<Option<String>>,
     on_event: Box<dyn Fn(PaneEvent)>,
-    /// Timings of the last load: (first rows shown, all rows listed), for `STRATA_TIMING`.
+    /// Timings of the last load: (first rows shown, all rows listed), for `VECTOR_TIMING`.
     pub timing: Cell<(Option<f64>, Option<f64>)>,
 }
 
@@ -474,7 +474,7 @@ impl Pane {
         let weak = Rc::downgrade(self);
         glib::spawn_future_local(async move {
             let d = dir.clone();
-            let Ok(Some(badges)) = gio::spawn_blocking(move || strata_core::git::badges(&d)).await
+            let Ok(Some(badges)) = gio::spawn_blocking(move || vector_core::git::badges(&d)).await
             else {
                 return;
             };
@@ -683,7 +683,7 @@ impl Pane {
         let w = self.root.root()?.focus()?;
         let mut cur = Some(w);
         while let Some(c) = cur {
-            if let Some(pos) = unsafe { c.data::<Cell<u32>>("strata-pos") } {
+            if let Some(pos) = unsafe { c.data::<Cell<u32>>("vector-pos") } {
                 // SAFETY: only ever set to Cell<u32> by the factories below
                 return Some(unsafe { pos.as_ref() }.get());
             }
@@ -772,7 +772,7 @@ fn entry_of(item: &gtk::ListItem) -> Option<Entry> {
 /// for folders, right click.
 fn common_setup(w: &gtk::Widget, item: &gtk::ListItem, pane: &Weak<Pane>) {
     // SAFETY: the key is private to this module and always holds a Cell<u32>
-    unsafe { w.set_data("strata-pos", Cell::new(u32::MAX)) };
+    unsafe { w.set_data("vector-pos", Cell::new(u32::MAX)) };
     let drag = gtk::DragSource::new();
     drag.set_actions(gdk::DragAction::COPY | gdk::DragAction::MOVE);
     let (p, it) = (pane.clone(), item.downgrade());
@@ -854,7 +854,7 @@ fn common_setup(w: &gtk::Widget, item: &gtk::ListItem, pane: &Weak<Pane>) {
 
 fn set_pos(w: &gtk::Widget, pos: u32) {
     // SAFETY: see common_setup
-    if let Some(cell) = unsafe { w.data::<Cell<u32>>("strata-pos") } {
+    if let Some(cell) = unsafe { w.data::<Cell<u32>>("vector-pos") } {
         unsafe { cell.as_ref() }.set(pos);
     }
 }
@@ -921,7 +921,7 @@ fn row_factory(pane: Weak<Pane>) -> gtk::SignalListItemFactory {
         let [icon, name, badge, size, date] = labels.as_slice() else {
             return;
         };
-        icon.set_text(strata_core::icons::icon_for(&e.name, e.is_dir(), e.symlink));
+        icon.set_text(vector_core::icons::icon_for(&e.name, e.is_dir(), e.symlink));
         name.set_text(&e.name);
         if pane.model.borrow().is_hidden(&e) {
             row.add_css_class("hidden-file");
@@ -1010,7 +1010,7 @@ fn tile_factory(pane: Weak<Pane>) -> gtk::SignalListItemFactory {
             return;
         };
         name.set_text(&e.name);
-        icon.set_text(strata_core::icons::icon_for(&e.name, e.is_dir(), e.symlink));
+        icon.set_text(vector_core::icons::icon_for(&e.name, e.is_dir(), e.symlink));
         pic_stack.set_visible_child_name("icon");
         picture.set_paintable(None::<&gdk::Paintable>);
         if e.content_type.starts_with("image/") && !e.broken {

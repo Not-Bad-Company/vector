@@ -367,7 +367,7 @@ fn term_matches(t: &Term, e: &Entry, now: i64) -> bool {
         Term::Glob(p) => glob(p, &e.name.to_lowercase().chars().collect::<Vec<_>>()),
         Term::Ext(exts) => {
             let ext = extension_of(&e.name).to_ascii_lowercase();
-            e.kind != Kind::Dir && exts.iter().any(|x| *x == ext)
+            e.kind != Kind::Dir && exts.contains(&ext)
         }
         Term::Type(classes) => classes.iter().any(|c| c.matches(e)),
         Term::Size(cmp, n) => e.kind != Kind::Dir && compare(cmp, e.size, *n),

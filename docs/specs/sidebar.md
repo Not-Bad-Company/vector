@@ -1,6 +1,6 @@
 # Sidebar: bookmarks.rs (core) and sidebar.rs (app)
 
-## crates/strata-core/src/bookmarks.rs (pure, unit-tested)
+## crates/vector-core/src/bookmarks.rs (pure, unit-tested)
 
 GTK bookmarks file (`~/.config/gtk-3.0/bookmarks`): one per line, `URI[ label]`, URI
 percent-encoded, e.g. `file:///tmp/my%20dir Some label`.
@@ -18,7 +18,7 @@ pub fn default_path() -> std::path::PathBuf;
 Tests: plain, label, %20 and %C3%A9 decoding, invalid escape skipped, non-file (sftp://, smb://)
 skipped, root, trailing slash, blank lines, CRLF.
 
-## crates/strata/src/sidebar.rs (GTK)
+## crates/vector/src/sidebar.rs (GTK)
 
 ```rust
 pub struct Sidebar { /* private */ }
@@ -32,7 +32,7 @@ impl Sidebar {
 
 Sections, each with a lowercase `.section` label: `places`, `devices`, `bookmarks` (omit a section
 when empty). Rows: horizontal box `.row` with an icon label (`.icon`, Nerd Font glyph from
-`strata_core::icons::icon_for(name, true, false)`; home `\u{F02DC}` nf-md-home, root `\u{F02CA}`
+`vector_core::icons::icon_for(name, true, false)`; home `\u{F02DC}` nf-md-home, root `\u{F02CA}`
 nf-md-harddisk, drives `\u{F02CA}`, usb `\u{F11F0}` nf-md-usb_flash_drive if sure, network
 `\u{F0318}` nf-md-lan) and a name label (ellipsize end). Click (GestureClick released) → `on_open(path)`.
 Pointer cursor on rows.
@@ -48,7 +48,7 @@ Pointer cursor on rows.
   small hover-only `button.link.x` with `\u{F01EA}` (nf-md-eject) that ejects/unmounts
   (`eject_with_operation` / `unmount_with_operation`, async). Rebuild the section on
   `mount-added`, `mount-removed`, `mount-changed`, `volume-added`, `volume-removed`.
-- bookmarks: `strata_core::bookmarks::parse` of `default_path()` read at startup (read the file
+- bookmarks: `vector_core::bookmarks::parse` of `default_path()` read at startup (read the file
   with `gio::File::load_contents_future` — async — not on the main thread synchronously), and
   re-read when a `gio::FileMonitor` on that file fires. Do NOT check whether bookmark targets
   exist (don't stat them).

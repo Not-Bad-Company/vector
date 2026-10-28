@@ -1,6 +1,6 @@
 # search.rs — `:find` (fuzzy, recursive, by name) and `:grep` (content)
 
-File: `crates/strata-core/src/search.rs`. Crates already available: `nucleo` 0.5 (re-exports
+File: `crates/vector-core/src/search.rs`. Crates already available: `nucleo` 0.5 (re-exports
 `nucleo_matcher` as `nucleo::Matcher`, `nucleo::pattern`, `nucleo::Utf32Str`), `ignore`,
 `grep-searcher`, `grep-regex`, `grep-matcher`. Called from a worker thread by the app, so plain
 blocking functions are right; they must stop promptly when `cancel` is set.

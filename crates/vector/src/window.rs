@@ -9,14 +9,14 @@ use std::time::Duration;
 
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
-use strata_core::command::{self, Command, Toggle};
-use strata_core::edit;
-use strata_core::keymap::{Action, Feed, Key, Keymap, Mode};
-use strata_core::model::ViewOptions;
-use strata_core::ops::{Conflict, ErrorKind, Op, OpEvent, OpQueue};
-use strata_core::search::{self, SearchOptions};
-use strata_core::sort::SortSpec;
-use strata_core::theme::Theme;
+use vector_core::command::{self, Command, Toggle};
+use vector_core::edit;
+use vector_core::keymap::{Action, Feed, Key, Keymap, Mode};
+use vector_core::model::ViewOptions;
+use vector_core::ops::{Conflict, ErrorKind, Op, OpEvent, OpQueue};
+use vector_core::search::{self, SearchOptions};
+use vector_core::sort::SortSpec;
+use vector_core::theme::Theme;
 
 use crate::pane::{Pane, PaneEvent};
 use crate::preview::Preview;
@@ -45,7 +45,7 @@ struct Picker {
 
 /// A modal card over the window.
 struct Dialog {
-    actions: Vec<Box<dyn Fn(&Win, Option<String>)>>,
+    actions: Vec<DialogAction>,
     entry: Option<gtk::Entry>,
 }
 
@@ -93,8 +93,8 @@ const HOME_GLYPH: &str = "\u{F02DC}";
 impl Win {
     pub fn new(app: &gtk::Application, start: &Path, theme: Theme) -> Rc<Win> {
         let window = gtk::ApplicationWindow::new(app);
-        window.add_css_class("strata");
-        window.set_title(Some(strata_core::APP_NAME));
+        window.add_css_class("vector");
+        window.set_title(Some(vector_core::APP_NAME));
         window.set_default_size(1280, 800);
         window.set_decorated(false);
 
@@ -417,10 +417,10 @@ impl Win {
             }
             PaneEvent::Dir => {
                 self.update_chrome();
-                if pane.timing.get().1.is_some() && std::env::var_os("STRATA_TIMING").is_some() {
+                if pane.timing.get().1.is_some() && std::env::var_os("VECTOR_TIMING").is_some() {
                     let (a, b) = pane.timing.get();
                     eprintln!(
-                        "strata timing: {} entries, first paint {:.1} ms, full list {:.1} ms",
+                        "vector timing: {} entries, first paint {:.1} ms, full list {:.1} ms",
                         pane.model.borrow().total(),
                         a.unwrap_or(-1.0),
                         b.unwrap_or(-1.0)
@@ -471,7 +471,7 @@ impl Win {
         self.window.set_title(Some(&format!(
             "{} — {}",
             display_path(&dir),
-            strata_core::APP_NAME
+            vector_core::APP_NAME
         )));
         while let Some(c) = self.crumbs.first_child() {
             self.crumbs.remove(&c);
@@ -1266,7 +1266,7 @@ impl Win {
         let weak = self.weak_self.borrow().clone();
         glib::spawn_future_local(async move {
             let (p, d) = (paths.clone(), dest.clone());
-            let taken = gio::spawn_blocking(move || strata_core::ops::conflicts(&p, &d))
+            let taken = gio::spawn_blocking(move || vector_core::ops::conflicts(&p, &d))
                 .await
                 .unwrap_or_default();
             let Some(win) = weak.upgrade() else { return };
@@ -1399,7 +1399,7 @@ impl Win {
         glib::spawn_future_local(async move {
             let Ok(sizes) = gio::spawn_blocking(move || {
                 dirs.into_iter()
-                    .map(|(n, p)| (n, strata_core::ops::tree_size(&p)))
+                    .map(|(n, p)| (n, vector_core::ops::tree_size(&p)))
                     .collect::<Vec<_>>()
             })
             .await
@@ -1585,12 +1585,12 @@ impl Win {
                     .as_ref()
                     .and_then(|p| p.items.get(p.index).map(|i| p.root.join(&i.0)));
                 self.close_picker();
-                if let Some(path) = pick {
-                    if let Some(parent) = path.parent() {
-                        let pane = self.pane();
-                        pane.open_dir(parent);
-                        pane.select_paths(&[path.clone()]);
-                    }
+                if let Some(path) = pick
+                    && let Some(parent) = path.parent()
+                {
+                    let pane = self.pane();
+                    pane.open_dir(parent);
+                    pane.select_paths(std::slice::from_ref(&path));
                 }
             }
             Key::Char(':') => {
@@ -1606,7 +1606,7 @@ impl Win {
 
     fn set_filter(&self, f: &str) {
         let pane = self.pane();
-        if let Err(e) = strata_core::filter::Filter::parse(f) {
+        if let Err(e) = vector_core::filter::Filter::parse(f) {
             self.flash_error(&format!("filter: {e}"));
             return;
         }
@@ -1639,7 +1639,7 @@ impl Win {
             })
             .collect();
         let text = edit::render(&display_path(&dir), &listed);
-        let file = glib::user_runtime_dir().join(format!("strata-edit-{}.txt", std::process::id()));
+        let file = glib::user_runtime_dir().join(format!("vector-edit-{}.txt", std::process::id()));
         let marker = file.with_extension("txt.done");
         let _ = std::fs::remove_file(&marker);
         if let Err(e) = std::fs::write(&file, text) {
@@ -1648,8 +1648,8 @@ impl Win {
         }
         // The terminal may hand off to an already running instance and return at once, so the
         // shell inside it marks when nvim has really exited.
-        let script = r#"${STRATA_EDITOR:-nvim} "$1"; : > "$1.done""#;
-        let mut argv: Vec<std::ffi::OsString> = match std::env::var_os("STRATA_EDIT_CMD") {
+        let script = r#"${VECTOR_EDITOR:-nvim} "$1"; : > "$1.done""#;
+        let mut argv: Vec<std::ffi::OsString> = match std::env::var_os("VECTOR_EDIT_CMD") {
             // tests: run the editor command directly, without a terminal
             Some(cmd) => vec![
                 "sh".into(),
@@ -2121,7 +2121,7 @@ impl Win {
         menu.append_section(None, &more);
         let only = gio::Menu::new();
         if let Some(e) = targets.first() {
-            let ext = strata_core::entry::extension_of(&e.name).to_lowercase();
+            let ext = vector_core::entry::extension_of(&e.name).to_lowercase();
             if !e.is_dir() && !ext.is_empty() {
                 let item = gio::MenuItem::new(Some(&format!("only .{ext} files")), None);
                 item.set_action_and_target_value(
@@ -2130,7 +2130,7 @@ impl Win {
                 );
                 only.append_item(&item);
             }
-            if let Some(class) = strata_core::filter::Class::of(e) {
+            if let Some(class) = vector_core::filter::Class::of(e) {
                 let label = match class.name() {
                     "dir" => "only folders".to_string(),
                     n => format!("only {n} files"),
@@ -2189,10 +2189,13 @@ impl Win {
     }
 }
 
+/// What a dialog button does; gets the entry's text when the dialog has one.
+type DialogAction = Box<dyn Fn(&Win, Option<String>)>;
+
 pub struct Button {
     label: String,
     class: &'static str,
-    run: Box<dyn Fn(&Win, Option<String>)>,
+    run: DialogAction,
 }
 
 fn button(

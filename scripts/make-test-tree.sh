@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Builds the dummy tree strata is tested against. Never point strata at real files.
-#   scripts/make-test-tree.sh [root]     default: /tmp/claude-1000/strata-test
+# Builds the dummy tree vector is tested against. Never point vector at real files.
+#   scripts/make-test-tree.sh [root]     default: /tmp/claude-1000/vector-test
 #   BIG=1 also creates big/ with 50 000 empty files
 set -euo pipefail
-ROOT="${1:-/tmp/claude-1000/strata-test}"
+ROOT="${1:-/tmp/claude-1000/vector-test}"
 rm -rf "$ROOT"
 mkdir -p "$ROOT"
 cd "$ROOT"

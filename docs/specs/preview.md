@@ -1,18 +1,18 @@
 # preview.rs — the preview pane
 
-File: `crates/strata/src/preview.rs` (GTK app crate). Crates available: `gtk4` (as `gtk`, re-exports
-`gdk`, `gdk_pixbuf`, `glib`, `gio`), `sourceview5`, `strata-core` (`entry::Entry`, `theme::Theme`,
-`icons::icon_for`). CSS classes already exist in `crates/strata/src/style.rs`: use `.preview` on
+File: `crates/vector/src/preview.rs` (GTK app crate). Crates available: `gtk4` (as `gtk`, re-exports
+`gdk`, `gdk_pixbuf`, `glib`, `gio`), `sourceview5`, `vector-core` (`entry::Entry`, `theme::Theme`,
+`icons::icon_for`). CSS classes already exist in `crates/vector/src/style.rs`: use `.preview` on
 the root, `.title` for the name, `.dim` for meta text, `.empty` for "no preview"; pictures get the
 `.preview picture` border automatically; text views get `.preview textview`.
 
 ```rust
 pub struct Preview { /* private */ }
 impl Preview {
-    pub fn new(theme: &strata_core::theme::Theme) -> std::rc::Rc<Preview>;
+    pub fn new(theme: &vector_core::theme::Theme) -> std::rc::Rc<Preview>;
     pub fn widget(&self) -> &gtk::Widget;            // a vertical gtk::Box, min width ~320
     /// Shows `entry` (None = clear). Cancels/ignores any load still running for an older entry.
-    pub fn show(self: &std::rc::Rc<Self>, entry: Option<&strata_core::entry::Entry>);
+    pub fn show(self: &std::rc::Rc<Self>, entry: Option<&vector_core::entry::Entry>);
 }
 ```
 
@@ -28,7 +28,7 @@ body filling the rest:
   `gdk::Texture::for_pixbuf` on the main thread. `gtk::Picture` with `ContentFit::Contain`.
   SVG and huge images: same path (pixbuf scales on load).
 - **Video** (`video/*`): `ffmpegthumbnailer -i <path> -o <out.png> -s 512 -t 10%` via
-  `gio::Subprocess` (async, `wait_check_future`), out in `glib::user_cache_dir()/strata/thumbs/
+  `gio::Subprocess` (async, `wait_check_future`), out in `glib::user_cache_dir()/vector/thumbs/
   <md5 uri>-<mtime>.png` (reuse if present). Then load like an image.
 - **PDF** (`application/pdf`): `pdftoppm -png -singlefile -f 1 -l 1 -scale-to 768 <path> <base>`
   (writes `<base>.png`), same cache dir, then like an image.
@@ -38,16 +38,16 @@ body filling the rest:
   as "no preview". Show in a read-only `sourceview5::View` (no cursor, monospace, wrap off,
   line numbers on, horizontal + vertical scroll), language from
   `sourceview5::LanguageManager::default().guess_language(Some(file_name), Some(content_type))`,
-  highlighting on. Style scheme: generate once an XML style scheme named `strata` from the theme
+  highlighting on. Style scheme: generate once an XML style scheme named `vector` from the theme
   (text = foreground on transparent/no background, `def:comment` foreground at ~50% alpha
   (`#rrggbb80`), `def:keyword`/`def:preprocessor` accent, `def:string` color2, `def:number`,
   `def:constant`, `def:special-char` color3, `def:type` accent, `def:function` foreground bold,
   `def:error` color1, line numbers at 40% alpha, current line no highlight). Write it to
-  `glib::user_cache_dir()/strata/styles/strata.xml`, `StyleSchemeManager::default()
-  .append_search_path(dir)`, then `buffer.set_style_scheme(scheme("strata"))`.
+  `glib::user_cache_dir()/vector/styles/vector.xml`, `StyleSchemeManager::default()
+  .append_search_path(dir)`, then `buffer.set_style_scheme(scheme("vector"))`.
 - **Folders**: up to 200 child names (icon + name, dim for hidden) using
-  `strata_core::listing::list_blocking` in `gio::spawn_blocking`, sorted with
-  `strata_core::sort::compare` and `SortSpec::default()`, hidden ones excluded; meta shows count.
+  `vector_core::listing::list_blocking` in `gio::spawn_blocking`, sorted with
+  `vector_core::sort::compare` and `SortSpec::default()`, hidden ones excluded; meta shows count.
 - **Everything else**, errors, broken symlinks: big icon + `.empty` label "no preview".
 
 Rules:

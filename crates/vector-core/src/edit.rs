@@ -573,7 +573,7 @@ fn schedule(
             });
         };
         let temp = loop {
-            let candidate = format!(".strata-tmp-{temp_counter}");
+            let candidate = format!(".vector-tmp-{temp_counter}");
             temp_counter += 1;
             if !original_names.contains(&candidate) && !used.contains(&candidate) {
                 break candidate;

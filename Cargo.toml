@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/strata-core", "crates/strata"]
+members = ["crates/vector-core", "crates/vector"]
 
 [workspace.package]
 version = "0.1.0"
@@ -20,7 +20,7 @@ grep-matcher = "0.1"
 ignore = "0.4"
 gix = { version = "0.90", default-features = false, features = ["status", "sha1"] }
 tempfile = "3"
-strata-core = { path = "crates/strata-core" }
+vector-core = { path = "crates/vector-core" }
 
 [profile.release]
 lto = "thin"

@@ -1,6 +1,6 @@
 # theme.rs and icons.rs
 
-Two small pure modules. Files: `crates/strata-core/src/theme.rs`, `crates/strata-core/src/icons.rs`.
+Two small pure modules. Files: `crates/vector-core/src/theme.rs`, `crates/vector-core/src/icons.rs`.
 
 ## theme.rs
 

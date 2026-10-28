@@ -9,7 +9,7 @@ use std::rc::Rc;
 use gtk::{gio, glib};
 
 use sourceview5::prelude::*;
-use strata_core::entry::{Entry, Kind};
+use vector_core::entry::{Entry, Kind};
 
 pub struct Preview {
     root: gtk::Box,
@@ -19,11 +19,11 @@ pub struct Preview {
     meta: gtk::Label,
     body: gtk::Box,
     generation: Cell<u64>,
-    theme: strata_core::theme::Theme,
+    theme: vector_core::theme::Theme,
 }
 
 impl Preview {
-    pub fn new(theme: &strata_core::theme::Theme) -> Rc<Preview> {
+    pub fn new(theme: &vector_core::theme::Theme) -> Rc<Preview> {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
         root.set_widget_name("preview");
         root.add_css_class("preview");
@@ -73,7 +73,7 @@ impl Preview {
             return;
         };
         self.header.set_visible(true);
-        self.icon.set_text(strata_core::icons::icon_for(
+        self.icon.set_text(vector_core::icons::icon_for(
             &entry.name,
             entry.is_dir(),
             entry.symlink,
@@ -123,7 +123,7 @@ impl Preview {
         let label = gtk::Label::new(Some("no preview"));
         label.add_css_class("empty");
         self.body.append(&label);
-        let big = gtk::Label::new(Some(strata_core::icons::icon_for(
+        let big = gtk::Label::new(Some(vector_core::icons::icon_for(
             &entry.name,
             entry.is_dir(),
             entry.symlink,
@@ -163,7 +163,7 @@ impl Preview {
         let uri = gio::File::for_path(&path).uri();
         let mtime = entry.modified;
         let output = glib::user_cache_dir()
-            .join("strata/thumbs")
+            .join("vector/thumbs")
             .join(format!("{}-{mtime}.png", md5(&uri)));
         let weak = Rc::downgrade(self);
         glib::MainContext::default().spawn_local(async move {
@@ -241,13 +241,13 @@ impl Preview {
         let task = gio::spawn_blocking(move || {
             let mut entries = Vec::new();
             let listed =
-                strata_core::listing::list_blocking(&path, &gio::Cancellable::new(), |batch| {
+                vector_core::listing::list_blocking(&path, &gio::Cancellable::new(), |batch| {
                     entries.extend(batch);
                     true
                 });
             entries.retain(|e| !e.hidden);
             entries.sort_by(|a, b| {
-                strata_core::sort::compare(a, b, &strata_core::sort::SortSpec::default())
+                vector_core::sort::compare(a, b, &vector_core::sort::SortSpec::default())
             });
             listed.map(|()| entries)
         });
@@ -263,7 +263,7 @@ impl Preview {
                     entries.truncate(200);
                     for child in entries {
                         let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-                        let glyph = gtk::Label::new(Some(strata_core::icons::icon_for(
+                        let glyph = gtk::Label::new(Some(vector_core::icons::icon_for(
                             &child.name,
                             child.is_dir(),
                             child.symlink,
@@ -368,26 +368,26 @@ async fn generate_thumbnail(input: &Path, output: &Path, video: bool) -> bool {
     process.wait_check_future().await.is_ok()
 }
 
-fn ensure_scheme(theme: &strata_core::theme::Theme) -> Option<sourceview5::StyleScheme> {
+fn ensure_scheme(theme: &vector_core::theme::Theme) -> Option<sourceview5::StyleScheme> {
     let manager = sourceview5::StyleSchemeManager::default();
-    if let Some(s) = manager.scheme("strata") {
+    if let Some(s) = manager.scheme("vector") {
         return Some(s);
     }
-    let dir = glib::user_cache_dir().join("strata/styles");
+    let dir = glib::user_cache_dir().join("vector/styles");
     if fs::create_dir_all(&dir).is_err() {
         return None;
     }
-    if fs::write(dir.join("strata.xml"), scheme_xml(theme)).is_err() {
+    if fs::write(dir.join("vector.xml"), scheme_xml(theme)).is_err() {
         return None;
     }
     manager.append_search_path(dir.to_str()?);
-    manager.scheme("strata")
+    manager.scheme("vector")
 }
 
-fn scheme_xml(theme: &strata_core::theme::Theme) -> String {
+fn scheme_xml(theme: &vector_core::theme::Theme) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
-<style-scheme id="strata" name="Strata" version="1.0"><author>strata</author><description>Theme-matched preview</description>
+<style-scheme id="vector" name="Vector" version="1.0"><author>vector</author><description>Theme-matched preview</description>
 <style name="text" foreground="{fg}"/><style name="def:comment" foreground="{fg}80"/><style name="def:keyword" foreground="{acc}"/><style name="def:preprocessor" foreground="{acc}"/><style name="def:string" foreground="{c2}"/><style name="def:number" foreground="{c3}"/><style name="def:constant" foreground="{c3}"/><style name="def:special-char" foreground="{c3}"/><style name="def:type" foreground="{acc}"/><style name="def:function" foreground="{fg}" bold="true"/><style name="def:error" foreground="{c1}"/><style name="line-numbers" foreground="{fg}66"/></style-scheme>"#,
         fg = theme.foreground,
         acc = theme.accent,
@@ -409,8 +409,8 @@ mod tests {
     }
     #[test]
     fn scheme_uses_theme_colours() {
-        let xml = scheme_xml(&strata_core::theme::Theme::default());
-        assert!(xml.contains("id=\"strata\""));
+        let xml = scheme_xml(&vector_core::theme::Theme::default());
+        assert!(xml.contains("id=\"vector\""));
         assert!(xml.contains("#cdd6f480"));
     }
 }

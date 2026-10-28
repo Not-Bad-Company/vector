@@ -3,7 +3,7 @@
 //! secondary text, rows with a left accent border, a 97% background with a quiet 1px border.
 //! Colours come from the Omarchy theme at startup.
 
-use strata_core::theme::Theme;
+use vector_core::theme::Theme;
 
 pub const FONT: &str = "JetBrainsMonoNL Nerd Font";
 
@@ -12,14 +12,14 @@ pub fn css(t: &Theme) -> String {
     let (red, green, yellow) = (&t.color1, &t.color2, &t.color3);
     format!(
         r#"
-window.strata {{
+window.vector {{
   background: transparent;
   color: {fg};
   font-family: '{FONT}';
   font-size: 12px;
 }}
 .root {{ background: alpha({bg}, 0.97); }}
-window.strata * {{ border-radius: 0; outline: none; -gtk-icon-shadow: none; }}
+window.vector * {{ border-radius: 0; outline: none; -gtk-icon-shadow: none; }}
 .title {{ color: {acc}; font-weight: bold; }}
 .dim {{ opacity: 0.5; }}
 .faint {{ opacity: 0.32; }}

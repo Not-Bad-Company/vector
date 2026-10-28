@@ -60,7 +60,7 @@ pub fn spawn(dir: &Path) -> Listing {
     let worker_cancel = cancel.clone();
     let path = dir.to_path_buf();
     let spawned = std::thread::Builder::new()
-        .name("strata-list".into())
+        .name("vector-list".into())
         .spawn(move || {
             let _ = tx.send_blocking(ListEvent::HiddenNames(read_hidden_file(&path)));
             let last = match list_blocking(&path, &worker_cancel, |batch| {
@@ -147,7 +147,7 @@ pub fn spawn_flat(dir: &Path, hidden: bool) -> Listing {
     let worker_cancel = cancel.clone();
     let root = dir.to_path_buf();
     let spawned = std::thread::Builder::new()
-        .name("strata-flat".into())
+        .name("vector-flat".into())
         .spawn(move || {
             let mut batch = Vec::with_capacity(FIRST_BATCH);
             let mut limit = FIRST_BATCH;

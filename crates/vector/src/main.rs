@@ -1,6 +1,6 @@
-//! strata: a GTK4 file manager with nvim-style modes on top of normal mouse browsing.
+//! vector: a GTK4 file manager with nvim-style modes on top of normal mouse browsing.
 //!
-//! `strata [FOLDER]`
+//! `vector [FOLDER]`
 //! Debug flags for tests: `--snapshot OUT.png` renders the window to a PNG and exits, after
 //! `--after MS` (default 800) and after feeding `--keys "<vim notation>"` once the folder has
 //! loaded. `--size WxH` sets the window size.
@@ -22,7 +22,7 @@ use std::time::Duration;
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
 
-const APP_ID: &str = "dev.strata.Strata";
+const APP_ID: &str = "dev.vector.Vector";
 
 #[derive(Default, Clone)]
 struct Args {
@@ -62,7 +62,7 @@ fn parse_args() -> Result<Args, String> {
             "-h" | "--help" => {
                 println!(
                     "usage: {} [FOLDER] [--snapshot OUT.png [--after MS] [--keys KEYS] [--size WxH]]",
-                    strata_core::APP_NAME
+                    vector_core::APP_NAME
                 );
                 std::process::exit(0);
             }
@@ -79,7 +79,7 @@ fn main() -> glib::ExitCode {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("{}: {e}", strata_core::APP_NAME);
+            eprintln!("{}: {e}", vector_core::APP_NAME);
             return glib::ExitCode::FAILURE;
         }
     };
@@ -87,7 +87,8 @@ fn main() -> glib::ExitCode {
     let args = Rc::new(args);
     let keep: Rc<RefCell<Vec<Rc<window::Win>>>> = Rc::default();
     app.connect_activate(move |app| {
-        let theme = strata_core::theme::Theme::load();
+        gtk::Window::set_default_icon_name(vector_core::APP_NAME);
+        let theme = vector_core::theme::Theme::load();
         if let Some(display) = gdk::Display::default() {
             let provider = gtk::CssProvider::new();
             provider.load_from_string(&style::css(&theme));
@@ -108,7 +109,7 @@ fn main() -> glib::ExitCode {
             win.window.set_default_size(w, h);
         }
         win.window.present();
-        if std::env::var_os("STRATA_TIMING").is_some() {
+        if std::env::var_os("VECTOR_TIMING").is_some() {
             watch_stalls();
         }
         if args.snapshot.is_some() || !args.keys.is_empty() {
@@ -132,7 +133,7 @@ fn watch_stalls() {
         last.set(now);
         if now - start > Duration::from_secs(4) {
             eprintln!(
-                "strata timing: longest main-loop stall {:.1} ms",
+                "vector timing: longest main-loop stall {:.1} ms",
                 worst.get().as_secs_f64() * 1000.0
             );
             return glib::ControlFlow::Break;
@@ -151,7 +152,7 @@ fn schedule_script(win: Rc<window::Win>, args: Rc<Args>, app: gtk::Application) 
             glib::timeout_future(Duration::from_millis(25)).await;
         }
         glib::timeout_future(Duration::from_millis(150)).await;
-        for key in strata_core::keymap::parse_keys(&args.keys) {
+        for key in vector_core::keymap::parse_keys(&args.keys) {
             win.handle_key(key, true);
             // let listings, completions and dialogs settle between keys
             glib::timeout_future(Duration::from_millis(60)).await;
@@ -176,7 +177,7 @@ fn schedule_script(win: Rc<window::Win>, args: Rc<Args>, app: gtk::Application) 
             glib::timeout_future(Duration::from_millis(100)).await;
         }
         if let Err(e) = result {
-            eprintln!("{}: snapshot failed: {e}", strata_core::APP_NAME);
+            eprintln!("{}: snapshot failed: {e}", vector_core::APP_NAME);
         }
         app.quit();
     });

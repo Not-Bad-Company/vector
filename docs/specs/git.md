@@ -1,6 +1,6 @@
 # git.rs — git status badges for the entries of one folder
 
-File: `crates/strata-core/src/git.rs`. Crate available: `gix` 0.90 with features `status`,
+File: `crates/vector-core/src/git.rs`. Crate available: `gix` 0.90 with features `status`,
 `sha1` (default features off). Called from a worker thread.
 
 ```rust

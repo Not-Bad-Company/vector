@@ -1,9 +1,9 @@
 [package]
-name = "strata-core"
+name = "vector-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Everything in strata that is not drawing: directory model, operations, keymap, commands"
+description = "Everything in vector that is not drawing: directory model, operations, keymap, commands"
 
 [dependencies]
 glib.workspace = true

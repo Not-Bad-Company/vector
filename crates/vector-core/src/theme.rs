@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 /// Theme file, relative to `$HOME`.
 const THEME_PATH: &str = ".config/omarchy/current/theme/colors.toml";
 
-/// The colours strata draws with. Every value is a lowercase `#rrggbb` string.
+/// The colours vector draws with. Every value is a lowercase `#rrggbb` string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Theme {
     /// Window background.

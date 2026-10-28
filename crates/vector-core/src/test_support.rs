@@ -24,7 +24,7 @@ pub fn entry(name: &str, kind: Kind, size: u64, modified: i64) -> Entry {
 /// tests use their own trash and never the user's. Call first in every test that uses GIO.
 pub fn gio_env() -> PathBuf {
     static ONCE: Once = Once::new();
-    let home = std::env::temp_dir().join(format!("strata-test-home-{}", std::process::id()));
+    let home = std::env::temp_dir().join(format!("vector-test-home-{}", std::process::id()));
     ONCE.call_once(|| {
         let data = home.join(".local/share");
         let _ = std::fs::create_dir_all(&data);

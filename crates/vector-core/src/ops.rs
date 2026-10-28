@@ -229,7 +229,7 @@ impl OpQueue {
         let undo: Arc<Mutex<Vec<Undo>>> = Arc::default();
         let (w_running, w_undo) = (running.clone(), undo.clone());
         let spawned = std::thread::Builder::new()
-            .name("strata-ops".into())
+            .name("vector-ops".into())
             .spawn(move || {
                 while let Ok(job) = job_rx.recv_blocking() {
                     let label = job.op.label();

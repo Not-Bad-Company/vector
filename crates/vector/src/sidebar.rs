@@ -8,7 +8,7 @@ use std::{
 
 use gtk::prelude::*;
 use gtk::{gio, glib};
-use strata_core::bookmarks;
+use vector_core::bookmarks;
 
 pub struct Sidebar {
     widget: gtk::Widget,
@@ -115,7 +115,7 @@ impl Sidebar {
                     &self.places,
                     path,
                     name,
-                    strata_core::icons::icon_for(name, true, false),
+                    vector_core::icons::icon_for(name, true, false),
                     None,
                 );
             }
@@ -241,7 +241,7 @@ impl Sidebar {
                 &self.bookmark_rows,
                 bookmark.path,
                 &bookmark.label,
-                strata_core::icons::icon_for(&bookmark.label, true, false),
+                vector_core::icons::icon_for(&bookmark.label, true, false),
                 None,
             );
         }
