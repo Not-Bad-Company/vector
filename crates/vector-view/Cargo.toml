@@ -1,0 +1,17 @@
+[package]
+name = "vector-view"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Vector View: an image, video, PDF and office document viewer in the style of the vector file manager"
+repository = "https://github.com/Not-Bad-Company/vector"
+readme = "../../README.md"
+keywords = ["image-viewer", "video", "pdf", "gtk4", "mpv"]
+categories = ["multimedia", "gui"]
+
+[dependencies]
+vector-core.workspace = true
+glib.workspace = true
+gio.workspace = true
+gtk.workspace = true
+async-channel.workspace = true

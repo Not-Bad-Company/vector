@@ -15,7 +15,6 @@ mod portal;
 mod preview;
 mod settings;
 mod sidebar;
-mod style;
 mod terminal;
 #[cfg(feature = "terminal")]
 mod termpanel;
@@ -74,12 +73,12 @@ fn parse_args() -> Result<Args, String> {
             "--service" => a.service = true,
             "--portal" => a.portal = true,
             "-V" | "--version" => {
-                println!("vector-fm {}", env!("CARGO_PKG_VERSION"));
+                println!("vector-find {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             "-h" | "--help" => {
                 println!(
-                    "usage: vector-fm [FOLDER]\n\n  --service    serve org.freedesktop.FileManager1 (D-Bus activation)\n  --portal     serve the xdg-desktop-portal file chooser\n  --version    print the version\n\ndevelopment:\n  --snapshot OUT.png [--after MS] [--keys KEYS] [--size WxH]"
+                    "usage: vector-find [FOLDER]\n\n  --service    serve org.freedesktop.FileManager1 (D-Bus activation)\n  --portal     serve the xdg-desktop-portal file chooser\n  --version    print the version\n\ndevelopment:\n  --snapshot OUT.png [--after MS] [--keys KEYS] [--size WxH]"
                 );
                 std::process::exit(0);
             }
@@ -108,7 +107,7 @@ fn main() -> glib::ExitCode {
         let theme = vector_core::theme::Theme::load();
         if let Some(display) = gdk::Display::default() {
             let provider = gtk::CssProvider::new();
-            provider.load_from_string(&style::css(&theme));
+            provider.load_from_string(&vector_core::style::css(&theme));
             gtk::style_context_add_provider_for_display(
                 &display,
                 &provider,

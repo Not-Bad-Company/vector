@@ -15,7 +15,11 @@ grep-regex.workspace = true
 grep-matcher.workspace = true
 ignore.workspace = true
 gix.workspace = true
-mlua.workspace = true
+mlua = { workspace = true, optional = true }
+
+[features]
+# the Lua config engine (vector's init.lua); off for vector-view, whose libmpv brings LuaJIT
+script = ["dep:mlua"]
 
 [dev-dependencies]
 tempfile.workspace = true

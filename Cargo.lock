@@ -2366,7 +2366,7 @@ checksum = "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8"
 
 [[package]]
 name = "vector-core"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-channel",
  "gio",
@@ -2382,8 +2382,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "vector-fm"
-version = "0.1.1"
+name = "vector-find"
+version = "0.2.0"
 dependencies = [
  "async-channel",
  "gio",
@@ -2392,6 +2392,17 @@ dependencies = [
  "sourceview5",
  "vector-core",
  "vte4",
+]
+
+[[package]]
+name = "vector-view"
+version = "0.2.0"
+dependencies = [
+ "async-channel",
+ "gio",
+ "glib",
+ "gtk4",
+ "vector-core",
 ]
 
 [[package]]

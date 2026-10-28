@@ -1798,23 +1798,156 @@ impl Win {
         if self.pick_file(path) {
             return;
         }
+        let ct = gio::content_type_guess(Some(path), None).0;
+        if gio::AppInfo::default_for_type(&ct, false).is_none() {
+            // nothing is set up for this type: ask instead of failing quietly
+            self.open_with_dialog(path.to_path_buf());
+            return;
+        }
         let uri = gio::File::for_path(path).uri();
         let ctx = WidgetExt::display(&self.window).app_launch_context();
         let weak = self.weak_self.borrow().clone();
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
+        let path = path.to_path_buf();
         gio::AppInfo::launch_default_for_uri_async(
             &uri,
             Some(&ctx),
             gio::Cancellable::NONE,
             move |r| {
-                if let (Err(e), Some(win)) = (r, weak.upgrade()) {
-                    win.flash_error(&format!("{name}: {}", e.message()));
+                if let (Err(_), Some(win)) = (r, weak.upgrade()) {
+                    win.open_with_dialog(path);
                 }
             },
         );
+    }
+
+    /// Lets the user pick an app for a file no app is set up for: apps that say they handle
+    /// the type first, then all others. Typing filters; Enter opens the first match.
+    fn open_with_dialog(&self, path: PathBuf) {
+        let ct = gio::content_type_guess(Some(&path), None).0;
+        let mut apps = gio::AppInfo::all_for_type(&ct);
+        let known: Vec<_> = apps.iter().filter_map(|a| a.id()).collect();
+        let mut rest: Vec<gio::AppInfo> = gio::AppInfo::all()
+            .into_iter()
+            .filter(|a| a.should_show() && a.id().is_some_and(|id| !known.contains(&id)))
+            .collect();
+        rest.sort_by_key(|a| a.display_name().to_lowercase());
+        apps.retain(|a| a.should_show());
+        apps.extend(rest);
+        let apps = Rc::new(apps);
+        let name = file_name(&path);
+        let desc = gio::content_type_get_description(&ct).to_string();
+        // "always" needs something to remember: the type, or for unknown types the extension
+        let by_ext = gio::content_type_is_unknown(&ct)
+            .then(|| path.extension().map(|e| e.to_string_lossy().to_lowercase()))
+            .flatten();
+        let kind = match &by_ext {
+            Some(e) => format!(".{e} files"),
+            None if gio::content_type_is_unknown(&ct) => String::new(),
+            None => desc,
+        };
+        let always = gtk::CheckButton::with_label(&format!("always use it for {kind}"));
+        always.add_css_class("always");
+        always.set_visible(!kind.is_empty());
+        let entry = gtk::Entry::new();
+        entry.set_placeholder_text(Some("type to filter apps"));
+        let launch = {
+            let (path, ct, always, by_ext) =
+                (path.clone(), ct.clone(), always.clone(), by_ext.clone());
+            move |win: &Win, app: &gio::AppInfo| {
+                let remember = || match &by_ext {
+                    Some(e) => app.set_as_default_for_extension(e),
+                    None => app.set_as_default_for_type(&ct),
+                };
+                if always.is_active()
+                    && let Err(e) = remember()
+                {
+                    win.flash_error(&format!("{}: {}", app.display_name(), e.message()));
+                }
+                let ctx = WidgetExt::display(&win.window).app_launch_context();
+                if let Err(e) = app.launch(&[gio::File::for_path(&path)], Some(&ctx)) {
+                    win.flash_error(&format!("{}: {}", app.display_name(), e.message()));
+                }
+            }
+        };
+        let launch = Rc::new(launch);
+        let matches = |a: &gio::AppInfo, q: &str| {
+            q.is_empty() || a.display_name().to_lowercase().contains(&q.to_lowercase())
+        };
+        let open = {
+            let (apps, launch) = (apps.clone(), launch.clone());
+            button("open", "primary", move |win, text| {
+                let q = text.unwrap_or_default();
+                if let Some(app) = apps.iter().find(|a| matches(a, q.trim())) {
+                    launch(win, app);
+                }
+            })
+        };
+        self.show_dialog(
+            &format!("open {name} with"),
+            &[],
+            "",
+            vec![cancel(), open],
+            Some(entry.clone()),
+        );
+        // the app list and the checkbox go between the entry and the buttons
+        let Some(card) = self.overlay_layer.first_child().and_downcast::<gtk::Box>() else {
+            return;
+        };
+        let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        list.set_margin_top(8);
+        let mut rows = Vec::new();
+        for app in apps.iter() {
+            let b = gtk::Button::with_label(&app.display_name());
+            b.add_css_class("link");
+            b.add_css_class("app-row");
+            if let Some(l) = b.child().and_downcast::<gtk::Label>() {
+                l.set_xalign(0.0);
+            }
+            let weak = self.weak_self.borrow().clone();
+            let (app, launch) = (app.clone(), launch.clone());
+            b.connect_clicked(move |_| {
+                if let Some(win) = weak.upgrade() {
+                    win.close_dialog(0);
+                    launch(&win, &app);
+                }
+            });
+            list.append(&b);
+            rows.push(b);
+        }
+        if apps.is_empty() {
+            let l = gtk::Label::new(Some("no apps installed"));
+            l.add_css_class("empty");
+            list.append(&l);
+        }
+        let scroll = gtk::ScrolledWindow::new();
+        scroll.set_hscrollbar_policy(gtk::PolicyType::Never);
+        scroll.set_max_content_height(300);
+        scroll.set_propagate_natural_height(true);
+        scroll.set_child(Some(&list));
+        let body = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        body.add_css_class("body");
+        body.append(&scroll);
+        body.append(&always);
+        let foot = card.last_child();
+        card.insert_child_after(&body, foot.and_then(|f| f.prev_sibling()).as_ref());
+        // the row Enter opens: the first one that matches
+        let mark = move |rows: &[gtk::Button], apps: &[gio::AppInfo], q: &str| {
+            let mut first = true;
+            for (row, app) in rows.iter().zip(apps.iter()) {
+                let on = matches(app, q.trim());
+                row.set_visible(on);
+                if on && first {
+                    row.add_css_class("target");
+                    first = false;
+                } else {
+                    row.remove_css_class("target");
+                }
+            }
+        };
+        mark(&rows, &apps, "");
+        let apps2 = apps.clone();
+        entry.connect_changed(move |e| mark(&rows, &apps2, &e.text()));
+        entry.grab_focus();
     }
 
     /// Turns this window into a file picker for an app's open/save dialog.

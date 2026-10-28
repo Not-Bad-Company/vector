@@ -1,9 +1,9 @@
 [Desktop Entry]
 Type=Application
-Name=Vector
+Name=Vector Find
 GenericName=File Manager
 Comment=Browse files with the mouse or nvim-style keys
-Exec=vector-fm %U
+Exec=vector-find %U
 Icon=io.github.not_bad_company.Vector
 Terminal=false
 Categories=System;FileManager;Utility;

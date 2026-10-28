@@ -21,6 +21,8 @@ pub struct Preview {
     generation: Cell<u64>,
     /// The audio player of the current preview, if playing.
     player: std::cell::RefCell<Option<Player>>,
+    /// The entry on show: a refresh of the same unchanged file keeps the preview (and its audio).
+    shown: std::cell::RefCell<Option<Entry>>,
     theme: vector_core::theme::Theme,
 }
 
@@ -59,6 +61,7 @@ impl Preview {
             details,
             generation: Cell::new(0),
             player: Default::default(),
+            shown: Default::default(),
             theme: theme.clone(),
         })
     }
@@ -68,6 +71,10 @@ impl Preview {
     }
 
     pub fn show(self: &Rc<Self>, entry: Option<&Entry>) {
+        if self.shown.borrow().as_ref() == entry {
+            return;
+        }
+        *self.shown.borrow_mut() = entry.cloned();
         self.generation.set(self.generation.get().wrapping_add(1));
         self.stop_audio();
         let generation = self.generation.get();

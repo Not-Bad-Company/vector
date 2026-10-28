@@ -21,3 +21,14 @@ shot 09-keys-help    "?"
 shot 10-filter-flat  ":flat<CR>/type:image|video<CR>" "$T/Media" --after 1500
 shot 11-git-badges   ""                         "$T/Projects/repo"
 shot 12-big-folder   "G"                        "$T/big"
+
+# Vector View, against generated media
+M=$DEV/media
+[ -d "$M" ] || scripts/make-view-tree.sh >/dev/null
+view() { scripts/view-shot.sh "$PWD/$O/$1.png" "$2" "${@:3}" >/dev/null && echo "$O/$1.png"; }
+view view-01-image   ""   "$M/aurora.jpg"
+view view-02-video   " "  "$M/clip.mp4" --after 1500
+view view-03-pdf     ""   "$M/manual.pdf" --after 1200
+view view-04-office  ""   "$M/report.docx" --after 1500
+view view-05-gallery "g"  "$M/aurora.jpg" --after 1500
+view view-06-details "i"  "$M/big-fractal.webp" --after 1500

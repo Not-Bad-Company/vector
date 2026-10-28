@@ -14,10 +14,12 @@ pub mod listing;
 pub mod model;
 pub mod ops;
 pub mod pins;
+#[cfg(feature = "script")]
 pub mod script;
 pub mod search;
 pub mod selection;
 pub mod sort;
+pub mod style;
 pub mod theme;
 
 #[cfg(test)]

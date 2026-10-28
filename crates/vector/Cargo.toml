@@ -1,5 +1,5 @@
 [package]
-name = "vector-fm"
+name = "vector-find"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,7 +10,7 @@ keywords = ["file-manager", "gtk4", "neovim", "linux"]
 categories = ["filesystem", "gui"]
 
 [dependencies]
-vector-core.workspace = true
+vector-core = { workspace = true, features = ["script"] }
 glib.workspace = true
 gio.workspace = true
 gtk.workspace = true

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- a picture: square corners like vector's folder -->
+  <rect x="10" y="22" width="108" height="84" fill="#434c5e"/>
+  <rect x="10.75" y="22.75" width="106.5" height="82.5" fill="none" stroke="#d8dee9" stroke-opacity="0.25" stroke-width="1.5"/>
+  <!-- hills and a sun, clear of the arrow -->
+  <path d="M10 106 L44 70 L64 90 L84 66 L118 106 Z" fill="#81a1c1" fill-opacity="0.45"/>
+  <circle cx="100" cy="40" r="7" fill="#ebcb8b"/>
+  <!-- the vector, as in vector's icon -->
+  <path d="M28 96 L66 60" stroke="#a3be8c" stroke-width="6" stroke-linecap="square"/>
+  <path d="M78 49 L61 52 L70 65 Z" fill="#a3be8c"/>
+  <circle cx="28" cy="96" r="4" fill="#d8dee9"/>
+</svg>

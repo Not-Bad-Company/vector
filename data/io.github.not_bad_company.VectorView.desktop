@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Vector View
+GenericName=Image and Video Viewer
+Comment=View images, videos, PDFs and office documents
+Exec=vector-view %U
+Icon=io.github.not_bad_company.VectorView
+Terminal=false
+Categories=Graphics;Viewer;
+StartupWMClass=io.github.not_bad_company.VectorView
+Keywords=image;photo;picture;video;movie;pdf;document;viewer;gallery;
+MimeType=image/avif;image/bmp;image/gif;image/heic;image/heif;image/jpeg;image/jp2;image/jxl;image/png;image/qoi;image/svg+xml;image/svg+xml-compressed;image/tiff;image/webp;image/x-icon;image/x-portable-anymap;image/x-portable-bitmap;image/x-portable-graymap;image/x-portable-pixmap;image/x-tga;image/x-xpixmap;video/3gpp;video/3gpp2;video/mp2t;video/mp4;video/mpeg;video/ogg;video/quicktime;video/webm;video/x-flv;video/x-m4v;video/x-matroska;video/x-ms-wmv;video/x-msvideo;application/pdf;application/msword;application/vnd.openxmlformats-officedocument.wordprocessingml.document;application/vnd.oasis.opendocument.text;application/rtf;application/vnd.ms-excel;application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;application/vnd.oasis.opendocument.spreadsheet;application/vnd.ms-powerpoint;application/vnd.openxmlformats-officedocument.presentationml.presentation;application/vnd.oasis.opendocument.presentation;application/vnd.oasis.opendocument.graphics;

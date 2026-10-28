@@ -3,7 +3,7 @@
 //! secondary text, rows with a left accent border, a 97% background with a quiet 1px border.
 //! Colours come from the Omarchy theme at startup.
 
-use vector_core::theme::Theme;
+use crate::theme::Theme;
 
 /// A Nerd Font is needed for the icons; the first one installed wins.
 pub const FONT: &str = "'JetBrainsMonoNL Nerd Font', 'JetBrainsMono Nerd Font', 'JetBrainsMono NF', 'Symbols Nerd Font Mono', 'Symbols Nerd Font', monospace";
@@ -169,6 +169,14 @@ progressbar progress {{ background: {acc}; min-height: 2px; border-radius: 0; }}
 .completions {{ border-top: 1px solid alpha({fg}, 0.08); padding: 4px 0; }}
 .completions .row {{ padding: 4px 16px; }}
 .message.crit {{ color: {red}; }}
+button.link.app-row {{ padding: 5px 8px; opacity: 0.85; border-left: 2px solid transparent; }}
+button.link.app-row.target {{ opacity: 1; border-left-color: {acc}; background: alpha({acc}, 0.10); }}
+checkbutton.always {{ margin-top: 10px; }}
+checkbutton.always label {{ margin-left: 6px; }}
+checkbutton check {{ border-radius: 0; border: 1px solid alpha({fg}, 0.3); background: transparent; min-width: 12px; min-height: 12px; }}
+checkbutton check:checked {{ background: {acc}; border-color: {acc}; color: {bg}; }}
+tooltip {{ background: alpha({bg}, 0.97); border: 1px solid alpha({fg}, 0.18); border-radius: 0; box-shadow: none; }}
+tooltip label {{ color: {fg}; font-family: {FONT}; font-size: 12px; }}
 
 /* ── dialogs and menus ── */
 .card {{
@@ -183,6 +191,7 @@ progressbar progress {{ background: {acc}; min-height: 2px; border-radius: 0; }}
 .body {{ padding: 0 16px; }}
 .foot {{ padding: 10px 10px 0 10px; }}
 window.dialog {{ background: transparent; }}
+popover {{ font-family: {FONT}; font-size: 12px; }}
 popover > contents, popover.menu > contents {{
   background: alpha({bg}, 0.97);
   border: 1px solid alpha({fg}, 0.18);
