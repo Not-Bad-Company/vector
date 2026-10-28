@@ -7,9 +7,9 @@ DEV="${VECTOR_DEV:-${TMPDIR:-/tmp}/vector-dev}"
 out="$1"; mkdir -p $DEV/shots; keys="${2:-}"; dir="${3:-$DEV/tree}"; shift $(( $# < 3 ? $# : 3 ))
 bin="$(dirname "$0")/../target/release/vector-fm"
 bin="$(realpath "$bin")"
-rm -f "$out" $DEV/config/vector/settings.ini
+rm -rf "$out" $DEV/config/vector/settings.ini $DEV/state
 q() { printf '%q ' "$@"; }
-hyprctl dispatch exec "[workspace 9 silent;render_unfocused on] env XDG_CONFIG_HOME=$DEV/config XDG_CACHE_HOME=$DEV/cache VECTOR_TIMING=1 VECTOR_NO_CLIPBOARD=1 ${VECTOR_EDIT_CMD:+VECTOR_EDIT_CMD=$VECTOR_EDIT_CMD }$(q "$bin" "$dir" --snapshot "$out" --keys "$keys" --size 1400x860 "$@") 2>$DEV/shots/last.log" >/dev/null
+hyprctl dispatch exec "[workspace 9 silent;render_unfocused on] env XDG_CONFIG_HOME=$DEV/config XDG_CACHE_HOME=$DEV/cache XDG_STATE_HOME=$DEV/state VECTOR_TIMING=1 VECTOR_NO_CLIPBOARD=1 ${VECTOR_EDIT_CMD:+VECTOR_EDIT_CMD=$VECTOR_EDIT_CMD }$(q "$bin" "$dir" --snapshot "$out" --keys "$keys" --size 1400x860 "$@") 2>$DEV/shots/last.log" >/dev/null
 for _ in $(seq 1 150); do [ -s "$out" ] && break; sleep 0.1; done
 sleep 0.3
 # it quits by itself after the snapshot; close it if it did not

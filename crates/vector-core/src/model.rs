@@ -38,6 +38,8 @@ pub struct DirModel {
     hidden_names: std::collections::HashSet<String>,
     /// File picker: only files matching one of these show (folders always do).
     allow: Option<Vec<Allow>>,
+    /// Names pinned in this folder: they sort first.
+    pinned: std::collections::HashSet<String>,
 }
 
 /// One pattern of a file picker filter (xdg-desktop-portal: 0 = glob, 1 = MIME type).
@@ -72,6 +74,7 @@ impl DirModel {
             opts,
             hidden_names: Default::default(),
             allow: None,
+            pinned: Default::default(),
         }
     }
 
@@ -142,7 +145,7 @@ impl DirModel {
         }
         let at = self
             .all
-            .binary_search_by(|x| compare(x, &e, &self.opts.sort))
+            .binary_search_by(|x| self.order(x, &e))
             .unwrap_or_else(|i| i);
         self.all.insert(at, e);
         self.refilter();
@@ -186,10 +189,30 @@ impl DirModel {
         }
     }
 
+    /// Pinned entries first, then the sort.
+    fn order(&self, a: &Entry, b: &Entry) -> std::cmp::Ordering {
+        let pa = self.pinned.contains(&a.name);
+        let pb = self.pinned.contains(&b.name);
+        pb.cmp(&pa).then_with(|| compare(a, b, &self.opts.sort))
+    }
+
     fn resort(&mut self) {
-        let spec = self.opts.sort;
-        self.all.sort_by(|a, b| compare(a, b, &spec));
+        let mut all = std::mem::take(&mut self.all);
+        all.sort_by(|a, b| self.order(a, b));
+        self.all = all;
         self.refilter();
+    }
+
+    /// Sets the names pinned in this folder (they sort first).
+    pub fn set_pinned(&mut self, names: std::collections::HashSet<String>) {
+        if self.pinned != names {
+            self.pinned = names;
+            self.resort();
+        }
+    }
+
+    pub fn is_pinned(&self, name: &str) -> bool {
+        self.pinned.contains(name)
     }
 
     /// Sets a folder's measured size (it lists as 0). Re-sorts when sorted by size.
@@ -396,5 +419,21 @@ mod tests {
         assert!(!Allow::Mime("video/*".into()).matches(&img));
         m.set_allow(None);
         assert_eq!(m.len(), 4);
+    }
+
+    #[test]
+    fn pinned_entries_sort_first_and_stay_first() {
+        let mut m = sample();
+        m.set_pinned(["b.txt".to_string()].into());
+        assert_eq!(names(&m), ["b.txt", "Docs", "a2.txt", "a10.txt"]);
+        m.upsert(entry("a1.txt", Kind::File, 1, 1));
+        assert_eq!(names(&m)[0], "b.txt");
+        assert_eq!(names(&m)[2], "a1.txt");
+        m.set_sort(SortSpec {
+            reverse: true,
+            ..SortSpec::default()
+        });
+        assert_eq!(names(&m)[0], "b.txt");
+        assert!(m.is_pinned("b.txt"));
     }
 }

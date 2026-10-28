@@ -9,6 +9,7 @@ mod dbus;
 mod details;
 mod fmt;
 mod pane;
+mod pinstore;
 mod portal;
 mod preview;
 mod settings;

@@ -13,6 +13,7 @@ pub mod keymap;
 pub mod listing;
 pub mod model;
 pub mod ops;
+pub mod pins;
 pub mod search;
 pub mod selection;
 pub mod sort;

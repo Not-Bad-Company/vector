@@ -300,6 +300,15 @@ impl Pane {
         }
     }
 
+    /// Re-reads the pins of this folder (after one changed).
+    pub fn reload_pins(&self) {
+        let dir = self.dir();
+        self.model
+            .borrow_mut()
+            .set_pinned(crate::pinstore::in_folder(&dir));
+        self.rebind();
+    }
+
     /// Re-draws the column titles (after the sort changed).
     pub fn sort_changed(self: &Rc<Self>) {
         self.build_header();
@@ -547,6 +556,9 @@ impl Pane {
             ..opts
         };
         *self.model.borrow_mut() = DirModel::new(dir, opts);
+        self.model
+            .borrow_mut()
+            .set_pinned(crate::pinstore::in_folder(dir));
         *self.selection.borrow_mut() = Selection::default();
         self.objects.borrow_mut().clear();
         self.git.borrow_mut().clear();
@@ -1374,9 +1386,12 @@ fn row_factory(pane: Weak<Pane>) -> gtk::SignalListItemFactory {
         } else {
             row.remove_css_class("hidden-file");
         }
-        let (b, class) = badge_text(pane.git_badge(&e.name));
+        let (b, class) = match pane.git_badge(&e.name) {
+            None if pane.model.borrow().is_pinned(&e.name) => ("\u{F0403}", "ok"),
+            g => badge_text(g),
+        };
         badge.set_text(b);
-        for c in ["crit", "warn", "good", "dim"] {
+        for c in ["crit", "warn", "good", "dim", "ok"] {
             badge.remove_css_class(c);
         }
         if !class.is_empty() {

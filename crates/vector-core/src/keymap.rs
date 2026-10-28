@@ -160,6 +160,10 @@ pub enum Action {
     Menu,
     /// The key cheat sheet.
     Help,
+    /// Pin the item in its folder (it stays on top there).
+    PinHere,
+    /// Pin the item everywhere (sidebar).
+    PinGlobal,
     /// Open the file under the cursor in the editor (nvim).
     EditFile,
     /// Copy the path of the selection, or of the folder, to the clipboard.
@@ -238,6 +242,8 @@ pub const BINDINGS: &[(&str, Action)] = &[
     ("gx", Action::Terminal),
     ("gm", Action::Menu),
     ("?", Action::Help),
+    ("m", Action::PinHere),
+    ("M", Action::PinGlobal),
     ("e", Action::EditFile),
     ("Y", Action::CopyPath),
     ("<F1>", Action::Help),

@@ -17,6 +17,7 @@ pub struct Sidebar {
     places: gtk::Box,
     devices: gtk::Box,
     bookmark_rows: gtk::Box,
+    pinned_rows: gtk::Box,
     monitor: gio::VolumeMonitor,
     bookmarks_monitor: RefCell<Option<gio::FileMonitor>>,
     sections: RefCell<Vec<(gtk::Label, gtk::Box)>>,
@@ -44,6 +45,7 @@ impl Sidebar {
             places: gtk::Box::new(gtk::Orientation::Vertical, 0),
             devices: gtk::Box::new(gtk::Orientation::Vertical, 0),
             bookmark_rows: gtk::Box::new(gtk::Orientation::Vertical, 0),
+            pinned_rows: gtk::Box::new(gtk::Orientation::Vertical, 0),
             monitor: gio::VolumeMonitor::get(),
             bookmarks_monitor: RefCell::new(None),
             sections: RefCell::new(Vec::new()),
@@ -55,6 +57,7 @@ impl Sidebar {
         sidebar.add_section(&content, "places", &sidebar.places);
         sidebar.rebuild_devices();
         sidebar.add_section(&content, "devices", &sidebar.devices);
+        sidebar.add_section(&content, "pinned", &sidebar.pinned_rows);
         sidebar.add_section(&content, "bookmarks", &sidebar.bookmark_rows);
         sidebar.load_bookmarks();
         sidebar.watch_volumes();
@@ -64,6 +67,30 @@ impl Sidebar {
 
     pub fn widget(&self) -> &gtk::Widget {
         &self.widget
+    }
+
+    /// Shows the globally pinned items (files open in their folder, selected).
+    pub fn set_pinned(&self, items: &[PathBuf]) {
+        while let Some(child) = self.pinned_rows.first_child() {
+            self.pinned_rows.remove(&child);
+        }
+        self.rows
+            .borrow_mut()
+            .retain(|(_, row)| row.parent().as_ref() != Some(self.pinned_rows.upcast_ref()));
+        for p in items {
+            let name = p
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| p.display().to_string());
+            // no stat here (a pin may sit on a slow drive): folders are told apart by name only
+            let looks_dir = vector_core::entry::extension_of(&name).is_empty();
+            let glyph = vector_core::icons::icon_for(&name, looks_dir, false);
+            self.add_row(&self.pinned_rows, p.clone(), &name, glyph, None);
+            if let Some(row) = self.pinned_rows.last_child() {
+                row.set_tooltip_text(Some(&p.display().to_string()));
+            }
+        }
+        self.update_sections();
     }
 
     pub fn set_current(&self, path: &Path) {

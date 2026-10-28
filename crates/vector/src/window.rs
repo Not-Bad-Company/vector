@@ -212,8 +212,8 @@ impl Win {
             let w = weak.clone();
             let sidebar = Sidebar::new(move |path| {
                 if let Some(win) = w.upgrade() {
-                    win.pane().open_dir(&path);
-                    win.pane().focus_view();
+                    // a pinned file opens its folder with the file selected
+                    win.run_command(Command::Cd(path.display().to_string()));
                 }
             });
             outer.append(sidebar.widget());
@@ -258,6 +258,7 @@ impl Win {
                 weak_self: RefCell::new(weak.clone()),
             }
         });
+        win.sidebar.set_pinned(&crate::pinstore::global());
         win.connect_keys();
         win.connect_entries();
         win.connect_actions();
@@ -486,6 +487,16 @@ impl Win {
         for (i, p) in tab.panes.borrow().iter().enumerate() {
             p.set_focused(!split || i == tab.active.get());
         }
+    }
+
+    /// After a pin changed: folders re-sort, the sidebar lists the global pins.
+    fn refresh_pins(&self) {
+        for tab in self.tabs.borrow().iter() {
+            for p in tab.panes.borrow().iter() {
+                p.reload_pins();
+            }
+        }
+        self.sidebar.set_pinned(&crate::pinstore::global());
     }
 
     fn on_pane_event(&self, pane: &Rc<Pane>, ev: PaneEvent) {
@@ -1258,6 +1269,38 @@ impl Win {
             Action::Reload => pane.reload(),
             Action::PathEdit => self.type_path(),
             Action::Help => self.show_help(),
+            Action::PinHere | Action::PinGlobal => {
+                let items: Vec<PathBuf> = pane.targets().into_iter().map(|e| e.path).collect();
+                if items.is_empty() {
+                    return;
+                }
+                let global = action == Action::PinGlobal;
+                let now = crate::pinstore::with(|p| {
+                    items
+                        .iter()
+                        .map(|i| {
+                            if global {
+                                p.toggle_global(i)
+                            } else {
+                                p.toggle_folder(i)
+                            }
+                        })
+                        .last()
+                        .unwrap_or(false)
+                });
+                crate::pinstore::save();
+                self.notify(&format!(
+                    "{} {} {}",
+                    if now { "pinned" } else { "unpinned" },
+                    count_label(&items),
+                    if global {
+                        "everywhere"
+                    } else {
+                        "in this folder"
+                    }
+                ));
+                self.refresh_pins();
+            }
             Action::Menu => {
                 let w = pane.widget().clone().upcast::<gtk::Widget>();
                 let (x, y) = (w.width() as f64 / 3.0, w.height() as f64 / 4.0);
@@ -2466,6 +2509,7 @@ impl Win {
                     ("r", "rename"),
                     ("e", "edit file in nvim"),
                     ("Y", "copy folder path"),
+                    ("m M", "pin here, pin everywhere"),
                     ("u .", "undo, repeat"),
                     ("v space", "select range, toggle one"),
                 ],
@@ -2618,6 +2662,8 @@ impl Win {
             ("preview", Action::TogglePreview),
             ("view", Action::ToggleView),
             ("new-tab", Action::NewTab),
+            ("pin-here", Action::PinHere),
+            ("pin-global", Action::PinGlobal),
         ];
         for &(name, action) in simple {
             let a = gio::SimpleAction::new(name, None);
@@ -2778,6 +2824,10 @@ impl Win {
             let item = gio::MenuItem::new(Some("clear filter"), None);
             item.set_action_and_target_value(Some("win.filter"), Some(&String::new().to_variant()));
             only.append_item(&item);
+        }
+        if has_items {
+            only.append(Some("pin in this folder"), Some("win.pin-here"));
+            only.append(Some("pin everywhere"), Some("win.pin-global"));
         }
         let flat = gio::MenuItem::new(
             Some(if pane.is_flat() {
