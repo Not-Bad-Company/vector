@@ -16,6 +16,7 @@ mod portal;
 mod preview;
 mod settings;
 mod sidebar;
+mod slant;
 mod terminal;
 #[cfg(feature = "terminal")]
 mod termpanel;

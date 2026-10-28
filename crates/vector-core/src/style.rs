@@ -181,11 +181,11 @@ gridview > child > .tile.cursor {{ background: alpha({acc}, 0.16); }}
 .mode.active {{ background: {acc}; color: {bg}; opacity: 1; }}
 /* vector-find's statusline is nvim's lualine: coloured blocks with slanted edges */
 .statusline.lualine {{ min-height: 24px; }}
-.statusline.lualine > label.seg {{ background: alpha({fg}, 0.13); }}
-.statusline.lualine > label.mode, .statusline.lualine > label.zone {{ padding: 0 12px; opacity: 1; font-weight: bold; color: {bg}; }}
-.statusline.lualine > .slant {{ min-width: 10px; }}
-.statusline.lualine > .slant.on-seg {{ background: alpha({fg}, 0.13); }}
-.statusline.lualine > .slant.from-seg, .statusline.lualine > .slant.to-seg {{ color: alpha({fg}, 0.13); }}
+.statusline.lualine label.seg {{ background: alpha({fg}, 0.13); }}
+.statusline.lualine label.mode, .statusline.lualine label.zone {{ padding: 0 12px; opacity: 1; font-weight: bold; color: {bg}; }}
+.statusline.lualine .slant {{ min-width: 10px; }}
+.statusline.lualine .slant.on-seg {{ background: alpha({fg}, 0.13); }}
+.statusline.lualine .slant.from-seg, .statusline.lualine .slant.to-seg {{ color: alpha({fg}, 0.13); }}
 .progress {{ min-height: 2px; }}
 progressbar trough {{ background: alpha({fg}, 0.08); min-height: 2px; border-radius: 0; }}
 progressbar progress {{ background: {acc}; min-height: 2px; border-radius: 0; }}
@@ -258,10 +258,12 @@ paned > separator {{ background: alpha({fg}, 0.08); background-image: none; min-
         ("filter", green),
         ("sidebar", cyan),
         ("rename", red),
+        ("zoom", yellow),
+        ("gallery", cyan),
     ] {
         css += &format!(
-            ".statusline.m-{mode} > .mode, .statusline.m-{mode} > .zone {{ background: {colour}; }}\n\
-             .statusline.m-{mode} > .slant.from-mode, .statusline.m-{mode} > .slant.to-mode {{ color: {colour}; }}\n"
+            ".statusline.m-{mode} .mode, .statusline.m-{mode} .zone {{ background: {colour}; }}\n\
+             .statusline.m-{mode} .slant.from-mode, .statusline.m-{mode} .slant.to-mode {{ color: {colour}; }}\n"
         );
     }
     css

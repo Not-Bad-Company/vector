@@ -132,6 +132,10 @@ pub struct Win {
     info_rows: gtk::Grid,
     statusline: gtk::CenterBox,
     mode: gtk::Label,
+    /// "3 / 12" in the mode's colour, at the right end of the statusline.
+    pos: gtk::Label,
+    /// The slanted edges next to the mode and position blocks.
+    edges: [gtk::DrawingArea; 2],
     media: Vec<gtk::Widget>,
     play: gtk::Button,
     time: gtk::Label,
@@ -172,7 +176,7 @@ impl Win {
         // ── header ──
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         header.add_css_class("header");
-        let kind = label(icon::IMAGE, &["title", "kind"]);
+        let kind = label(icon::IMAGE, &["title", "kind", "icon"]);
         let name = label("", &["name"]);
         name.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
         name.set_xalign(0.0);
@@ -260,7 +264,14 @@ impl Win {
 
         let mode = label("NORMAL", &["mode"]);
         let start = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        // nvim's lualine, like vector-find: the mode block, and the position block at the end
+        let edges = [
+            crate::slant::slant(false, &["from-mode"]),
+            crate::slant::slant(true, &["to-mode"]),
+        ];
+        let pos = label("", &["zone"]);
         start.append(&mode);
+        start.append(&edges[0]);
         let menu_btn = button(icon::MENU, "menu  ·  m, right click");
         let grid_btn = button(icon::GRID, "gallery  ·  g");
         let order_btn = button(icon::ORDER, "order  ·  o");
@@ -293,10 +304,13 @@ impl Win {
         ] {
             end.append(w);
         }
+        end.append(&edges[1]);
+        end.append(&pos);
 
         let statusline = gtk::CenterBox::new();
         statusline.add_css_class("statusline");
         statusline.add_css_class("bar");
+        statusline.add_css_class("lualine");
         statusline.set_start_widget(Some(&start));
         statusline.set_center_widget(Some(&center));
         statusline.set_end_widget(Some(&end));
@@ -337,6 +351,8 @@ impl Win {
             info_rows,
             statusline,
             mode,
+            pos,
+            edges,
             media: vec![
                 back.clone().upcast(),
                 play.clone().upcast(),
@@ -648,16 +664,23 @@ impl Win {
         let video = item.kind == Kind::Video;
         let paged = matches!(item.kind, Kind::Pdf | Kind::Office);
         self.kind.set_text(kind_icon(&item));
+        // the file kind's colour, as in vector-find's list
+        for c in ["k-image", "k-video", "k-doc"] {
+            self.header.remove_css_class(c);
+        }
+        self.header.add_css_class(match item.kind {
+            Kind::Image => "k-image",
+            Kind::Video => "k-video",
+            Kind::Pdf | Kind::Office => "k-doc",
+        });
         self.name.set_text(&item.name());
         self.window
             .set_title(Some(&format!("{} — Vector View", item.name())));
         let count = self.items.borrow().len();
-        self.meta.set_text(&format!(
-            "  ·  {} / {}  ·  by {}",
-            self.index.get() + 1,
-            count,
-            self.order.get().label()
-        ));
+        self.meta
+            .set_text(&format!("  ·  by {}", self.order.get().label()));
+        self.pos
+            .set_text(&format!("{} / {}", self.index.get() + 1, count));
 
         let mut facts: Vec<String> = Vec::new();
         let zoomed = match item.kind {
@@ -703,11 +726,21 @@ impl Win {
         self.facts.set_text(&facts.join("  ·  "));
 
         let lock = self.zoom_lock.get();
-        self.mode.set_text(if lock { "ZOOM" } else { "NORMAL" });
-        if lock {
-            self.mode.add_css_class("active");
+        let gallery = self.stack.visible_child_name().as_deref() == Some("grid");
+        let (text, class) = if gallery {
+            ("GALLERY", "m-gallery")
+        } else if lock {
+            ("ZOOM", "m-zoom")
         } else {
-            self.mode.remove_css_class("active");
+            ("NORMAL", "m-normal")
+        };
+        self.mode.set_text(text);
+        for c in ["m-normal", "m-zoom", "m-gallery"] {
+            self.statusline.remove_css_class(c);
+        }
+        self.statusline.add_css_class(class);
+        for e in &self.edges {
+            e.queue_draw();
         }
 
         for w in &self.media {

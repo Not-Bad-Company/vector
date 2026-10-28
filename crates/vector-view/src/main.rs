@@ -14,6 +14,8 @@ mod load;
 mod mpv;
 mod pdf;
 mod playlist;
+#[path = "../../vector/src/slant.rs"]
+mod slant;
 mod video;
 mod window;
 
@@ -93,7 +95,8 @@ fn css(t: &vector_core::theme::Theme) -> String {
 .header .name {{ font-weight: bold; }}
 .statusline {{ min-height: 26px; }}
 .statusline button.link.glyph {{ font-size: 14px; padding: 2px 8px; }}
-.statusline .mode {{ margin-right: 6px; }}
+.statusline .slant.from-mode {{ margin-right: 6px; }}
+.statusline .slant.to-mode {{ margin-left: 6px; }}
 gridview > child:selected > .tile {{ background: alpha({acc}, 0.16); }}
 .statusline .time {{ padding: 0 10px; }}
 button.link.danger-hover:hover {{ color: {red}; }}
