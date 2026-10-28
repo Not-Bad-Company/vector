@@ -641,7 +641,15 @@ impl Win {
         } else if let (Some(i), false) = (sel.cursor(&m), m.is_empty()) {
             parts.push(format!("{}/{}", i + 1, m.len()));
         }
-        if pane.is_flat() {
+        if let Some(n) = pane.progress.get() {
+            parts.push(format!(
+                "scanning {} files",
+                vector_core::details::group_digits(n)
+            ));
+        }
+        if pane.is_biggest() {
+            parts.push("biggest files".into());
+        } else if pane.is_flat() {
             parts.push("flat".into());
         }
         if !m.options().filter.is_empty() {
@@ -653,6 +661,9 @@ impl Win {
             s.key.label(),
             if s.reverse { " ↓" } else { "" }
         ));
+        if let Some(free) = pane.fs_info.get().0 {
+            parts.push(format!("{} free", crate::fmt::size(free)));
+        }
         if let Some(r) = self.register.borrow().as_ref() {
             parts.push(format!(
                 "{} {}",
@@ -1278,6 +1289,27 @@ impl Win {
             Command::QuitAll => self.window.close(),
             Command::Find(q) => self.search(q, false),
             Command::Filter(f) => self.set_filter(&f),
+            Command::Biggest { n, scope } => {
+                use vector_core::command::Scope;
+                let (roots, one_fs): (Vec<PathBuf>, bool) = match scope {
+                    // below this folder, whatever drives are mounted inside it
+                    Scope::Here => (vec![dir.clone()], false),
+                    Scope::System => (vec![PathBuf::from("/")], true),
+                    Scope::All => {
+                        let mut roots = vec![PathBuf::from("/")];
+                        for m in gio::VolumeMonitor::get().mounts() {
+                            if let Some(p) = m.root().path()
+                                && !roots.contains(&p)
+                            {
+                                roots.push(p);
+                            }
+                        }
+                        (roots, true)
+                    }
+                };
+                self.notify(&format!("finding the {n} biggest files…"));
+                pane.show_biggest(roots, n, one_fs);
+            }
             Command::Flat => {
                 pane.toggle_flat();
                 self.flash(if pane.is_flat() {
@@ -1644,6 +1676,7 @@ impl Win {
         entry.select_region(0, stem as i32);
     }
 
+    /// gs: measure the selected folders now, also on network mounts.
     fn folder_sizes(&self) {
         let pane = self.pane();
         let dirs: Vec<(String, PathBuf)> = pane
@@ -1655,31 +1688,7 @@ impl Win {
         if dirs.is_empty() {
             return;
         }
-        self.flash("measuring…");
-        let weak = std::rc::Rc::downgrade(&pane);
-        let wwin = self.weak_self.borrow().clone();
-        let dir = pane.dir();
-        glib::spawn_future_local(async move {
-            let Ok(sizes) = gio::spawn_blocking(move || {
-                dirs.into_iter()
-                    .map(|(n, p)| (n, vector_core::ops::tree_size(&p)))
-                    .collect::<Vec<_>>()
-            })
-            .await
-            else {
-                return;
-            };
-            let (Some(pane), Some(win)) = (weak.upgrade(), wwin.upgrade()) else {
-                return;
-            };
-            if pane.dir() != dir {
-                return;
-            }
-            let total: u64 = sizes.iter().map(|(_, s)| s).sum();
-            pane.sizes.borrow_mut().extend(sizes);
-            pane.rebind();
-            win.flash(&format!("{} in total", crate::fmt::size(total)));
-        });
+        pane.measure(Some(dirs));
     }
 
     fn watch_ops(&self) {

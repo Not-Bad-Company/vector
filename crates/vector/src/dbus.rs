@@ -4,8 +4,8 @@
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use gtk::prelude::*;
 use gtk::gio;
+use gtk::prelude::*;
 
 const NAME: &str = "org.freedesktop.FileManager1";
 const PATH: &str = "/org/freedesktop/FileManager1";
@@ -22,7 +22,9 @@ pub type Open = Rc<dyn Fn(PathBuf, Option<PathBuf>)>;
 
 /// Asks for the bus name; if another file manager holds it, waits in line for it.
 pub fn own(open: Open) -> Option<gio::OwnerId> {
-    let info = gio::DBusNodeInfo::for_xml(XML).ok()?.lookup_interface(NAME)?;
+    let info = gio::DBusNodeInfo::for_xml(XML)
+        .ok()?
+        .lookup_interface(NAME)?;
     let id = gio::bus_own_name(
         gio::BusType::Session,
         NAME,

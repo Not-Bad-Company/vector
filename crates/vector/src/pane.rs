@@ -55,7 +55,15 @@ pub struct Pane {
     back: RefCell<Vec<PathBuf>>,
     forward: RefCell<Vec<PathBuf>>,
     git: RefCell<HashMap<String, Badge>>,
-    pub sizes: RefCell<HashMap<String, u64>>,
+    /// Folders whose size is known (their entry's `size` holds it).
+    measured: RefCell<std::collections::HashSet<String>>,
+    measure_cancel: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
+    /// Free bytes on this folder's file system, and whether it is a network mount.
+    pub fs_info: Cell<(Option<u64>, bool)>,
+    /// Files looked at by a running `:biggest` scan.
+    pub progress: Cell<Option<u64>>,
+    /// `:biggest` view: (roots, how many, stay on one file system), and the sort to go back to.
+    biggest: RefCell<Option<(Vec<PathBuf>, usize, bool, vector_core::sort::SortSpec)>>,
     grid_mode: Cell<bool>,
     /// Narrow (split) pane: no date column.
     compact: Cell<bool>,
@@ -118,7 +126,11 @@ impl Pane {
             back: RefCell::default(),
             forward: RefCell::default(),
             git: RefCell::default(),
-            sizes: RefCell::default(),
+            measured: RefCell::default(),
+            measure_cancel: RefCell::new(None),
+            fs_info: Cell::new((None, false)),
+            progress: Cell::new(None),
+            biggest: RefCell::new(None),
             grid_mode: Cell::new(false),
             compact: Cell::new(false),
             syncing: Cell::new(false),
@@ -281,6 +293,7 @@ impl Pane {
     /// Opens `dir`, remembering the current folder for `back`.
     pub fn open_dir(self: &Rc<Self>, dir: &Path) {
         self.flat.set(false);
+        self.leave_biggest();
         let cur = self.dir();
         if cur != dir && self.store.n_items() > 0 || self.loading.get() {
             self.back.borrow_mut().push(cur);
@@ -296,8 +309,157 @@ impl Pane {
         self.load(&cur);
     }
 
+    /// A list that isn't one folder (flat or biggest): no watcher, no :edit.
     pub fn is_flat(&self) -> bool {
-        self.flat.get()
+        self.flat.get() || self.biggest.borrow().is_some()
+    }
+
+    pub fn is_biggest(&self) -> bool {
+        self.biggest.borrow().is_some()
+    }
+
+    /// Shows the `n` biggest files under `roots`, biggest first.
+    pub fn show_biggest(self: &Rc<Self>, roots: Vec<PathBuf>, n: usize, one_fs: bool) {
+        let Some(first) = roots.first().cloned() else {
+            return;
+        };
+        let before = self
+            .biggest
+            .borrow()
+            .as_ref()
+            .map(|b| b.3)
+            .unwrap_or(self.model.borrow().options().sort);
+        self.flat.set(false);
+        *self.biggest.borrow_mut() = Some((roots, n, one_fs, before));
+        self.model
+            .borrow_mut()
+            .set_sort(vector_core::sort::SortSpec {
+                key: vector_core::sort::SortKey::Size,
+                reverse: false,
+                dirs_first: true,
+            });
+        self.load(&first);
+    }
+
+    fn leave_biggest(&self) {
+        if let Some((_, _, _, sort)) = self.biggest.borrow_mut().take() {
+            self.model.borrow_mut().set_sort(sort);
+        }
+    }
+
+    /// Measures folder sizes in the background: `only` these entries (gs), or every folder
+    /// in view, skipping network mounts unless asked for explicitly.
+    pub fn measure(self: &Rc<Self>, only: Option<Vec<(String, PathBuf)>>) {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let explicit = only.is_some();
+        if !explicit && self.fs_info.get().1 {
+            return;
+        }
+        let dirs: Vec<(String, PathBuf)> = only.unwrap_or_else(|| {
+            self.model
+                .borrow()
+                .all()
+                .iter()
+                .filter(|e| e.is_dir() && !e.symlink)
+                .map(|e| (e.name.clone(), e.path.clone()))
+                .collect()
+        });
+        // sizes measured a moment ago are reused (going back and forth stays instant)
+        let mut todo = Vec::new();
+        for (name, path) in dirs {
+            match cached_size(&path) {
+                Some(n) => {
+                    self.model.borrow_mut().set_size(&name, n);
+                    self.objects.borrow_mut().remove(&name);
+                    self.measured.borrow_mut().insert(name);
+                }
+                None => todo.push((name, path)),
+            }
+        }
+        if let Some(c) = self.measure_cancel.borrow_mut().take() {
+            c.store(true, Ordering::Relaxed);
+        }
+        if todo.is_empty() {
+            self.refresh();
+            return;
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        *self.measure_cancel.borrow_mut() = Some(cancel.clone());
+        let (tx, rx) = async_channel::unbounded::<(String, PathBuf, u64)>();
+        let worker_cancel = cancel.clone();
+        let _ = std::thread::Builder::new()
+            .name("vector-du".into())
+            .spawn(move || {
+                for (name, path) in todo {
+                    match vector_core::du::dir_size(&path, &worker_cancel) {
+                        Some(n) => {
+                            if tx.send_blocking((name, path, n)).is_err() {
+                                return;
+                            }
+                        }
+                        None => return,
+                    }
+                }
+            });
+        self.refresh();
+        let weak = Rc::downgrade(self);
+        let dir = self.dir();
+        glib::spawn_future_local(async move {
+            while let Ok((name, path, n)) = rx.recv().await {
+                let Some(p) = weak.upgrade() else { return };
+                if p.dir() != dir || cancel.load(Ordering::Relaxed) {
+                    return;
+                }
+                remember_size(&path, n);
+                p.model.borrow_mut().set_size(&name, n);
+                p.objects.borrow_mut().remove(&name);
+                p.measured.borrow_mut().insert(name);
+                p.schedule_refresh();
+            }
+            if let Some(p) = weak.upgrade()
+                && p.dir() == dir
+            {
+                p.measure_cancel.borrow_mut().take();
+                p.schedule_refresh();
+            }
+        });
+    }
+
+    fn is_measuring(&self) -> bool {
+        self.measure_cancel.borrow().is_some()
+    }
+
+    /// Reads free space and whether the folder is on a network mount.
+    fn load_fs_info(self: &Rc<Self>) {
+        let dir = self.dir();
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let f = gio::File::for_path(&dir);
+            let info = f
+                .query_filesystem_info_future(
+                    "filesystem::free,filesystem::remote",
+                    glib::Priority::DEFAULT,
+                )
+                .await;
+            let Some(p) = weak.upgrade() else { return };
+            if p.dir() != dir {
+                return;
+            }
+            let (free, remote) = match info {
+                Ok(i) => (
+                    i.has_attribute("filesystem::free")
+                        .then(|| i.attribute_uint64("filesystem::free")),
+                    i.boolean("filesystem::remote"),
+                ),
+                Err(_) => (None, false),
+            };
+            p.fs_info.set((free, remote));
+            if !p.is_flat() && !p.loading.get() {
+                p.measure(None);
+            }
+            (p.on_event)(PaneEvent::Cursor);
+        });
     }
 
     pub fn go_parent(self: &Rc<Self>) {
@@ -347,7 +509,12 @@ impl Pane {
         *self.selection.borrow_mut() = Selection::default();
         self.objects.borrow_mut().clear();
         self.git.borrow_mut().clear();
-        self.sizes.borrow_mut().clear();
+        self.measured.borrow_mut().clear();
+        if let Some(c) = self.measure_cancel.borrow_mut().take() {
+            c.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.progress.set(None);
+        self.fs_info.set((None, false));
         *self.want_cursor.borrow_mut() = None;
         self.store.remove_all();
         self.loading.set(true);
@@ -356,7 +523,8 @@ impl Pane {
         let flat = self.flat.get();
         let weak = Rc::downgrade(self);
         // a flat listing spans many folders; it is a snapshot, refreshed with reload
-        let watched = if flat {
+        let biggest = self.biggest.borrow().clone();
+        let watched = if flat || biggest.is_some() {
             Err(glib::Error::new(gio::IOErrorEnum::NotSupported, "flat"))
         } else {
             listing::watch(dir, move |change| {
@@ -373,7 +541,9 @@ impl Pane {
                 // some file systems can't be watched; the listing still works
             }
         }
-        let l = if flat {
+        let l = if let Some((roots, n, one_fs, _)) = biggest {
+            listing::spawn_biggest(roots, n, one_fs)
+        } else if flat {
             listing::spawn_flat(dir, self.model.borrow().options().show_hidden)
         } else {
             listing::spawn(dir)
@@ -405,6 +575,10 @@ impl Pane {
                 for ev in events {
                     match ev {
                         ListEvent::Batch(batch) => pending.extend(batch),
+                        ListEvent::Progress(n) => {
+                            p.progress.set(Some(n));
+                            (p.on_event)(PaneEvent::Cursor);
+                        }
                         ListEvent::HiddenNames(names) => {
                             p.model.borrow_mut().set_hidden_names(names)
                         }
@@ -431,7 +605,10 @@ impl Pane {
                             .set((t.0, Some(started.elapsed().as_secs_f64() * 1000.0)));
                         p.listing.replace(None);
                         p.refresh();
+                        p.progress.set(None);
                         p.load_git();
+                        // free space, then folder sizes (skipped on network mounts)
+                        p.load_fs_info();
                         (p.on_event)(PaneEvent::Dir);
                         return;
                     }
@@ -760,6 +937,28 @@ impl Pane {
     }
 }
 
+thread_local! {
+    /// Folder sizes measured in the last few minutes, by path.
+    static SIZES: RefCell<HashMap<PathBuf, (u64, Instant)>> = RefCell::default();
+}
+
+const SIZE_CACHE_FOR: std::time::Duration = std::time::Duration::from_secs(300);
+
+fn cached_size(p: &Path) -> Option<u64> {
+    SIZES.with(|c| {
+        c.borrow()
+            .get(p)
+            .filter(|(_, t)| t.elapsed() < SIZE_CACHE_FOR)
+            .map(|(n, _)| *n)
+    })
+}
+
+fn remember_size(p: &Path, n: u64) {
+    SIZES.with(|c| {
+        c.borrow_mut().insert(p.to_path_buf(), (n, Instant::now()));
+    });
+}
+
 fn same_device(a: &Path, b: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
     match (std::fs::symlink_metadata(a), std::fs::metadata(b)) {
@@ -956,11 +1155,13 @@ fn row_factory(pane: Weak<Pane>) -> gtk::SignalListItemFactory {
             badge.add_css_class(class);
         }
         let s = if e.is_dir() {
-            pane.sizes
-                .borrow()
-                .get(&e.name)
-                .map(|&n| fmt::size(n))
-                .unwrap_or_default()
+            if pane.measured.borrow().contains(&e.name) {
+                fmt::size(e.size)
+            } else if pane.is_measuring() {
+                "…".into()
+            } else {
+                String::new()
+            }
         } else if e.broken {
             "broken".into()
         } else {

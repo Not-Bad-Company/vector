@@ -3,6 +3,7 @@
 pub mod bookmarks;
 pub mod command;
 pub mod details;
+pub mod du;
 pub mod edit;
 pub mod entry;
 pub mod filter;

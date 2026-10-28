@@ -13,6 +13,8 @@ pub enum ListEvent {
     /// Names from the folder's `.hidden` file; sent first.
     HiddenNames(std::collections::HashSet<String>),
     Batch(Vec<Entry>),
+    /// Files looked at so far, for long scans (`biggest`).
+    Progress(u64),
     Done,
     /// The folder could not be opened or read. Entries already sent stay valid.
     Error(String),
@@ -218,6 +220,86 @@ pub fn spawn_flat(dir: &Path, hidden: bool) -> Listing {
     }
 }
 
+/// The `n` biggest files under `roots` as a listing, biggest first. With one root, names are
+/// paths relative to it; with several, absolute paths. `one_file_system` keeps each walk on its
+/// root's file system. Sends progress while it walks.
+pub fn spawn_biggest(roots: Vec<PathBuf>, n: usize, one_file_system: bool) -> Listing {
+    let (tx, rx) = async_channel::unbounded();
+    let cancel = gio::Cancellable::new();
+    let worker_cancel = cancel.clone();
+    let dir = roots.first().cloned().unwrap_or_else(|| PathBuf::from("/"));
+    let spawned = std::thread::Builder::new()
+        .name("vector-biggest".into())
+        .spawn(move || {
+            use std::sync::Arc;
+            use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+            let stop = Arc::new(AtomicBool::new(false));
+            let seen = Arc::new(AtomicU64::new(0));
+            // cancel the walk when the listing is dropped; report progress meanwhile
+            let (s2, seen2, c2, tx2) = (
+                stop.clone(),
+                seen.clone(),
+                worker_cancel.clone(),
+                tx.clone(),
+            );
+            let ticker = std::thread::spawn(move || {
+                while !s2.load(Ordering::Relaxed) {
+                    if c2.is_cancelled() {
+                        s2.store(true, Ordering::Relaxed);
+                        break;
+                    }
+                    let _ = tx2.send_blocking(ListEvent::Progress(seen2.load(Ordering::Relaxed)));
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+            });
+            let mut all: Vec<(PathBuf, u64)> = Vec::new();
+            for root in &roots {
+                all.extend(crate::du::biggest_files(
+                    root,
+                    n,
+                    one_file_system,
+                    &stop,
+                    &seen,
+                ));
+            }
+            all.sort_by(|a, b| b.1.cmp(&a.1));
+            all.truncate(n);
+            let cancelled = stop.swap(true, Ordering::Relaxed);
+            let _ = ticker.join();
+            if cancelled {
+                return;
+            }
+            let single = roots.len() == 1;
+            let entries: Vec<Entry> = all
+                .into_iter()
+                .filter_map(|(p, _)| {
+                    let mut e = Entry::query(&p).ok()?;
+                    e.name = match (single, p.strip_prefix(&roots[0])) {
+                        (true, Ok(rel)) => rel.to_string_lossy().into_owned(),
+                        _ => p.to_string_lossy().into_owned(),
+                    };
+                    Some(e)
+                })
+                .collect();
+            let _ = tx.send_blocking(ListEvent::Batch(entries));
+            let _ = tx.send_blocking(ListEvent::Done);
+        });
+    if let Err(e) = spawned {
+        let (tx, rx) = async_channel::bounded(1);
+        let _ = tx.try_send(ListEvent::Error(e.to_string()));
+        return Listing {
+            dir,
+            events: rx,
+            cancel,
+        };
+    }
+    Listing {
+        dir,
+        events: rx,
+        cancel,
+    }
+}
+
 /// A change to a watched folder.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DirChange {
@@ -399,7 +481,7 @@ mod tests {
         loop {
             match l.events.recv_blocking().unwrap() {
                 ListEvent::Batch(b) => n += b.len(),
-                ListEvent::HiddenNames(_) => {}
+                ListEvent::HiddenNames(_) | ListEvent::Progress(_) => {}
                 ListEvent::Done => break,
                 ListEvent::Error(e) => panic!("{e}"),
             }
@@ -493,6 +575,7 @@ mod tests {
             loop {
                 match l.events.recv_blocking().unwrap() {
                     ListEvent::Batch(b) => names.extend(b.into_iter().map(|e| e.name)),
+                    ListEvent::Progress(_) => {}
                     ListEvent::Done => break,
                     other => panic!("{other:?}"),
                 }
@@ -504,6 +587,30 @@ mod tests {
         assert_eq!(
             collect(true),
             [".dot/secret", "a/b/deep.exe", "loop", "top.exe"]
+        );
+    }
+
+    #[test]
+    fn biggest_listing() {
+        let t = scratch();
+        let d = t.path();
+        std::fs::create_dir_all(d.join("x")).unwrap();
+        std::fs::write(d.join("x/big"), vec![0u8; 5000]).unwrap();
+        std::fs::write(d.join("small"), vec![0u8; 10]).unwrap();
+        std::fs::write(d.join("mid"), vec![0u8; 500]).unwrap();
+        let l = spawn_biggest(vec![d.to_path_buf()], 2, true);
+        let mut names = Vec::new();
+        loop {
+            match l.events.recv_blocking().unwrap() {
+                ListEvent::Batch(b) => names.extend(b.into_iter().map(|e| (e.name, e.size))),
+                ListEvent::Progress(_) => {}
+                ListEvent::Done => break,
+                other => panic!("{other:?}"),
+            }
+        }
+        assert_eq!(
+            names,
+            [("x/big".to_string(), 5000), ("mid".to_string(), 500)]
         );
     }
 }

@@ -3,6 +3,16 @@
 use crate::sort::SortKey;
 use std::path::{Path, PathBuf};
 
+/// Where `:biggest` looks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Scope {
+    Here,
+    /// The root file system only.
+    System,
+    /// Every mounted drive.
+    All,
+}
+
 /// Argument of `:hidden`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Toggle {
@@ -33,6 +43,12 @@ pub enum Command {
     Filter(String),
     /// `:flat`: toggle listing the whole tree under this folder.
     Flat,
+    /// `:biggest [n] [here|/|all]`: the n biggest files (default 100) below this folder, on
+    /// the system disk, or on every drive.
+    Biggest {
+        n: usize,
+        scope: Scope,
+    },
     Quit,
     /// `:qa`: close the window.
     QuitAll,
@@ -63,7 +79,7 @@ impl std::fmt::Display for ParseError {
 /// Command names, in the order completion offers them.
 pub const COMMANDS: &[&str] = &[
     "new", "mkdir", "find", "grep", "cd", "sort", "hidden", "open", "term", "edit", "touch",
-    "filter", "flat", "quit", "quitall",
+    "filter", "flat", "biggest", "quit", "quitall",
 ];
 
 /// Parses what follows the `:` (a leading `:` is skipped too).
@@ -147,6 +163,26 @@ pub fn parse(line: &str) -> Result<Command, ParseError> {
         "flat" if arg.is_empty() => Ok(Command::Flat),
         "quit" if arg.is_empty() => Ok(Command::Quit),
         "quitall" if arg.is_empty() => Ok(Command::QuitAll),
+        "biggest" => {
+            let (mut n, mut scope) = (100, Scope::Here);
+            for word in arg.split_whitespace() {
+                match word {
+                    "here" | "." => scope = Scope::Here,
+                    "/" | "system" | "root" => scope = Scope::System,
+                    "all" | "drives" => scope = Scope::All,
+                    w => match w.parse::<usize>() {
+                        Ok(v) if v > 0 => n = v.min(100_000),
+                        _ => {
+                            return Err(ParseError::BadArg {
+                                command: "biggest",
+                                arg: w.into(),
+                            });
+                        }
+                    },
+                }
+            }
+            Ok(Command::Biggest { n, scope })
+        }
         other => Err(ParseError::BadArg {
             command: other,
             arg: arg.into(),
@@ -268,6 +304,7 @@ pub fn complete(line: &str, ctx: &CompletionCtx<'_>) -> Completion {
     let candidates = match name {
         "sort" => prefixed(&["name", "size", "mtime", "type"], arg),
         "hidden" => prefixed(&["on", "off"], arg),
+        "biggest" => prefixed(&["here", "/", "all"], arg),
         "cd" => path_candidates(arg, ctx, true),
         "open" | "new" | "touch" | "mkdir" | "edit" => path_candidates(arg, ctx, false),
         _ => Vec::new(),
@@ -514,5 +551,32 @@ mod tests {
         assert_eq!(parse("quit"), Ok(Command::Quit));
         assert_eq!(parse("qa"), Ok(Command::QuitAll));
         assert_eq!(parse("qall"), Ok(Command::QuitAll));
+    }
+
+    #[test]
+    fn biggest() {
+        assert_eq!(
+            parse("biggest"),
+            Ok(Command::Biggest {
+                n: 100,
+                scope: Scope::Here
+            })
+        );
+        assert_eq!(
+            parse("big 20 /"),
+            Ok(Command::Biggest {
+                n: 20,
+                scope: Scope::System
+            })
+        );
+        assert_eq!(
+            parse("biggest all 5"),
+            Ok(Command::Biggest {
+                n: 5,
+                scope: Scope::All
+            })
+        );
+        assert!(matches!(parse("biggest x"), Err(ParseError::BadArg { .. })));
+        assert!(matches!(parse("biggest 0"), Err(ParseError::BadArg { .. })));
     }
 }

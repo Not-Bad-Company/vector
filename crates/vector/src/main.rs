@@ -118,7 +118,8 @@ fn main() -> glib::ExitCode {
                 let k = keep.clone();
                 let ptr = Rc::downgrade(&win);
                 win.window.connect_destroy(move |_| {
-                    k.borrow_mut().retain(|w| !std::ptr::eq(Rc::as_ptr(w), ptr.as_ptr()));
+                    k.borrow_mut()
+                        .retain(|w| !std::ptr::eq(Rc::as_ptr(w), ptr.as_ptr()));
                 });
                 keep.borrow_mut().push(win);
             })

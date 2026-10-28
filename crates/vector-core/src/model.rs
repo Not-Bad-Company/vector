@@ -166,6 +166,20 @@ impl DirModel {
         self.refilter();
     }
 
+    /// Sets a folder's measured size (it lists as 0). Re-sorts when sorted by size.
+    pub fn set_size(&mut self, name: &str, size: u64) {
+        let Some(e) = self.all.iter_mut().find(|e| e.name == name) else {
+            return;
+        };
+        if e.size == size {
+            return;
+        }
+        e.size = size;
+        if self.opts.sort.key == crate::sort::SortKey::Size {
+            self.resort();
+        }
+    }
+
     /// Sets the names from the folder's `.hidden` file; they count as hidden files.
     pub fn set_hidden_names(&mut self, names: std::collections::HashSet<String>) {
         if self.hidden_names != names {
@@ -243,13 +257,15 @@ mod tests {
             key: SortKey::Size,
             ..SortSpec::default()
         });
-        assert_eq!(names(&m), ["Docs", "a2.txt", "b.txt", "a10.txt"]);
+        // biggest first, folders among the files
+        assert_eq!(names(&m), ["a10.txt", "b.txt", "a2.txt", "Docs"]);
         m.set_sort(SortSpec {
             key: SortKey::Modified,
             reverse: true,
             dirs_first: true,
         });
-        assert_eq!(names(&m), ["Docs", "a2.txt", "a10.txt", "b.txt"]);
+        // reversed: oldest first
+        assert_eq!(names(&m), ["b.txt", "Docs", "a10.txt", "a2.txt"]);
     }
 
     #[test]
@@ -310,5 +326,18 @@ mod tests {
         // half-typed terms are text, never an error
         m.set_filter("size>");
         assert!(m.is_empty());
+    }
+
+    #[test]
+    fn measured_folder_sizes_sort_by_size() {
+        let mut m = sample();
+        m.set_sort(SortSpec {
+            key: crate::sort::SortKey::Size,
+            ..SortSpec::default()
+        });
+        m.set_size("Docs", 1_000);
+        assert_eq!(names(&m)[0], "Docs");
+        assert_eq!(m.find("Docs").map(|e| e.size), Some(1_000));
+        m.set_size("nope", 5);
     }
 }

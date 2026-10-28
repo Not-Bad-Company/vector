@@ -46,7 +46,10 @@ impl Default for SortSpec {
 /// Orders two entries by `spec`. Ties on the key fall back to natural name order, so the order is
 /// total and stable across reloads.
 pub fn compare(a: &Entry, b: &Entry, spec: &SortSpec) -> Ordering {
-    if spec.dirs_first && a.is_dir() != b.is_dir() {
+    // by size or date, folders take their place among the files (biggest/newest first is
+    // what those sorts are for); by name or type they come first
+    let groups = matches!(spec.key, SortKey::Name | SortKey::Type);
+    if spec.dirs_first && groups && a.is_dir() != b.is_dir() {
         return if a.is_dir() {
             Ordering::Less
         } else {
@@ -55,8 +58,8 @@ pub fn compare(a: &Entry, b: &Entry, spec: &SortSpec) -> Ordering {
     }
     let by_key = match spec.key {
         SortKey::Name => Ordering::Equal,
-        SortKey::Size => a.size.cmp(&b.size),
-        SortKey::Modified => a.modified.cmp(&b.modified),
+        SortKey::Size => b.size.cmp(&a.size),
+        SortKey::Modified => b.modified.cmp(&a.modified),
         SortKey::Type => cmp_ignore_case(a.extension(), b.extension()),
     };
     let ord = by_key.then_with(|| natural_cmp(&a.name, &b.name));
@@ -158,7 +161,7 @@ mod tests {
     }
 
     #[test]
-    fn dirs_first_by_every_key() {
+    fn dirs_first_by_name_and_type_biggest_and_newest_first() {
         let v = vec![
             entry("b.txt", Kind::File, 5, 30),
             entry("zdir", Kind::Dir, 0, 10),
@@ -171,12 +174,12 @@ mod tests {
             key: SortKey::Size,
             ..name
         };
-        assert_eq!(sorted(v.clone(), size), ["adir", "zdir", "b.txt", "a.rs"]);
+        assert_eq!(sorted(v.clone(), size), ["a.rs", "b.txt", "adir", "zdir"]);
         let mtime = SortSpec {
             key: SortKey::Modified,
             ..name
         };
-        assert_eq!(sorted(v.clone(), mtime), ["zdir", "adir", "a.rs", "b.txt"]);
+        assert_eq!(sorted(v.clone(), mtime), ["adir", "b.txt", "a.rs", "zdir"]);
         let ty = SortSpec {
             key: SortKey::Type,
             ..name
