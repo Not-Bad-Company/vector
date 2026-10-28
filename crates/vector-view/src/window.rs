@@ -137,6 +137,10 @@ pub struct Win {
     bars_timer: RefCell<Option<glib::SourceId>>,
     /// Tab in fullscreen: the floating bars stay.
     bars_pinned: Cell<bool>,
+    /// Space is held down (a video): tapped it pauses, held it plays at 2× until let go.
+    space_down: Cell<bool>,
+    space_fast: Cell<bool>,
+    space_timer: RefCell<Option<glib::SourceId>>,
     help: Rc<crate::help::HelpPanel>,
     info: gtk::Revealer,
     info_rows: gtk::Grid,
@@ -290,11 +294,11 @@ impl Win {
         start.append(&order_btn);
 
         let center = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        let prev = button(icon::PREV, "previous  ·  ←");
-        let back = button(icon::BACK, "back 5 s  ·  [");
+        let prev = button(icon::PREV, "previous  ·  shift+←");
+        let back = button(icon::BACK, "back 5 s  ·  ←");
         let play = button(icon::PAUSE, "pause  ·  space");
-        let fwd = button(icon::FORWARD, "forward 5 s  ·  ]");
-        let next = button(icon::NEXT, "next  ·  →");
+        let fwd = button(icon::FORWARD, "forward 5 s  ·  →");
+        let next = button(icon::NEXT, "next  ·  shift+→");
         let time = label("", &["dim", "time"]);
         for w in [&prev, &back, &play, &fwd, &next] {
             center.append(w);
@@ -376,6 +380,9 @@ impl Win {
             bottom_bar,
             bars_timer: RefCell::default(),
             bars_pinned: Cell::new(false),
+            space_down: Cell::new(false),
+            space_fast: Cell::new(false),
+            space_timer: RefCell::default(),
             help,
             info,
             info_rows,
@@ -2011,16 +2018,79 @@ impl Win {
         let ctl = gtk::EventControllerKey::new();
         ctl.set_propagation_phase(gtk::PropagationPhase::Capture);
         let me = self.weak.borrow().clone();
-        ctl.connect_key_pressed(move |_, keyval, _, state| {
-            let Some(me) = me.upgrade() else {
-                return glib::Propagation::Proceed;
-            };
-            match to_key(keyval, state) {
-                Some(k) if me.handle_key(k) => glib::Propagation::Stop,
-                _ => glib::Propagation::Proceed,
+        ctl.connect_key_pressed(glib::clone!(
+            #[strong]
+            me,
+            move |_, keyval, _, state| {
+                let Some(me) = me.upgrade() else {
+                    return glib::Propagation::Proceed;
+                };
+                if keyval == gdk::Key::space && me.space_pressed(state) {
+                    return glib::Propagation::Stop;
+                }
+                match to_key(keyval, state) {
+                    Some(k) if me.handle_key(k) => glib::Propagation::Stop,
+                    _ => glib::Propagation::Proceed,
+                }
+            }
+        ));
+        ctl.connect_key_released(move |_, keyval, _, _| {
+            if keyval == gdk::Key::space
+                && let Some(me) = me.upgrade()
+            {
+                me.space_released();
             }
         });
         self.window.add_controller(ctl);
+    }
+
+    /// Space on a video: wait to see whether it is a tap (pause) or held (2× while held).
+    /// Returns whether it was taken.
+    fn space_pressed(&self, state: gdk::ModifierType) -> bool {
+        if self.kind() != Some(Kind::Video)
+            || self.help.root.is_visible()
+            || self.stack.visible_child_name().as_deref() == Some("grid")
+            || state.intersects(
+                gdk::ModifierType::SHIFT_MASK
+                    | gdk::ModifierType::CONTROL_MASK
+                    | gdk::ModifierType::ALT_MASK,
+            )
+        {
+            return false;
+        }
+        // the keyboard repeats a held key: only the first press counts
+        if self.space_down.replace(true) {
+            return true;
+        }
+        let me = self.weak.borrow().clone();
+        let id = glib::timeout_add_local_once(Duration::from_millis(300), move || {
+            let Some(me) = me.upgrade() else { return };
+            me.space_timer.borrow_mut().take();
+            if me.space_down.get() {
+                me.space_fast.set(true);
+                me.video.set_pause(false);
+                me.video.set_speed(2.0);
+                me.notify("2× while space is held");
+            }
+        });
+        if let Some(old) = self.space_timer.replace(Some(id)) {
+            old.remove();
+        }
+        true
+    }
+
+    fn space_released(&self) {
+        if !self.space_down.replace(false) {
+            return;
+        }
+        if let Some(id) = self.space_timer.borrow_mut().take() {
+            id.remove();
+        }
+        if self.space_fast.replace(false) {
+            self.video.set_speed(1.0);
+        } else {
+            self.handle_key(Key::Char(' '));
+        }
     }
 
     /// Runs one key. Returns false when it isn't ours (the grid's arrows, for example).
@@ -2050,8 +2120,11 @@ impl Win {
         let paged = matches!(kind, Some(Kind::Pdf | Kind::Office));
         let video = kind == Some(Kind::Video);
         match key {
-            Key::Left => self.step(-1),
-            Key::Right => self.step(1),
+            // a video: arrows seek (held: keep seeking); shift+arrows (n, p) change file
+            Key::Left if video => self.video.seek(-5.0),
+            Key::Right if video => self.video.seek(5.0),
+            Key::Left | Key::Char('p') => self.step(-1),
+            Key::Right | Key::Char('n') => self.step(1),
             Key::PageUp if paged => self.pdf.scroll(-1.0),
             Key::PageDown if paged => self.pdf.scroll(1.0),
             Key::PageUp => self.step(-1),
@@ -2121,9 +2194,9 @@ fn to_key(keyval: gdk::Key, state: gdk::ModifierType) -> Option<Key> {
         K::Escape => Key::Esc,
         K::Tab => Key::Tab,
         K::Delete | K::KP_Delete => Key::Delete,
-        // shift+arrows seek, ctrl+arrows pan
-        K::Left if shift => Key::Char('['),
-        K::Right if shift => Key::Char(']'),
+        // shift+arrows change file (plain arrows seek in a video), ctrl+arrows pan
+        K::Left if shift => Key::Char('p'),
+        K::Right if shift => Key::Char('n'),
         K::Left if ctrl => Key::Char('h'),
         K::Right if ctrl => Key::Char('l'),
         K::Up if ctrl => Key::Char('k'),

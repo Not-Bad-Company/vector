@@ -434,7 +434,10 @@ pub const VIEW: &[Topic] = &[
         title: "move",
         intro: "Stepping through the folder.",
         lines: &[
-            ("← →", "previous, next file (wraps around)"),
+            (
+                "← →  shift+← shift+→",
+                "previous, next file (wraps around); in a video only with shift",
+            ),
             ("home end", "first, last file (top, bottom of a PDF)"),
             (
                 "g",
@@ -461,8 +464,12 @@ pub const VIEW: &[Topic] = &[
         title: "video",
         intro: "Videos and GIFs play in mpv inside the window.",
         lines: &[
-            ("space", "pause, play"),
-            ("[ ]  shift+← shift+→", "back, forward 5 seconds"),
+            (
+                "space",
+                "pause, play; hold it for 2× speed until you let go",
+            ),
+            ("← →  [ ]", "back, forward 5 seconds (hold to keep going)"),
+            ("shift+← shift+→", "previous, next file"),
             (", .", "one frame back, forward"),
             ("↑ ↓", "volume"),
             ("click or drag the timeline", "seek"),

@@ -290,6 +290,13 @@ impl Video {
         }
     }
 
+    /// Playback speed (1 is normal).
+    pub fn set_speed(&self, speed: f64) {
+        if let Some(m) = &self.mpv {
+            m.set_f64("speed", speed);
+        }
+    }
+
     pub fn add_volume(&self, d: f64) {
         if let Some(m) = &self.mpv {
             let v = (m.f64("volume").unwrap_or(100.0) + d).clamp(0.0, 130.0);
