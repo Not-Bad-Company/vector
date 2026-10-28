@@ -91,7 +91,8 @@ It is flat and quiet to look at, never blocks on slow disks, and asks before any
 Three rules shaped it:
 
 * **The window never freezes.** Listing, copying, measuring, searching and previews all run off the
-  main thread. A folder of 50 000 files paints in about a tenth of a second.
+  main thread. A folder of 50 000 files shows its first rows within a third of a second and is
+  fully listed in under a second, while the window keeps responding.
 * **Nothing is lost by accident.** `d` moves to the trash, `D` deletes for good after a confirmation,
   and `u` undoes renames, moves, copies, new files and trashing.
 * **Your tools stay in charge.** Files open in `$EDITOR`, terminals come from `xdg-terminal-exec` or

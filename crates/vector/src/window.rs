@@ -778,7 +778,10 @@ impl Win {
             parts.push(format!("loading {}", m.total()));
         } else {
             let hidden = m.total().saturating_sub(m.len());
-            parts.push(format!("{} items", m.len()));
+            parts.push(match m.len() {
+                1 => "1 item".to_string(),
+                n => format!("{n} items"),
+            });
             if hidden > 0 && m.options().filter.is_empty() && !m.options().show_hidden {
                 parts.push(format!("{hidden} hidden"));
             }
@@ -2617,7 +2620,13 @@ impl Win {
                             .errors
                             .iter()
                             .filter(|e| e.kind != ErrorKind::TrashUnsupported)
-                            .map(|e| e.to_string())
+                            // "rename a → b: name is taken", not "…: b: name is taken"
+                            .map(|e| match e.path.file_name() {
+                                Some(n) if report.label.contains(&*n.to_string_lossy()) => {
+                                    e.message.clone()
+                                }
+                                _ => e.to_string(),
+                            })
                             .collect();
                         if report.cancelled {
                             win.notify(&format!("{} cancelled", report.label));

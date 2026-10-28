@@ -1003,12 +1003,7 @@ impl Pane {
             let mut row = view.first_child();
             while let Some(r) = row {
                 if let Some(content) = r.first_child() {
-                    // SAFETY: only ever set to Cell<u32> by the factories below
-                    let pos = unsafe {
-                        content
-                            .data::<Cell<u32>>("vector-pos")
-                            .map(|c| c.as_ref().get())
-                    };
+                    let pos = position_of(&content);
                     if pos.is_some() && pos == cur {
                         content.add_css_class("cursor");
                     } else {
@@ -1097,9 +1092,8 @@ impl Pane {
         let w = self.root.root()?.focus()?;
         let mut cur = Some(w);
         while let Some(c) = cur {
-            if let Some(pos) = unsafe { c.data::<Cell<u32>>("vector-pos") } {
-                // SAFETY: only ever set to Cell<u32> by the factories below
-                return Some(unsafe { pos.as_ref() }.get());
+            if let Some(pos) = position_of(&c) {
+                return Some(pos);
             }
             cur = c.parent();
         }
@@ -1286,8 +1280,8 @@ fn entry_of(item: &gtk::ListItem) -> Option<Entry> {
 /// Shared per-row setup: remembers its position for focus tracking, drag source, drop target
 /// for folders, right click.
 fn common_setup(w: &gtk::Widget, item: &gtk::ListItem, pane: &Weak<Pane>) {
-    // SAFETY: the key is private to this module and always holds a Cell<u32>
-    unsafe { w.set_data("vector-pos", Cell::new(u32::MAX)) };
+    // SAFETY: the key is private to this module and always holds a WeakRef<ListItem>
+    unsafe { w.set_data("vector-item", item.downgrade()) };
     let drag = gtk::DragSource::new();
     drag.set_actions(gdk::DragAction::COPY | gdk::DragAction::MOVE);
     let (p, it) = (pane.clone(), item.downgrade());
@@ -1367,11 +1361,15 @@ fn common_setup(w: &gtk::Widget, item: &gtk::ListItem, pane: &Weak<Pane>) {
     w.add_controller(menu);
 }
 
-fn set_pos(w: &gtk::Widget, pos: u32) {
+/// Where the row's item is in the list now. Asked of the list item itself: GTK moves rows
+/// to new positions (after a sort) without binding them again, so a remembered position
+/// goes stale and would light up the wrong row.
+fn position_of(w: &gtk::Widget) -> Option<u32> {
     // SAFETY: see common_setup
-    if let Some(cell) = unsafe { w.data::<Cell<u32>>("vector-pos") } {
-        unsafe { cell.as_ref() }.set(pos);
-    }
+    let item = unsafe { w.data::<glib::WeakRef<gtk::ListItem>>("vector-item") }?;
+    let item = unsafe { item.as_ref() }.upgrade()?;
+    let pos = item.position();
+    (pos != gtk::INVALID_LIST_POSITION).then_some(pos)
 }
 
 fn label(classes: &[&str]) -> gtk::Label {
@@ -1433,7 +1431,6 @@ fn row_factory(pane: Weak<Pane>) -> gtk::SignalListItemFactory {
         else {
             return;
         };
-        set_pos(&row, item.position());
         pane.register_row(&row, item.position());
         let labels: Vec<gtk::Label> =
             std::iter::successors(row.first_child(), |w| w.next_sibling())
@@ -1542,7 +1539,6 @@ fn tile_factory(pane: Weak<Pane>) -> gtk::SignalListItemFactory {
         let (Some(tile), Some(e)) = (item.child(), entry_of(item)) else {
             return;
         };
-        set_pos(&tile, item.position());
         if let Some(p) = pane.upgrade() {
             p.register_row(&tile, item.position());
         }

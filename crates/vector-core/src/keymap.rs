@@ -102,7 +102,7 @@ fn named_key(name: &str) -> Option<Key> {
         "tab" => Key::Tab,
         "s-tab" => Key::BackTab,
         "bs" => Key::Backspace,
-        "del" => Key::Delete,
+        "del" | "delete" => Key::Delete,
         "s-del" => Key::ShiftDelete,
         "up" => Key::Up,
         "down" => Key::Down,
