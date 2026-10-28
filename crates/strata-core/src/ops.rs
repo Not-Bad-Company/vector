@@ -111,6 +111,8 @@ pub enum UndoStep {
         now: PathBuf,
         back: PathBuf,
     },
+    /// Remove a file or folder this operation created, only if it is still empty.
+    RemoveCreated(PathBuf),
 }
 
 /// How to undo one finished operation; steps run in reverse order.
@@ -159,8 +161,6 @@ impl OpError {
             ErrorKind::Exists
         } else if e.matches(gio::IOErrorEnum::NotFound) {
             ErrorKind::NotFound
-        } else if e.matches(gio::IOErrorEnum::NotSupported) {
-            ErrorKind::TrashUnsupported
         } else {
             ErrorKind::Other
         };
@@ -377,7 +377,11 @@ impl<'a> Worker<'a> {
         self.undo.label = op.label();
         let undoable = matches!(
             op,
-            Op::Trash { .. } | Op::Rename { .. } | Op::Move { .. } | Op::ApplyEdit { .. }
+            Op::Trash { .. }
+                | Op::Rename { .. }
+                | Op::Move { .. }
+                | Op::ApplyEdit { .. }
+                | Op::Undo(_)
         );
         match op {
             Op::Copy {
@@ -432,6 +436,14 @@ impl<'a> Worker<'a> {
             Op::ApplyEdit { dir, plan } => self.apply_edit(&dir, &plan),
             Op::Undo(record) => self.undo_steps(record),
         }
+        if self.total > 0 {
+            let _ = self.tx.send_blocking(OpEvent::Progress {
+                id: self.id,
+                done: self.done.min(self.total),
+                total: self.total,
+                current: String::new(),
+            });
+        }
         let report = std::mem::take(&mut self.report);
         let undo = undoable.then(|| std::mem::take(&mut self.undo));
         (report, undo)
@@ -442,7 +454,7 @@ impl<'a> Worker<'a> {
     }
 
     fn progress(&mut self, current: &Path) {
-        if self.last.elapsed() >= PROGRESS_EVERY || self.done >= self.total {
+        if self.last.elapsed() >= PROGRESS_EVERY {
             self.last = Instant::now();
             let _ = self.tx.send_blocking(OpEvent::Progress {
                 id: self.id,
@@ -472,7 +484,7 @@ impl<'a> Worker<'a> {
                     .push(OpError::new(src, ErrorKind::Other, "no file name"));
                 continue;
             };
-            if dest.starts_with(src) {
+            if inside(dest, src) {
                 self.report.errors.push(OpError::new(
                     src,
                     ErrorKind::Other,
@@ -507,7 +519,7 @@ impl<'a> Worker<'a> {
             match df.make_directory(Some(self.cancel)) {
                 Ok(()) => {}
                 // merging into an existing folder
-                Err(e) if e.matches(gio::IOErrorEnum::Exists) && overwrite && is_dir(dst) => {}
+                Err(e) if e.matches(gio::IOErrorEnum::Exists) && overwrite && is_real_dir(dst) => {}
                 Err(e) => return Err(OpError::from_glib(dst, &e)),
             }
             let children = list_names(&sf, self.cancel).map_err(|e| OpError::from_glib(src, &e))?;
@@ -581,7 +593,7 @@ impl<'a> Worker<'a> {
             if target == *src {
                 continue;
             }
-            if dest.starts_with(src) {
+            if inside(dest, src) {
                 self.report.errors.push(OpError::new(
                     src,
                     ErrorKind::Other,
@@ -597,7 +609,7 @@ impl<'a> Worker<'a> {
                     Conflict::Overwrite => overwrite = true,
                 }
             }
-            let merge = overwrite && is_dir(&target) && is_dir(src) && !is_symlink(src);
+            let merge = overwrite && is_real_dir(&target) && is_real_dir(src);
             let res = if merge {
                 // the merged items are mixed with what was there; no undo for them
                 self.merge_move(src, &target)
@@ -629,10 +641,14 @@ impl<'a> Worker<'a> {
             // a folder to another file system: copy everything, then remove the original only
             // if every byte arrived
             Err(e) if e.matches(gio::IOErrorEnum::WouldRecurse) => {
+                // progress counts bytes while this item copies, then items again
                 let (done, total) = (self.done, self.total);
-                self.copy_tree(src, dst, overwrite)?;
+                self.done = 0;
+                self.total = tree_size(src);
+                let copied = self.copy_tree(src, dst, overwrite);
                 self.done = done;
                 self.total = total;
+                copied?;
                 self.delete_tree(&sf, src)
             }
             Err(e) => Err(OpError::from_glib(src, &e)),
@@ -645,7 +661,7 @@ impl<'a> Worker<'a> {
         let mut first_err = None;
         for child in children {
             let (s, d) = (src.join(&child), dst.join(&child));
-            let r = if is_dir(&s) && !is_symlink(&s) && is_dir(&d) {
+            let r = if is_real_dir(&s) && is_real_dir(&d) {
                 self.merge_move(&s, &d)
             } else {
                 self.move_one(&s, &d, true)
@@ -667,7 +683,13 @@ impl<'a> Worker<'a> {
         let started = std::time::SystemTime::now();
         gio::File::for_path(p)
             .trash(Some(self.cancel))
-            .map_err(|e| OpError::from_glib(p, &e))?;
+            .map_err(|e| {
+                let mut err = OpError::from_glib(p, &e);
+                if e.matches(gio::IOErrorEnum::NotSupported) {
+                    err.kind = ErrorKind::TrashUnsupported;
+                }
+                err
+            })?;
         if let Some(t) = find_trashed(p, started) {
             self.undo.steps.push(UndoStep::Restore(t));
         }
@@ -752,11 +774,17 @@ impl<'a> Worker<'a> {
                     gio::File::for_path(&p)
                         .make_directory(Some(self.cancel))
                         .map_err(|e| OpError::from_glib(&p, &e))
-                        .map(|()| self.report.created.push(p))
+                        .map(|()| {
+                            self.undo.steps.push(UndoStep::RemoveCreated(p.clone()));
+                            self.report.created.push(p)
+                        })
                 }
                 Change::Create { path, dir: false } => {
                     let p = dir.join(path);
-                    self.new_file(&p).map(|()| self.report.created.push(p))
+                    self.new_file(&p).map(|()| {
+                        self.undo.steps.push(UndoStep::RemoveCreated(p.clone()));
+                        self.report.created.push(p)
+                    })
                 }
                 Change::Rename { from, to } => {
                     let (s, d) = (dir.join(from), dir.join(to));
@@ -778,11 +806,16 @@ impl<'a> Worker<'a> {
         }
     }
 
+    /// Runs the steps last to first. Steps that fail or are not reached (cancel) stay in
+    /// `self.undo`, so the next undo can try them again.
     fn undo_steps(&mut self, record: Undo) {
         self.total = record.steps.len() as u64;
+        self.undo.label = record.label.clone();
+        let mut left = Vec::new();
         for step in record.steps.into_iter().rev() {
             if self.cancelled() {
-                break;
+                left.push(step);
+                continue;
             }
             let res = match &step {
                 UndoStep::MoveBack { now, back } => {
@@ -794,12 +827,16 @@ impl<'a> Worker<'a> {
                     }
                 }
                 UndoStep::Restore(t) => self.restore(t),
+                UndoStep::RemoveCreated(p) => remove_if_untouched(p),
             };
             if let Err(e) = res {
                 self.report.errors.push(e);
+                left.push(step);
             }
             self.step(1, Path::new(""));
         }
+        left.reverse();
+        self.undo.steps = left;
     }
 
     fn restore(&mut self, t: &Trashed) -> Result<(), OpError> {
@@ -824,12 +861,41 @@ impl<'a> Worker<'a> {
     }
 }
 
-fn is_dir(p: &Path) -> bool {
-    std::fs::metadata(p).is_ok_and(|m| m.is_dir())
+/// Whether `dest` is `src` or below it, also through symlinks.
+fn inside(dest: &Path, src: &Path) -> bool {
+    let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    dest.starts_with(src) || real(dest).starts_with(real(src))
 }
 
-fn is_symlink(p: &Path) -> bool {
-    std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink())
+/// A real folder, not a symlink to one.
+fn is_real_dir(p: &Path) -> bool {
+    std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir())
+}
+
+/// Removes `p` if it is an empty file or an empty folder; otherwise leaves it and says why.
+fn remove_if_untouched(p: &Path) -> Result<(), OpError> {
+    let m = std::fs::symlink_metadata(p)
+        .map_err(|e| OpError::new(p, ErrorKind::NotFound, e.to_string()))?;
+    let empty = if m.is_dir() {
+        std::fs::read_dir(p)
+            .map(|mut d| d.next().is_none())
+            .unwrap_or(false)
+    } else {
+        m.is_file() && m.len() == 0
+    };
+    if !empty {
+        return Err(OpError::new(
+            p,
+            ErrorKind::Other,
+            "changed since it was created; left in place",
+        ));
+    }
+    let r = if m.is_dir() {
+        std::fs::remove_dir(p)
+    } else {
+        std::fs::remove_file(p)
+    };
+    r.map_err(|e| OpError::new(p, ErrorKind::Other, e.to_string()))
 }
 
 fn list_names(f: &gio::File, cancel: &gio::Cancellable) -> Result<Vec<PathBuf>, glib::Error> {
@@ -866,6 +932,10 @@ fn find_trashed(orig: &Path, since: std::time::SystemTime) -> Option<Trashed> {
         Some(i) if i > 0 => name[..i].to_string(),
         _ => name,
     };
+    let real_orig = orig
+        .parent()
+        .and_then(|p| std::fs::canonicalize(p).ok())
+        .map(|p| p.join(orig.file_name().unwrap_or_default()));
     let mut best: Option<(std::time::SystemTime, Trashed)> = None;
     for (trash, top) in trash_dirs(orig) {
         let Ok(rd) = std::fs::read_dir(trash.join("info")) else {
@@ -897,7 +967,7 @@ fn find_trashed(orig: &Path, since: std::time::SystemTime) -> Option<Trashed> {
             } else {
                 top.join(path)
             };
-            if full != orig {
+            if full != orig && Some(&full) != real_orig.as_ref() {
                 continue;
             }
             let t = Trashed {
@@ -1467,5 +1537,123 @@ mod tests {
         assert_eq!(free_name(d, ".bashrc"), ".bashrc (2)");
         assert_eq!(free_name(d, "folder"), "folder (2)");
         assert_eq!(split_ext(".tar"), (".tar", ""));
+    }
+
+    #[test]
+    fn copy_through_symlinked_destination_into_itself_is_refused() {
+        let t = scratch();
+        let d = t.path();
+        tree(d);
+        std::os::unix::fs::symlink(d.join("src/sub"), d.join("lnk")).unwrap();
+        let q = OpQueue::new();
+        let (r, _) = run(
+            &q,
+            Op::Copy {
+                sources: vec![d.join("src")],
+                dest: d.join("lnk"),
+                conflict: Conflict::KeepBoth,
+            },
+        );
+        assert_eq!(r.errors.len(), 1);
+        let (r, _) = run(
+            &q,
+            Op::Move {
+                sources: vec![d.join("src")],
+                dest: d.join("lnk"),
+                conflict: Conflict::KeepBoth,
+            },
+        );
+        assert_eq!(r.errors.len(), 1);
+        assert!(d.join("src/a.txt").exists());
+    }
+
+    #[test]
+    fn overwrite_never_merges_through_a_symlink() {
+        let t = scratch();
+        let d = t.path();
+        fs::create_dir_all(d.join("from/proj")).unwrap();
+        fs::write(d.join("from/proj/new"), "n").unwrap();
+        fs::create_dir_all(d.join("elsewhere")).unwrap();
+        fs::create_dir_all(d.join("dst")).unwrap();
+        std::os::unix::fs::symlink(d.join("elsewhere"), d.join("dst/proj")).unwrap();
+        let q = OpQueue::new();
+        let _ = run(
+            &q,
+            Op::Copy {
+                sources: vec![d.join("from/proj")],
+                dest: d.join("dst"),
+                conflict: Conflict::Overwrite,
+            },
+        );
+        let _ = run(
+            &q,
+            Op::Move {
+                sources: vec![d.join("from/proj")],
+                dest: d.join("dst"),
+                conflict: Conflict::Overwrite,
+            },
+        );
+        assert!(!d.join("elsewhere/new").exists());
+    }
+
+    #[test]
+    fn failed_undo_steps_stay_undoable() {
+        let t = scratch();
+        let d = t.path();
+        fs::write(d.join("a"), "").unwrap();
+        let q = OpQueue::new();
+        ok(
+            &q,
+            Op::Rename {
+                path: d.join("a"),
+                new_name: "b".into(),
+            },
+        );
+        fs::write(d.join("a"), "blocker").unwrap();
+        q.undo().unwrap();
+        while !matches!(q.events.recv_blocking().unwrap(), OpEvent::Finished { .. }) {}
+        assert!(q.can_undo());
+        fs::remove_file(d.join("a")).unwrap();
+        q.undo().unwrap();
+        while !matches!(q.events.recv_blocking().unwrap(), OpEvent::Finished { .. }) {}
+        assert!(d.join("a").exists() && !d.join("b").exists());
+        assert!(!q.can_undo());
+    }
+
+    #[test]
+    fn undo_of_edit_removes_untouched_creations_only() {
+        let t = scratch();
+        let d = t.path();
+        let plan = crate::edit::plan(&[], "empty.txt\nkept.txt\nnewdir/\n").unwrap();
+        let q = OpQueue::new();
+        ok(
+            &q,
+            Op::ApplyEdit {
+                dir: d.to_path_buf(),
+                plan,
+            },
+        );
+        fs::write(d.join("kept.txt"), "typed into it").unwrap();
+        q.undo().unwrap();
+        let r = loop {
+            if let OpEvent::Finished { report, .. } = q.events.recv_blocking().unwrap() {
+                break report;
+            }
+        };
+        assert_eq!(r.errors.len(), 1);
+        assert!(!d.join("empty.txt").exists() && !d.join("newdir").exists());
+        assert_eq!(
+            fs::read_to_string(d.join("kept.txt")).unwrap(),
+            "typed into it"
+        );
+    }
+
+    #[test]
+    fn not_supported_outside_trash_is_not_trash_unsupported() {
+        let e = glib::Error::new(gio::IOErrorEnum::NotSupported, "nope");
+        assert_eq!(
+            OpError::from_glib(Path::new("/x"), &e).kind,
+            ErrorKind::Other
+        );
     }
 }

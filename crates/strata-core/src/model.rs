@@ -106,12 +106,12 @@ impl DirModel {
         if self.all.is_empty() {
             self.all = batch;
         } else {
-            for e in batch {
-                if let Some(i) = self.all.iter().position(|x| x.name == e.name) {
-                    self.all.swap_remove(i);
-                }
-                self.all.push(e);
+            let incoming: std::collections::HashSet<&str> =
+                batch.iter().map(|e| e.name.as_str()).collect();
+            if self.all.iter().any(|x| incoming.contains(x.name.as_str())) {
+                self.all.retain(|x| !incoming.contains(x.name.as_str()));
             }
+            self.all.extend(batch);
         }
         self.resort();
     }

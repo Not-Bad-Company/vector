@@ -34,6 +34,7 @@ impl Drop for Listing {
 const FIRST_BATCH: usize = 300;
 const BATCH: usize = 5000;
 const BATCH_INTERVAL: Duration = Duration::from_millis(60);
+const MAX_ERRORS_IN_A_ROW: usize = 64;
 
 /// Starts listing `dir` on a worker thread.
 pub fn spawn(dir: &Path) -> Listing {
@@ -82,13 +83,24 @@ pub fn list_blocking(
     let mut batch = Vec::with_capacity(FIRST_BATCH);
     let mut limit = FIRST_BATCH;
     let mut last_send = Instant::now();
+    let mut errors_in_a_row = 0;
     loop {
         match en.next_file(Some(cancel)) {
-            Ok(Some(info)) => batch.push(Entry::from_info(dir, &info)),
+            Ok(Some(info)) => {
+                errors_in_a_row = 0;
+                batch.push(Entry::from_info(dir, &info));
+            }
             Ok(None) => break,
-            // one unreadable entry (e.g. a stale NAS file) must not end the listing
             Err(e) if e.matches(gio::IOErrorEnum::Cancelled) => return Err(e),
-            Err(_) => continue,
+            // one unreadable entry (e.g. a stale NAS file) must not end the listing, but an
+            // enumerator that only fails any more (I/O error, dead mount) must
+            Err(e) => {
+                errors_in_a_row += 1;
+                if errors_in_a_row >= MAX_ERRORS_IN_A_ROW {
+                    return Err(e);
+                }
+                continue;
+            }
         }
         if batch.len() >= limit || last_send.elapsed() >= BATCH_INTERVAL {
             if !send(std::mem::take(&mut batch)) {
@@ -135,6 +147,7 @@ pub fn watch(dir: &Path, on_change: impl Fn(DirChange) + 'static) -> Result<Watc
         folder.monitor_directory(gio::FileMonitorFlags::WATCH_MOVES, gio::Cancellable::NONE)?;
     let dir = dir.to_path_buf();
     let on_change = std::rc::Rc::new(on_change);
+    let gens: Gens = Gens::default();
     monitor.connect_changed(move |_, file, other, event| {
         use gio::FileMonitorEvent as E;
         let is_self = file.path().as_deref() == Some(dir.as_path());
@@ -142,7 +155,7 @@ pub fn watch(dir: &Path, on_change: impl Fn(DirChange) + 'static) -> Result<Watc
             E::Deleted | E::MovedOut | E::Unmounted if is_self => on_change(DirChange::Gone),
             E::Deleted | E::MovedOut => {
                 if let Some(name) = file.basename() {
-                    on_change(DirChange::Remove(name.to_string_lossy().into_owned()));
+                    remove(&gens, &*on_change, name.to_string_lossy().into_owned());
                 }
             }
             E::Renamed => {
@@ -151,16 +164,16 @@ pub fn watch(dir: &Path, on_change: impl Fn(DirChange) + 'static) -> Result<Watc
                     return;
                 }
                 if let Some(name) = file.basename() {
-                    on_change(DirChange::Remove(name.to_string_lossy().into_owned()));
+                    remove(&gens, &*on_change, name.to_string_lossy().into_owned());
                 }
                 if let Some(new) = other
                     && new.parent().and_then(|p| p.path()).as_deref() == Some(dir.as_path())
                 {
-                    query_and_send(&dir, new, on_change.clone());
+                    query_and_send(&dir, new, &gens, on_change.clone());
                 }
             }
             E::Created | E::ChangesDoneHint | E::AttributeChanged | E::MovedIn if !is_self => {
-                query_and_send(&dir, file, on_change.clone());
+                query_and_send(&dir, file, &gens, on_change.clone());
             }
             _ => {}
         }
@@ -168,21 +181,48 @@ pub fn watch(dir: &Path, on_change: impl Fn(DirChange) + 'static) -> Result<Watc
     Ok(Watcher { monitor })
 }
 
-fn query_and_send(dir: &Path, file: &gio::File, on_change: std::rc::Rc<dyn Fn(DirChange)>) {
+/// Per-name counters, bumped on every event for a name. An async query whose name was touched
+/// again before it finished is dropped, so a slow answer can't resurrect a removed entry.
+type Gens = std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, u64>>>;
+
+fn bump(gens: &Gens, name: &str) -> u64 {
+    let mut g = gens.borrow_mut();
+    let n = g.entry(name.to_string()).or_insert(0);
+    *n += 1;
+    *n
+}
+
+fn remove(gens: &Gens, on_change: &dyn Fn(DirChange), name: String) {
+    bump(gens, &name);
+    on_change(DirChange::Remove(name));
+}
+
+fn query_and_send(
+    dir: &Path,
+    file: &gio::File,
+    gens: &Gens,
+    on_change: std::rc::Rc<dyn Fn(DirChange)>,
+) {
     let dir = dir.to_path_buf();
     let name = file.basename().map(|n| n.to_string_lossy().into_owned());
+    let started = name.as_deref().map(|n| bump(gens, n));
+    let gens = gens.clone();
     file.query_info_async(
         ATTRIBUTES,
         gio::FileQueryInfoFlags::NONE,
         glib::Priority::DEFAULT,
         gio::Cancellable::NONE,
-        move |res| match res {
-            Ok(info) => on_change(DirChange::Upsert(Entry::from_info(&dir, &info))),
-            // gone again before we could look at it
-            Err(_) => {
-                if let Some(name) = name {
-                    on_change(DirChange::Remove(name));
-                }
+        move |res| {
+            let Some(name) = name else { return };
+            let current = gens.borrow().get(&name).copied();
+            if current != started {
+                return;
+            }
+            gens.borrow_mut().remove(&name);
+            match res {
+                Ok(info) => on_change(DirChange::Upsert(Entry::from_info(&dir, &info))),
+                // gone again before we could look at it
+                Err(_) => on_change(DirChange::Remove(name)),
             }
         },
     );

@@ -308,7 +308,11 @@ pub fn plan(original: &[Listed], edited: &str) -> Result<Plan, EditError> {
                     let to = if entry.name.contains('/') {
                         let top = entry.name.split('/').next().unwrap_or("");
                         let was = dir_renames.iter().any(|d| d.from == top);
-                        let becomes = dir_renames.iter().any(|d| d.to == top);
+                        let top_slash = format!("{top}/");
+                        let becomes = dir_renames.iter().any(|d| d.to == top)
+                            || parsed.iter().any(|e| {
+                                e.id.is_none() && (e.name == top || e.name.starts_with(&top_slash))
+                            });
                         if was && becomes {
                             return Err(EditError::AmbiguousParent {
                                 line: entry.line,
@@ -470,17 +474,9 @@ pub fn plan(original: &[Listed], edited: &str) -> Result<Plan, EditError> {
         .into_iter()
         .map(|name| Change::Delete { name })
         .collect::<Vec<_>>();
-    let mut sorted_dirs: Vec<_> = dir_creates.into_iter().collect();
-    sorted_dirs
-        .sort_by(|(a, _), (b, _)| (a.matches('/').count(), a).cmp(&(b.matches('/').count(), b)));
-    changes.extend(
-        sorted_dirs
-            .into_iter()
-            .map(|(path, _)| Change::Create { path, dir: true }),
-    );
-
-    let pending: Vec<RenameEntry> = renames;
-    changes.extend(schedule_renames(pending, &original_names)?);
+    let mut sorted_dirs: Vec<String> = dir_creates.into_keys().collect();
+    sorted_dirs.sort_by(|a, b| (a.matches('/').count(), a).cmp(&(b.matches('/').count(), b)));
+    changes.extend(schedule(renames, sorted_dirs, &original_names)?);
     file_creates.sort_by_key(|entry| entry.line);
     changes.extend(file_creates.into_iter().map(|entry| Change::Create {
         path: entry.name,
@@ -502,40 +498,78 @@ pub fn plan(original: &[Listed], edited: &str) -> Result<Plan, EditError> {
     Ok(Plan { changes })
 }
 
-/// Orders renames so none lands on a name that is still taken and none moves into a folder
-/// before that folder has its final name. Cycles (swaps, rotations) go through a temporary name.
-fn schedule_renames(
-    mut pending: Vec<RenameEntry>,
+enum Step {
+    Rename(RenameEntry),
+    Mkdir(String),
+}
+
+fn parent_of(path: &str) -> Option<&str> {
+    path.rsplit_once('/').map(|(parent, _)| parent)
+}
+
+/// Orders renames and folder creations so that none lands on a name that is still taken,
+/// nothing goes into a folder before that folder exists under its final name, and a new folder
+/// waits for the rename that frees its name. Cycles (swaps, rotations) go through a temporary
+/// name.
+fn schedule(
+    renames: Vec<RenameEntry>,
+    mkdirs: Vec<String>,
     original_names: &HashSet<String>,
 ) -> Result<Vec<Change>, EditError> {
+    let mut used: HashSet<String> = renames.iter().map(|e| e.to.clone()).collect();
+    used.extend(mkdirs.iter().cloned());
+    let mut pending: Vec<Step> = mkdirs.into_iter().map(Step::Mkdir).collect();
+    pending.extend(renames.into_iter().map(Step::Rename));
     let mut output = Vec::new();
     let mut temp_counter = 1usize;
-    let mut used: HashSet<String> = pending.iter().map(|e| e.to.clone()).collect();
     while !pending.is_empty() {
-        let ready = pending.iter().position(|entry| {
-            let blocked_by_source = pending.iter().any(|o| o.from == entry.to);
-            let parent = entry.to.split('/').next().unwrap_or("");
-            let blocked_by_parent = entry.to.contains('/')
-                && pending
-                    .iter()
-                    .any(|o| o.to == parent && o.from != entry.from);
-            !blocked_by_source && !blocked_by_parent
+        let freed_later = |name: &str| {
+            pending
+                .iter()
+                .any(|o| matches!(o, Step::Rename(r) if r.from == name))
+        };
+        let parent_pending = |parent: &str, me: Option<&str>| {
+            pending.iter().any(|o| match o {
+                Step::Mkdir(p) => p == parent,
+                Step::Rename(r) => r.to == parent && Some(r.from.as_str()) != me,
+            })
+        };
+        let ready = pending.iter().position(|step| match step {
+            Step::Rename(e) => {
+                !freed_later(&e.to)
+                    && !parent_of(&e.to).is_some_and(|p| parent_pending(p, Some(&e.from)))
+            }
+            Step::Mkdir(path) => {
+                !freed_later(path) && !parent_of(path).is_some_and(|p| parent_pending(p, None))
+            }
         });
         if let Some(index) = ready {
-            let entry = pending.remove(index);
-            output.push(Change::Rename {
-                from: entry.from,
-                to: entry.to,
+            output.push(match pending.remove(index) {
+                Step::Rename(e) => Change::Rename {
+                    from: e.from,
+                    to: e.to,
+                },
+                Step::Mkdir(path) => Change::Create { path, dir: true },
             });
             continue;
         }
-        // stuck: free a name that another pending rename is waiting for
+        // stuck: move a rename's source out of the way of whoever waits for its name
+        let waiting_for = |name: &str| {
+            pending.iter().any(|o| match o {
+                Step::Mkdir(p) => p == name,
+                Step::Rename(r) => r.to == name,
+            })
+        };
         let Some(index) = pending
             .iter()
-            .position(|e| pending.iter().any(|o| o.to == e.from))
+            .position(|step| matches!(step, Step::Rename(e) if waiting_for(&e.from)))
         else {
+            let line = pending.iter().find_map(|step| match step {
+                Step::Rename(e) => Some(e.line),
+                Step::Mkdir(_) => None,
+            });
             return Err(EditError::Unschedulable {
-                line: pending[0].line,
+                line: line.unwrap_or(0),
             });
         };
         let temp = loop {
@@ -546,12 +580,13 @@ fn schedule_renames(
             }
         };
         used.insert(temp.clone());
-        let entry = &mut pending[index];
-        output.push(Change::Rename {
-            from: entry.from.clone(),
-            to: temp.clone(),
-        });
-        entry.from = temp;
+        if let Step::Rename(entry) = &mut pending[index] {
+            output.push(Change::Rename {
+                from: entry.from.clone(),
+                to: temp.clone(),
+            });
+            entry.from = temp;
+        }
     }
     Ok(output)
 }
@@ -930,6 +965,27 @@ mod tests {
                 "create  notes/",
                 "create  x/y.txt"
             ]
+        );
+    }
+
+    #[test]
+    fn new_folder_waits_for_the_rename_that_frees_its_name() {
+        let entries = [dir(1, "a"), file(2, "f")];
+        let p = plan(&entries, "/001 b/\na/\na/x\n/002 f\n").unwrap();
+        assert_eq!(
+            set(&p.changes, &["a", "f"]),
+            BTreeSet::from(["a".into(), "a/x".into(), "b".into(), "f".into()])
+        );
+        // "a/f": the old a (now b) or the new a? abort
+        assert!(matches!(
+            plan(&entries, "/001 b/\na/\n/002 a/f\n"),
+            Err(EditError::AmbiguousParent { line: 3, .. })
+        ));
+        let entries = [file(1, "a")];
+        let p = plan(&entries, "/001 b\na/\n").unwrap();
+        assert_eq!(
+            set(&p.changes, &["a"]),
+            BTreeSet::from(["a".into(), "b".into()])
         );
     }
 }

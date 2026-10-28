@@ -265,14 +265,23 @@ impl Keymap {
     pub fn feed(&mut self, key: Key) -> Feed {
         if key == Key::Esc {
             self.reset();
-            return Feed::Run { action: Action::Escape, count: 1 };
+            return Feed::Run {
+                action: Action::Escape,
+                count: 1,
+            };
         }
         if self.pending.is_empty()
             && let Key::Char(c @ '0'..='9') = key
             && (c != '0' || self.count.is_some())
         {
             let d = c as usize - '0' as usize;
-            self.count = Some(self.count.unwrap_or(0).saturating_mul(10).saturating_add(d).min(1_000_000));
+            self.count = Some(
+                self.count
+                    .unwrap_or(0)
+                    .saturating_mul(10)
+                    .saturating_add(d)
+                    .min(1_000_000),
+            );
             return Feed::Pending;
         }
         self.pending.push(key);
@@ -285,7 +294,10 @@ impl Keymap {
                     (_, c) => c.unwrap_or(1),
                 };
                 self.reset();
-                return Feed::Run { action: *action, count };
+                return Feed::Run {
+                    action: *action,
+                    count,
+                };
             }
             if keys.len() > self.pending.len() && keys.starts_with(&self.pending) {
                 prefix = true;
@@ -335,7 +347,10 @@ mod tests {
                 Key::Char('>'),
             ]
         );
-        assert_eq!(parse_keys(":mkdir ä"), ":mkdir ä".chars().map(Key::Char).collect::<Vec<_>>());
+        assert_eq!(
+            parse_keys(":mkdir ä"),
+            ":mkdir ä".chars().map(Key::Char).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -356,7 +371,10 @@ mod tests {
     #[test]
     fn counts() {
         assert_eq!(run("5j"), [Feed::Pending, act(Action::Down, 5)]);
-        assert_eq!(run("12k"), [Feed::Pending, Feed::Pending, act(Action::Up, 12)]);
+        assert_eq!(
+            run("12k"),
+            [Feed::Pending, Feed::Pending, act(Action::Up, 12)]
+        );
         assert_eq!(run("G"), [act(Action::Bottom, 0)]);
         assert_eq!(run("3G"), [Feed::Pending, act(Action::Bottom, 3)]);
         // 0 alone is not a count
@@ -366,7 +384,13 @@ mod tests {
         for _ in 0..30 {
             m.feed(Key::Char('9'));
         }
-        assert!(matches!(m.feed(Key::Char('j')), Feed::Run { count: 1_000_000, .. }));
+        assert!(matches!(
+            m.feed(Key::Char('j')),
+            Feed::Run {
+                count: 1_000_000,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -374,8 +398,14 @@ mod tests {
         assert_eq!(run("q"), [Feed::Unbound]);
         assert_eq!(run("gq"), [Feed::Pending, Feed::Unbound]);
         // after a broken sequence the next key starts fresh
-        assert_eq!(run("gqj"), [Feed::Pending, Feed::Unbound, act(Action::Down, 1)]);
-        assert_eq!(run("5<Esc>j"), [Feed::Pending, act(Action::Escape, 1), act(Action::Down, 1)]);
+        assert_eq!(
+            run("gqj"),
+            [Feed::Pending, Feed::Unbound, act(Action::Down, 1)]
+        );
+        assert_eq!(
+            run("5<Esc>j"),
+            [Feed::Pending, act(Action::Escape, 1), act(Action::Down, 1)]
+        );
         assert_eq!(run("y<Esc>"), [Feed::Pending, act(Action::Escape, 1)]);
     }
 
@@ -395,7 +425,10 @@ mod tests {
         for (a, _) in BINDINGS {
             for (b, _) in BINDINGS {
                 let (ka, kb) = (parse_keys(a), parse_keys(b));
-                assert!(!(ka.len() < kb.len() && kb.starts_with(&ka)), "{a} shadows {b}");
+                assert!(
+                    !(ka.len() < kb.len() && kb.starts_with(&ka)),
+                    "{a} shadows {b}"
+                );
             }
         }
     }
