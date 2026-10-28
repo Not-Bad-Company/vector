@@ -99,6 +99,13 @@ pub fn quick(e: &Entry) -> Vec<Row> {
                 format!("{desc} · {ct}")
             },
         ));
+        // in the trash: where it came from
+        if let Some((from, when)) = vector_core::trash::origin(p) {
+            rows.push(("from".into(), from.display().to_string()));
+            if !when.is_empty() {
+                rows.push(("trashed".into(), when));
+            }
+        }
         rows.push(("permissions".into(), details::permissions(m.mode())));
         rows.push((
             "owner".into(),

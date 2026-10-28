@@ -96,6 +96,8 @@ pub struct Win {
     completions: RefCell<(Vec<String>, usize, usize)>,
     picker: RefCell<Option<Picker>>,
     dialog: RefCell<Option<Dialog>>,
+    help: Rc<crate::help::HelpPanel>,
+    help_open: Cell<bool>,
     preview_timer: RefCell<Option<glib::SourceId>>,
     edit_poll: RefCell<Option<glib::SourceId>>,
     search_cancel: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
@@ -300,6 +302,12 @@ impl Win {
                 completions: RefCell::default(),
                 picker: RefCell::new(None),
                 dialog: RefCell::new(None),
+                help: crate::help::HelpPanel::new(
+                    "Vector Find",
+                    vector_core::help::FIND,
+                    "unzip, rename, find, hidden, trash",
+                ),
+                help_open: Cell::new(false),
                 preview_timer: RefCell::new(None),
                 edit_poll: RefCell::new(None),
                 search_cancel: RefCell::new(None),
@@ -986,6 +994,20 @@ impl Win {
                 self.leave_line();
                 true
             }
+            Key::Enter if self.mode.get() == Mode::Filter => {
+                let text = self.cmd_entry.text().to_string();
+                let nothing_here = self.pane().model.borrow().is_empty();
+                self.leave_line();
+                // `//name`: every folder below; a filter matching nothing here: look below too
+                if let Some(q) = text.strip_prefix('/') {
+                    self.find_below(q.trim());
+                } else if nothing_here && !text.trim().is_empty() {
+                    self.pane().model.borrow_mut().set_filter("");
+                    self.pane().refresh();
+                    self.find_below(text.trim());
+                }
+                true
+            }
             Key::Enter => {
                 let text = self.cmd_entry.text().to_string();
                 let was = self.mode.get();
@@ -1075,7 +1097,19 @@ impl Win {
             match win.mode.get() {
                 Mode::Filter => {
                     let pane = win.pane();
-                    pane.model.borrow_mut().set_filter(&e.text());
+                    let text = e.text();
+                    // `//`: a search below this folder (on enter), not a filter of it
+                    if let Some(rest) = text.strip_prefix('/') {
+                        pane.model.borrow_mut().set_filter("");
+                        pane.refresh();
+                        if rest.is_empty() {
+                            win.flash(
+                                "// finds in every folder below this one · type a name, enter",
+                            );
+                        }
+                        return;
+                    }
+                    pane.model.borrow_mut().set_filter(&text);
                     pane.selection
                         .borrow_mut()
                         .set_cursor(&pane.model.borrow(), 0);
@@ -1317,6 +1351,10 @@ impl Win {
             Action::Paste => {
                 self.last_change.set(Some(action));
                 self.paste();
+            }
+            Action::Restore => self.run_command(Command::Restore),
+            Action::Trash if vector_core::trash::is_trash(&pane.dir()) => {
+                self.flash("already in the trash · gr puts it back, D deletes it for good")
             }
             Action::BatchRename if self.read_only() => {}
             Action::BatchRename => {
@@ -1699,6 +1737,8 @@ impl Win {
         match c {
             Command::New(_) | Command::Mkdir(_) | Command::Edit(_) if self.read_only() => {}
             Command::Extract { replace } => self.extract_archives(replace),
+            Command::Restore => self.restore_from_trash(),
+            Command::EmptyTrash => self.empty_trash(),
             Command::BatchRename(_) if self.read_only() => {}
             Command::BatchRename(pattern) => self.batch_rename(&pattern),
             Command::New(name) => {
@@ -1722,6 +1762,15 @@ impl Win {
                             .ok()
                             .flatten();
                     let Some(win) = weak.upgrade() else { return };
+                    // a bare name that isn't here: a place, drive or bookmark by that name
+                    let place = (kind.is_none() && !p.contains('/'))
+                        .then(|| win.sidebar.find(&p))
+                        .flatten();
+                    if let Some(place) = place {
+                        win.pane().open_dir(&place);
+                        win.pane().focus_view();
+                        return;
+                    }
                     match (kind, target.parent()) {
                         (Some(true), _) => {
                             win.pane().open_dir(&target);
@@ -1732,8 +1781,9 @@ impl Win {
                             win.pane().select_paths(std::slice::from_ref(&target));
                         }
                         _ => win.flash_error(&format!(
-                            "no such folder or file: {}",
-                            display_path(&target)
+                            "no such folder or file: {} · //{} searches below this folder",
+                            display_path(&target),
+                            p.trim_start_matches("./")
                         )),
                     }
                     win.pane().focus_view();
@@ -2026,6 +2076,90 @@ impl Win {
                 }
             });
         }
+    }
+
+    /// `gr` / `:restore`: the selected trash items go back where they came from (with their
+    /// folder recreated; never over something that is there now).
+    fn restore_from_trash(&self) {
+        let pane = self.pane();
+        if !vector_core::trash::is_trash(&pane.dir()) {
+            self.flash("gr restores things in the Trash (sidebar, or :cd trash)");
+            return;
+        }
+        let names: Vec<String> = pane.targets().into_iter().map(|e| e.name).collect();
+        if names.is_empty() {
+            return;
+        }
+        if vector_core::no_launch() {
+            self.flash(&format!("test run: would restore {} item(s)", names.len()));
+            return;
+        }
+        let weak = self.weak_self.borrow().clone();
+        glib::spawn_future_local(async move {
+            let (mut done, mut failed) = (0, Vec::new());
+            for n in &names {
+                let uri = format!("trash:///{}", glib::Uri::escape_string(n, None, false));
+                let args = ["gio", "trash", "--restore", uri.as_str()];
+                let args: Vec<&std::ffi::OsStr> = args.iter().map(std::ffi::OsStr::new).collect();
+                let ok = match gio::Subprocess::newv(&args, gio::SubprocessFlags::STDERR_SILENCE) {
+                    Ok(p) => p.wait_check_future().await.is_ok(),
+                    Err(_) => false,
+                };
+                if ok {
+                    done += 1;
+                } else {
+                    failed.push(n.clone());
+                }
+            }
+            let Some(win) = weak.upgrade() else { return };
+            if failed.is_empty() {
+                win.notify(&format!("restored {done} item{}", plural(done)));
+            } else {
+                win.flash_error(&format!(
+                    "restored {done}; not restored (something is in the way?): {}",
+                    failed.join(", ")
+                ));
+            }
+            win.pane().reload();
+        });
+    }
+
+    /// `:empty-trash`: deletes everything in the trash, after asking.
+    fn empty_trash(&self) {
+        self.show_dialog(
+            "empty the trash?",
+            &[],
+            "everything in it is deleted for good",
+            vec![
+                cancel(),
+                button("empty trash", "danger", |w, _| {
+                    if vector_core::no_launch() {
+                        w.flash("test run: would empty the trash");
+                        return;
+                    }
+                    let weak = w.weak_self.borrow().clone();
+                    glib::spawn_future_local(async move {
+                        let args: Vec<&std::ffi::OsStr> = ["gio", "trash", "--empty"]
+                            .iter()
+                            .map(std::ffi::OsStr::new)
+                            .collect();
+                        let ok = match gio::Subprocess::newv(&args, gio::SubprocessFlags::NONE) {
+                            Ok(p) => p.wait_check_future().await.is_ok(),
+                            Err(_) => false,
+                        };
+                        if let Some(win) = weak.upgrade() {
+                            if ok {
+                                win.notify("trash emptied");
+                            } else {
+                                win.flash_error("couldn't empty the trash");
+                            }
+                            win.pane().reload();
+                        }
+                    });
+                }),
+            ],
+            None,
+        );
     }
 
     /// The type of a file as the listing has it (from its name), else a guess from the name.
@@ -2875,6 +3009,18 @@ impl Win {
 
     // ── :find / :grep ───────────────────────────────────────────────────────
 
+    /// `//name` and filters that match nothing here: a fuzzy search of every folder below.
+    fn find_below(&self, q: &str) {
+        if q.is_empty() {
+            return;
+        }
+        if self.pane().in_archive.get() {
+            self.flash("searching works outside archives; / filters this folder");
+            return;
+        }
+        self.search(q.to_string(), false);
+    }
+
     fn search(&self, query: String, content: bool) {
         if let Some(c) = self.search_cancel.borrow_mut().take() {
             c.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -3296,131 +3442,38 @@ impl Win {
         *self.dialog.borrow_mut() = Some(Dialog { actions, entry });
     }
 
-    /// The key cheat sheet, as a card like the other dialogs.
+    /// `?`: the help panel, on the topic for what you are doing (typing searches all of it).
     fn show_help(&self) {
-        const KEYS: &[(&str, &[(&str, &str)])] = &[
-            (
-                "move",
-                &[
-                    ("j k", "down, up (5j: five down)"),
-                    ("gg G", "first, last"),
-                    ("l enter", "open (grid: l moves right)"),
-                    ("h -", "parent folder (grid: h moves left)"),
-                    ("ctrl+h ctrl+l", "sidebar, files"),
-                    ("H L", "back, forward"),
-                    ("ctrl+d ctrl+u", "page down, up"),
-                ],
-            ),
-            (
-                "files",
-                &[
-                    ("y x p", "copy, cut, paste (ctrl+c/x/v too)"),
-                    ("d", "move to trash"),
-                    ("D", "delete permanently"),
-                    ("r R", "rename, rename by pattern"),
-                    ("X gX", "extract archive (gX: then trash it)"),
-                    ("e", "edit file in $EDITOR"),
-                    ("Y", "copy folder path"),
-                    ("m M", "pin here, pin everywhere"),
-                    ("u .", "undo, repeat"),
-                    ("v space", "select range, mark one and move on"),
-                ],
-            ),
-            (
-                "view",
-                &[
-                    ("/", "filter: text, *.exe, ext:pdf, type:image"),
-                    ("", "size>10m, mod<7d, !not"),
-                    ("i", "preview"),
-                    ("w :view", "list / grid"),
-                    ("zh", "hidden files"),
-                    ("s tab", "split, other pane"),
-                    ("ctrl+t gt ctrl+w", "new tab, next tab, close tab"),
-                    (":q :qa", "close pane or tab, close window"),
-                ],
-            ),
-            (
-                "more",
-                &[
-                    (":", "commands, tab completes"),
-                    (":flat", "every file below this folder"),
-                    ("ge", "edit names in $EDITOR"),
-                    ("gs", "folder size"),
-                    ("gm", "menu"),
-                    ("gx", "terminal here"),
-                    ("F4", "terminal panel (keeps its state)"),
-                    (":agent", "claude, codex, aider… in this folder"),
-                    ("ctrl+l", "type or paste a path"),
-                    (":e name", "open or create a file in $EDITOR"),
-                ],
-            ),
-        ];
+        let topic = if self.side_cursor.get().is_some() {
+            "move"
+        } else {
+            match self.mode.get() {
+                Mode::Visual => "files",
+                Mode::Filter => "find",
+                Mode::Command => "commands",
+                Mode::Normal if self.pane().in_archive.get() => "archives",
+                Mode::Normal => "start",
+            }
+        };
+        self.leave_visual();
         while let Some(c) = self.overlay_layer.first_child() {
             self.overlay_layer.remove(&c);
         }
-        let card = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        card.add_css_class("card");
-        let head = gtk::Label::new(Some("keys"));
-        head.add_css_class("title");
-        head.set_xalign(0.0);
-        let hb = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        hb.add_css_class("head");
-        hb.append(&head);
-        card.append(&hb);
-        let cols = gtk::Box::new(gtk::Orientation::Horizontal, 24);
-        cols.add_css_class("body");
-        for pair in KEYS.chunks(2) {
-            // one grid per column, so keys line up across its sections
-            let grid = gtk::Grid::new();
-            grid.set_column_spacing(16);
-            grid.set_row_spacing(4);
-            let mut row = 0;
-            for (section, rows) in pair {
-                let sl = gtk::Label::new(Some(section));
-                sl.add_css_class("dim");
-                sl.set_xalign(0.0);
-                sl.set_margin_top(if row == 0 { 0 } else { 10 });
-                grid.attach(&sl, 0, row, 2, 1);
-                row += 1;
-                for (k, d) in rows.iter() {
-                    let kl = gtk::Label::new(Some(k));
-                    kl.add_css_class("ok");
-                    kl.set_xalign(0.0);
-                    let dl = gtk::Label::new(Some(d));
-                    dl.set_xalign(0.0);
-                    grid.attach(&kl, 0, row, 1, 1);
-                    grid.attach(&dl, 1, row, 1, 1);
-                    row += 1;
-                }
-            }
-            cols.append(&grid);
-        }
-        card.append(&cols);
-        let foot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        foot.add_css_class("foot");
-        foot.set_halign(gtk::Align::End);
-        let close = gtk::Button::with_label("close");
-        close.add_css_class("link");
-        let weak = self.weak_self.borrow().clone();
-        close.connect_clicked(move |_| {
-            if let Some(w) = weak.upgrade() {
-                w.close_dialog(0);
-            }
-        });
-        foot.append(&close);
-        card.append(&foot);
-        self.overlay_layer.append(&card);
+        self.overlay_layer.append(&self.help.root);
         self.overlay_layer.set_visible(true);
         *self.dialog.borrow_mut() = Some(Dialog {
             actions: vec![Box::new(|_, _| {})],
-            entry: None,
+            entry: Some(self.help.search.clone()),
         });
+        self.help_open.set(true);
+        self.help.open(self.help.tab_named(topic));
     }
 
     fn close_dialog(&self, choice: usize) {
         let Some(d) = self.dialog.borrow_mut().take() else {
             return;
         };
+        self.help_open.set(false);
         self.renaming.set(false);
         self.update_status();
         self.overlay_layer.set_visible(false);
@@ -3440,6 +3493,10 @@ impl Win {
             None => return false,
         };
         match key {
+            // the help: tab moves between topics, enter (like esc) closes it
+            Key::Tab | Key::BackTab if self.help_open.get() => {
+                self.help.step_tab(key == Key::BackTab)
+            }
             Key::Esc => self.close_dialog(0),
             Key::Enter => self.close_dialog(n.saturating_sub(1)),
             Key::Char('y') if has_entry.is_none() => self.close_dialog(n.saturating_sub(1)),
@@ -3482,6 +3539,7 @@ impl Win {
             ("pin-global", Action::PinGlobal),
             ("extract", Action::Extract),
             ("extract-replace", Action::ExtractReplace),
+            ("restore", Action::Restore),
         ];
         for &(name, action) in simple {
             let a = gio::SimpleAction::new(name, None);
@@ -3493,6 +3551,14 @@ impl Win {
             });
             self.window.add_action(&a);
         }
+        let a = gio::SimpleAction::new("empty-trash", None);
+        let weak = self.weak_self.borrow().clone();
+        a.connect_activate(move |_, _| {
+            if let Some(win) = weak.upgrade() {
+                win.run_command(Command::EmptyTrash);
+            }
+        });
+        self.window.add_action(&a);
         let a = gio::SimpleAction::new("open-with", Some(glib::VariantTy::STRING));
         let weak = self.weak_self.borrow().clone();
         a.connect_activate(move |_, v| {
@@ -3607,6 +3673,12 @@ impl Win {
         if has_items {
             edit_items.append(Some("rename"), Some("win.rename"));
         }
+        if vector_core::trash::is_trash(&pane.dir()) {
+            if has_items {
+                edit_items.append(Some("restore (put back)"), Some("win.restore"));
+            }
+            edit_items.append(Some("empty trash"), Some("win.empty-trash"));
+        }
         if targets
             .iter()
             .any(|e| !e.is_dir() && vector_core::archive::is_archive_name(&e.path))
@@ -3631,11 +3703,12 @@ impl Win {
         more.append(Some("open terminal here"), Some("win.terminal"));
         more.append(Some("edit names in editor"), Some("win.edit"));
         menu.append_section(None, &more);
+        // "show only…": filters of the folder, in one submenu so they read as filters
         let only = gio::Menu::new();
         if let Some(e) = targets.first() {
             let ext = vector_core::entry::extension_of(&e.name).to_lowercase();
             if !e.is_dir() && !ext.is_empty() {
-                let item = gio::MenuItem::new(Some(&format!("only .{ext} files")), None);
+                let item = gio::MenuItem::new(Some(&format!(".{ext} files")), None);
                 item.set_action_and_target_value(
                     Some("win.filter"),
                     Some(&format!("ext:{ext}").to_variant()),
@@ -3644,8 +3717,9 @@ impl Win {
             }
             if let Some(class) = vector_core::filter::Class::of(e) {
                 let label = match class.name() {
-                    "dir" => "only folders".to_string(),
-                    n => format!("only {n} files"),
+                    "dir" => "folders".to_string(),
+                    "archive" => "archives (zip, tar…)".to_string(),
+                    n => format!("{n} files"),
                 };
                 let item = gio::MenuItem::new(Some(&label), None);
                 item.set_action_and_target_value(
@@ -3655,26 +3729,30 @@ impl Win {
                 only.append_item(&item);
             }
         }
-        if !pane.model.borrow().options().filter.is_empty() {
-            let item = gio::MenuItem::new(Some("clear filter"), None);
-            item.set_action_and_target_value(Some("win.filter"), Some(&String::new().to_variant()));
-            only.append_item(&item);
+        let view = gio::Menu::new();
+        if only.n_items() > 0 {
+            view.append_submenu(Some("show only"), &only);
         }
-        if has_items {
-            only.append(Some("pin in this folder"), Some("win.pin-here"));
-            only.append(Some("pin everywhere"), Some("win.pin-global"));
+        if !pane.model.borrow().options().filter.is_empty() {
+            let item = gio::MenuItem::new(Some("show everything (clear filter)"), None);
+            item.set_action_and_target_value(Some("win.filter"), Some(&String::new().to_variant()));
+            view.append_item(&item);
         }
         let flat = gio::MenuItem::new(
             Some(if pane.is_flat() {
                 "back to folder view"
             } else {
-                "show all files below"
+                "list every file below (flat)"
             }),
             None,
         );
         flat.set_action_and_target_value(Some("win.flat"), None);
-        only.append_item(&flat);
-        menu.append_section(None, &only);
+        view.append_item(&flat);
+        if has_items {
+            view.append(Some("pin to the top of this folder"), Some("win.pin-here"));
+            view.append(Some("pin to the sidebar"), Some("win.pin-global"));
+        }
+        menu.append_section(None, &view);
         if has_items {
             let danger = gio::Menu::new();
             danger.append(Some("move to trash"), Some("win.trash"));

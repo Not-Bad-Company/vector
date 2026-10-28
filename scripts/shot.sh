@@ -9,7 +9,7 @@ bin="$(dirname "$0")/../target/${PROFILE:-release}/vector-find"
 bin="$(realpath "$bin")"
 rm -rf "$out" $DEV/config/vector/settings.ini $DEV/state
 q() { printf '%q ' "$@"; }
-hyprctl dispatch exec "[workspace 9 silent;render_unfocused on] env ${VECTOR_ENV:-} XDG_CONFIG_HOME=$DEV/config XDG_CACHE_HOME=$DEV/cache XDG_STATE_HOME=$DEV/state VECTOR_TIMING=1 VECTOR_NO_CLIPBOARD=1 VECTOR_NO_LAUNCH=1 VECTOR_DEMO=1 ${VECTOR_EDIT_CMD:+VECTOR_EDIT_CMD=$VECTOR_EDIT_CMD }$(q "$bin" "$dir" --snapshot "$out" --keys "$keys" --size 1400x860 "$@") 2>$DEV/shots/last.log" >/dev/null
+hyprctl dispatch exec "[workspace 9 silent;render_unfocused on] env ${VECTOR_ENV:-} XDG_CONFIG_HOME=$DEV/config XDG_CACHE_HOME=$DEV/cache XDG_STATE_HOME=$DEV/state XDG_DATA_HOME=$DEV/data VECTOR_TIMING=1 VECTOR_NO_CLIPBOARD=1 VECTOR_NO_LAUNCH=1 VECTOR_DEMO=1 ${VECTOR_EDIT_CMD:+VECTOR_EDIT_CMD=$VECTOR_EDIT_CMD }$(q "$bin" "$dir" --snapshot "$out" --keys "$keys" --size 1400x860 "$@") 2>$DEV/shots/last.log" >/dev/null
 for _ in $(seq 1 150); do [ -s "$out" ] && break; sleep 0.1; done
 sleep 0.3
 # it quits by itself after the snapshot; close it if it did not

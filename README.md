@@ -314,6 +314,7 @@ are on the keyboard. Press `?` in Vector Find for the same list.
 | `ctrl+d` `ctrl+u` | page down, up |
 | `y` `x` `p` | copy, cut, paste (also `ctrl+c` `ctrl+x` `ctrl+v`, and with other apps) |
 | `d` / `D` | move to trash / delete permanently (asks first) |
+| `gr` | in the Trash (sidebar, or `:cd trash`): put the selection back where it came from |
 | `r` `F2` | rename |
 | `R` | rename the selection by a pattern (`:rename …`) |
 | `X` / `gX` | extract the archive next to it / and move the archive to the trash |
@@ -323,7 +324,8 @@ are on the keyboard. Press `?` in Vector Find for the same list.
 | `ge` | edit the names in this folder in `$EDITOR` |
 | `Y` | copy the path |
 | `m` `M` | pin here, pin to the sidebar |
-| `/` | filter |
+| `/` | filter this folder as you type |
+| `//` | find by name in every folder below (fuzzy; from Home that is all your files) |
 | `:` | command line (`tab` completes) |
 | `i` | preview pane |
 | `w` | list or grid (`:view list`, `:view grid`) |
@@ -336,7 +338,7 @@ are on the keyboard. Press `?` in Vector Find for the same list.
 | `gx` | terminal here |
 | `F4` | terminal panel |
 | `ctrl+r` `F5` | reload |
-| `?` `F1` | key guide |
+| `?` `F1` | help: every key, command and feature in tabs, with a search (type "unzip", "rename"…) |
 | `ZZ` | close the window |
 
 ### Commands
@@ -346,7 +348,7 @@ are on the keyboard. Press `?` in Vector Find for the same list.
 | `:new name`, `:touch name` | create a file |
 | `:mkdir name` | create a folder |
 | `:e [name]` | edit names in `$EDITOR`, or open/create `name` there, like vim |
-| `:cd path` | go to a folder (or to the folder of a file, with it selected) |
+| `:cd path` | go to a folder (or to the folder of a file, with it selected); a bare name that isn't here opens the place, drive or bookmark of that name (`:cd trash`, `:cd nas`) |
 | `:find text` | fuzzy-find file names below this folder |
 | `:grep pattern` | search file contents below this folder |
 | `:flat` | every file below this folder in one list |
@@ -357,6 +359,7 @@ are on the keyboard. Press `?` in Vector Find for the same list.
 | `:view [list\|grid]` | list or grid view (no argument switches) |
 | `:rename PATTERN` | rename the selection: `photo-{n}` (`{n}`, `{n:3}`, `{N}`, `{name}`, `{ext}`, `{date}`; the old extension is kept unless the pattern has a dot or `{ext}`), or `s/old/new/` |
 | `:extract` `:extract!` | extract the archive(s); `!` then moves the archive to the trash |
+| `:restore` `:empty-trash` | in the Trash: put the selection back; empty the trash (asks first) |
 | `:open [name]` | open with the default app |
 | `:term` | terminal here |
 | `:agent [name]` | start a coding agent (claude, codex, gemini, aider…) in the terminal panel |
@@ -366,7 +369,9 @@ Commands can be shortened to any unique prefix, so `:bi` is `:biggest`.
 
 ### Filters
 
-`/` filters the folder as you type. Separate terms with spaces; an item must match all of them:
+`/` filters the folder as you type; `//` instead searches every folder below by name (fuzzy:
+`//rndahh` finds `random_ahh.pdf`), and a `/` filter that matches nothing here offers the same on
+Enter. Separate filter terms with spaces; an item must match all of them:
 
 | Filter | Shows |
 |---|---|

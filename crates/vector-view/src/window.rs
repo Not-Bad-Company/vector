@@ -127,7 +127,7 @@ pub struct Win {
     grid_sel: gtk::SingleSelection,
     notice: gtk::Label,
     notice_timer: RefCell<Option<glib::SourceId>>,
-    help: gtk::Box,
+    help: Rc<crate::help::HelpPanel>,
     info: gtk::Revealer,
     info_rows: gtk::Grid,
     statusline: gtk::CenterBox,
@@ -244,9 +244,13 @@ impl Win {
         notice.set_visible(false);
         notice.set_can_target(false);
         overlay.add_overlay(&notice);
-        let help = help_card();
-        help.set_visible(false);
-        overlay.add_overlay(&help);
+        let help = crate::help::HelpPanel::new(
+            "Vector View",
+            vector_core::help::VIEW,
+            "zoom, gallery, frame, copy, trash",
+        );
+        help.root.set_visible(false);
+        overlay.add_overlay(&help.root);
 
         // ── timeline and statusline ──
         let timeline = gtk::DrawingArea::new();
@@ -826,7 +830,18 @@ impl Win {
     }
 
     fn toggle_help(&self) {
-        self.help.set_visible(!self.help.is_visible());
+        let show = !self.help.root.is_visible();
+        self.help.root.set_visible(show);
+        if show {
+            let topic = match self.current().map(|c| c.kind) {
+                Some(Kind::Video) => "video",
+                Some(Kind::Pdf | Kind::Office) => "documents",
+                _ => "start",
+            };
+            self.help.open(self.help.tab_named(topic));
+        } else {
+            self.window.grab_focus();
+        }
     }
 
     // ── zoom and pan ────────────────────────────────────────────────────────
@@ -1869,8 +1884,13 @@ impl Win {
 
     /// Runs one key. Returns false when it isn't ours (the grid's arrows, for example).
     pub fn handle_key(&self, key: Key) -> bool {
-        if self.help.is_visible() {
-            self.help.set_visible(false);
+        if self.help.root.is_visible() {
+            // typing goes to the help's search; tab changes topic, esc closes
+            match key {
+                Key::Esc => self.toggle_help(),
+                Key::Tab => self.help.step_tab(false),
+                _ => return false,
+            }
             return true;
         }
         let grid = self.stack.visible_child_name().as_deref() == Some("grid");
@@ -1990,104 +2010,4 @@ fn to_key(keyval: gdk::Key, state: gdk::ModifierType) -> Option<Key> {
         }
     };
     Some(k)
-}
-
-/// The `?` card: every key, laid out like vector-find's key guide.
-fn help_card() -> gtk::Box {
-    const KEYS: &[(&str, &[(&str, &str)])] = &[
-        (
-            "move",
-            &[
-                ("← →", "previous, next file (wraps)"),
-                ("home end", "first, last file"),
-                ("g", "gallery"),
-                ("o", "order: name, date, size, random, type"),
-            ],
-        ),
-        (
-            "zoom",
-            &[
-                ("wheel + -", "zoom toward the pointer"),
-                ("0 middle click", "fit to the window"),
-                ("1", "actual size"),
-                ("drag h j k l", "pan"),
-                ("z", "keep the zoom between files"),
-            ],
-        ),
-        (
-            "play and read",
-            &[
-                ("space", "pause; page down in a PDF"),
-                ("[ ] shift+← →", "seek 5 s"),
-                (", .", "frame back, forward"),
-                ("↑ ↓", "volume; scroll a PDF"),
-                ("ctrl+wheel", "zoom a PDF"),
-            ],
-        ),
-        (
-            "file",
-            &[
-                ("e", "open in the default app"),
-                ("m right click", "menu, open with"),
-                ("ctrl+o", "show in folder"),
-                ("s ctrl+c", "save frame, copy"),
-                ("i", "details"),
-                ("del del", "move to trash"),
-                ("f tab", "fullscreen, hide the bars"),
-                ("esc q", "leave fullscreen, close"),
-            ],
-        ),
-    ];
-    let card = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    card.add_css_class("card");
-    card.add_css_class("help");
-    card.set_halign(gtk::Align::Center);
-    card.set_valign(gtk::Align::Center);
-    let head = label("keys", &["title"]);
-    head.set_xalign(0.0);
-    let hb = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    hb.add_css_class("head");
-    hb.append(&head);
-    card.append(&hb);
-    let cols = gtk::Box::new(gtk::Orientation::Horizontal, 24);
-    cols.add_css_class("body");
-    for pair in KEYS.chunks(2) {
-        // one grid per column, so keys line up across its sections
-        let grid = gtk::Grid::new();
-        grid.set_column_spacing(16);
-        grid.set_row_spacing(4);
-        let mut row = 0;
-        for (section, rows) in pair {
-            let sl = label(section, &["dim"]);
-            sl.set_xalign(0.0);
-            sl.set_margin_top(if row == 0 { 0 } else { 10 });
-            grid.attach(&sl, 0, row, 2, 1);
-            row += 1;
-            for (k, d) in rows.iter() {
-                let kl = label(k, &["ok"]);
-                kl.set_xalign(0.0);
-                let dl = label(d, &[]);
-                dl.set_xalign(0.0);
-                grid.attach(&kl, 0, row, 1, 1);
-                grid.attach(&dl, 1, row, 1, 1);
-                row += 1;
-            }
-        }
-        cols.append(&grid);
-    }
-    card.append(&cols);
-    let foot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    foot.add_css_class("foot");
-    foot.set_halign(gtk::Align::End);
-    let close = gtk::Button::with_label("close");
-    close.add_css_class("link");
-    let c = card.downgrade();
-    close.connect_clicked(move |_| {
-        if let Some(c) = c.upgrade() {
-            c.set_visible(false);
-        }
-    });
-    foot.append(&close);
-    card.append(&foot);
-    card
 }

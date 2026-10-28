@@ -9,6 +9,7 @@ pub mod edit;
 pub mod entry;
 pub mod filter;
 pub mod git;
+pub mod help;
 pub mod icons;
 pub mod image;
 pub mod keymap;
@@ -25,6 +26,7 @@ pub mod selection;
 pub mod sort;
 pub mod style;
 pub mod theme;
+pub mod trash;
 
 #[cfg(test)]
 mod test_support;

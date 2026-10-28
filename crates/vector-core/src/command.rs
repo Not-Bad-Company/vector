@@ -36,6 +36,10 @@ pub enum Command {
     Hidden(Toggle),
     /// `:view [list|grid]`: show the folder as a list or a grid (no arg toggles).
     View(Option<bool>),
+    /// `:restore`: put trashed items back where they came from.
+    Restore,
+    /// `:empty-trash`: delete everything in the trash (asks first).
+    EmptyTrash,
     /// `:rename PATTERN`: rename the selection by a pattern (`photo-{n}`, `s/old/new/`).
     BatchRename(String),
     /// `:extract` (keep the archive) / `:extract!` (then trash it).
@@ -99,8 +103,28 @@ pub const AGENTS: [&str; 7] = [
 
 /// Command names, in the order completion offers them.
 pub const COMMANDS: &[&str] = &[
-    "new", "mkdir", "find", "grep", "cd", "sort", "hidden", "view", "extract", "rename", "open",
-    "term", "edit", "touch", "filter", "flat", "biggest", "agent", "quit", "quitall",
+    "new",
+    "mkdir",
+    "find",
+    "grep",
+    "cd",
+    "sort",
+    "hidden",
+    "view",
+    "extract",
+    "rename",
+    "restore",
+    "empty-trash",
+    "open",
+    "term",
+    "edit",
+    "touch",
+    "filter",
+    "flat",
+    "biggest",
+    "agent",
+    "quit",
+    "quitall",
 ];
 
 /// Parses what follows the `:` (a leading `:` is skipped too).
@@ -174,6 +198,8 @@ pub fn parse(line: &str) -> Result<Command, ParseError> {
             }),
         },
         "extract" if arg.is_empty() => Ok(Command::Extract { replace: bang }),
+        "restore" if arg.is_empty() => Ok(Command::Restore),
+        "empty-trash" if arg.is_empty() => Ok(Command::EmptyTrash),
         "rename" => required(arg, "rename").map(|p| Command::BatchRename(p.to_string())),
         "view" => match arg.to_ascii_lowercase().as_str() {
             "" => Ok(Command::View(None)),

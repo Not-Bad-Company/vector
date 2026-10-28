@@ -182,6 +182,10 @@ impl Sidebar {
             }
         }
         self.add_row(&self.places, PathBuf::from("/"), "Root", "\u{F02CA}", None);
+        let trash = vector_core::trash::files_dir();
+        if trash.is_dir() {
+            self.add_row(&self.places, trash, "Trash", "\u{F0A7A}", None);
+        }
     }
 
     fn add_row(
@@ -431,6 +435,19 @@ impl Sidebar {
             }
         }
         out
+    }
+
+    /// The place, drive or bookmark called `name` (case-insensitive): `:cd trash`, `:cd nas`.
+    pub fn find(&self, name: &str) -> Option<PathBuf> {
+        let want = name.trim().to_lowercase();
+        self.rows.borrow().iter().find_map(|(p, w)| {
+            let label = w
+                .first_child()
+                .and_then(|i| i.next_sibling())
+                .and_downcast::<gtk::Label>()
+                .map(|l| l.text().to_lowercase());
+            (label.as_deref() == Some(want.as_str())).then(|| p.clone())
+        })
     }
 
     pub fn len(&self) -> usize {

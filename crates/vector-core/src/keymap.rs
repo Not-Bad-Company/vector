@@ -191,6 +191,8 @@ pub enum Action {
     ExtractReplace,
     /// `R`: the command line with `rename ` typed, for a pattern rename of the selection.
     BatchRename,
+    /// `gr`: put trashed items back.
+    Restore,
     Quit,
 }
 
@@ -275,6 +277,7 @@ pub const BINDINGS: &[(&str, Action)] = &[
     ("X", Action::Extract),
     ("gX", Action::ExtractReplace),
     ("R", Action::BatchRename),
+    ("gr", Action::Restore),
     ("<F1>", Action::Help),
     ("<C-r>", Action::Reload),
     ("<F5>", Action::Reload),

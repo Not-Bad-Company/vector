@@ -169,6 +169,16 @@ progressbar progress {{ background: {acc}; min-height: 2px; border-radius: 0; }}
 .completions {{ border-top: 1px solid alpha({fg}, 0.08); padding: 4px 0; }}
 .completions .row {{ padding: 4px 16px; }}
 .message.crit {{ color: {red}; }}
+.help-panel {{ padding: 16px 0 10px 0; }}
+.help-panel .head {{ padding: 0 20px 12px 20px; }}
+.help-panel .help-tabs {{ padding: 0 12px; border-bottom: 1px solid alpha({fg}, 0.08); }}
+.help-panel .help-tabs button.link {{ padding: 6px 10px; border-bottom: 2px solid transparent; }}
+.help-panel .help-tabs button.link.primary {{ border-bottom-color: {acc}; }}
+.help-panel .body {{ padding: 14px 20px; }}
+.help-panel .help-intro {{ margin-bottom: 14px; opacity: 0.8; }}
+.help-panel .help-section {{ color: {acc}; font-weight: bold; margin: 12px 0 6px 0; }}
+.help-panel .help-sub {{ margin-top: 8px; }}
+.help-panel .foot {{ padding: 10px 20px 0 20px; }}
 button.link.app-row {{ padding: 5px 8px; opacity: 0.85; border-left: 2px solid transparent; }}
 button.link.app-row.target {{ opacity: 1; border-left-color: {acc}; background: alpha({acc}, 0.10); }}
 checkbutton.always {{ margin-top: 10px; }}

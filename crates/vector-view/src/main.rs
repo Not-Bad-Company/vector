@@ -6,6 +6,9 @@
 //! first file has loaded. `--size WxH` sets the window size.
 
 mod canvas;
+// the `?` panel is vector-find's, shared
+#[path = "../../vector/src/help.rs"]
+mod help;
 mod info;
 mod load;
 mod mpv;
@@ -98,9 +101,6 @@ button.link.danger-hover:hover {{ color: {red}; }}
 .pdf .page {{ background: white; box-shadow: 0 2px 14px alpha(black, 0.35); }}
 .info-panel {{ border-left: 1px solid alpha({fg}, 0.08); padding: 14px 16px; min-width: 328px; }}
 .info-panel .details-section {{ margin-bottom: 10px; }}
-.help {{ min-width: 560px; }}
-.help .head {{ padding-bottom: 12px; }}
-.help .foot {{ padding: 12px 16px 2px 16px; }}
 .tile {{ padding: 2px; }}
 .tile .big-icon {{ font-size: 40px; }}
 .empty {{ font-size: 13px; }}
