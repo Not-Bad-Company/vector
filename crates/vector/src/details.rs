@@ -99,7 +99,12 @@ pub fn quick(e: &Entry) -> Vec<Row> {
         rows.push(("permissions".into(), details::permissions(m.mode())));
         rows.push((
             "owner".into(),
-            format!("{}:{}", user_name(m.uid()), group_name(m.gid())),
+            // screenshots (VECTOR_DEMO) don't show the account they were taken on
+            if std::env::var_os("VECTOR_DEMO").is_some() {
+                "user:user".into()
+            } else {
+                format!("{}:{}", user_name(m.uid()), group_name(m.gid()))
+            },
         ));
         if m.file_type().is_symlink()
             && let Ok(t) = std::fs::read_link(p)

@@ -557,8 +557,8 @@ impl Sidebar {
         self.rows
             .borrow_mut()
             .retain(|(_, row)| row.parent().as_ref() != Some(self.devices.upcast_ref()));
-        // test runs and screenshots leave the machine's own drives out
-        let hide = std::env::var_os("VECTOR_HIDE_DEVICES").is_some();
+        // screenshots (VECTOR_DEMO) leave the machine's own drives out
+        let hide = std::env::var_os("VECTOR_DEMO").is_some();
         let (mounts, volumes) = if hide {
             (Vec::new(), Vec::new())
         } else {
