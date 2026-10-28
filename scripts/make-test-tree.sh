@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Builds the dummy tree vector is tested against. Never point vector at real files.
-#   scripts/make-test-tree.sh [root]     default: /tmp/claude-1000/vector-test
+#   scripts/make-test-tree.sh [root]     default: $VECTOR_DEV/tree ($TMPDIR/vector-dev/tree)
 #   BIG=1 also creates big/ with 50 000 empty files
 set -euo pipefail
-ROOT="${1:-/tmp/claude-1000/vector-test}"
+# scratch space for the dummy tree, screenshots and a private config (never real files)
+DEV="${VECTOR_DEV:-${TMPDIR:-/tmp}/vector-dev}"
+ROOT="${1:-$DEV/tree}"
 rm -rf "$ROOT"
 mkdir -p "$ROOT"
 cd "$ROOT"

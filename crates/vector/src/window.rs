@@ -3,6 +3,7 @@
 //! core keymap and operation queue.
 
 use std::cell::{Cell, RefCell};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
@@ -1729,15 +1730,19 @@ impl Win {
             launcher.set_cwd(parent);
         }
         let script = r#"exec ${VISUAL:-${EDITOR:-nvim}} "$1""#;
-        let argv = [
-            std::ffi::OsStr::new("xdg-terminal-exec"),
-            std::ffi::OsStr::new("sh"),
-            std::ffi::OsStr::new("-c"),
-            std::ffi::OsStr::new(script),
-            std::ffi::OsStr::new("sh"),
+        let cmd = [
+            OsStr::new("sh"),
+            OsStr::new("-c"),
+            OsStr::new(script),
+            OsStr::new("sh"),
             path.as_os_str(),
         ];
-        if let Err(e) = launcher.spawn(&argv) {
+        let Some(argv) = crate::terminal::argv(&cmd) else {
+            self.notify_error("no terminal found; set $TERMINAL or install xdg-terminal-exec");
+            return;
+        };
+        let refs: Vec<&OsStr> = argv.iter().map(|a| a.as_os_str()).collect();
+        if let Err(e) = launcher.spawn(&refs) {
             self.flash_error(&format!("editor: {}", e.message()));
         }
     }
@@ -1745,7 +1750,12 @@ impl Win {
     fn open_terminal(&self, dir: &Path) {
         let launcher = gio::SubprocessLauncher::new(gio::SubprocessFlags::NONE);
         launcher.set_cwd(dir);
-        if let Err(e) = launcher.spawn(&[std::ffi::OsStr::new("xdg-terminal-exec")]) {
+        let Some(argv) = crate::terminal::argv(&[]) else {
+            self.notify_error("no terminal found; set $TERMINAL or install xdg-terminal-exec");
+            return;
+        };
+        let refs: Vec<&OsStr> = argv.iter().map(|a| a.as_os_str()).collect();
+        if let Err(e) = launcher.spawn(&refs) {
             self.flash_error(&format!("terminal: {}", e.message()));
         }
     }
@@ -2266,7 +2276,7 @@ impl Win {
         }
         // The terminal may hand off to an already running instance and return at once, so the
         // shell inside it marks when nvim has really exited.
-        let script = r#"${VECTOR_EDITOR:-nvim} "$1"; : > "$1.done""#;
+        let script = r#"${VISUAL:-${EDITOR:-nvim}} "$1"; : > "$1.done""#;
         let mut argv: Vec<std::ffi::OsString> = match std::env::var_os("VECTOR_EDIT_CMD") {
             // tests: run the editor command directly, without a terminal
             Some(cmd) => vec![
@@ -2274,12 +2284,18 @@ impl Win {
                 "-c".into(),
                 format!("{} \"$1\"; : > \"$1.done\"", cmd.to_string_lossy()).into(),
             ],
-            None => vec![
-                "xdg-terminal-exec".into(),
-                "sh".into(),
-                "-c".into(),
-                script.into(),
-            ],
+            None => {
+                let cmd = [OsStr::new("sh"), OsStr::new("-c"), OsStr::new(script)];
+                match crate::terminal::argv(&cmd) {
+                    Some(v) => v,
+                    None => {
+                        self.notify_error(
+                            "no terminal found; set $TERMINAL or install xdg-terminal-exec",
+                        );
+                        return;
+                    }
+                }
+            }
         };
         argv.push("sh".into());
         argv.push(file.clone().into());

@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# Renders vector on workspace 9 (never on the user's screen) to a PNG and exits.
+# Development: renders vector on Hyprland workspace 9 (off screen) to a PNG and exits.
 #   scripts/shot.sh OUT.png [KEYS] [FOLDER] [extra args…]
 set -euo pipefail
-out="$1"; mkdir -p /tmp/claude-1000/vector-shots; keys="${2:-}"; dir="${3:-/tmp/claude-1000/vector-test}"; shift $(( $# < 3 ? $# : 3 ))
-bin="$(dirname "$0")/../target/release/vector"
+# scratch space for the dummy tree, screenshots and a private config (never real files)
+DEV="${VECTOR_DEV:-${TMPDIR:-/tmp}/vector-dev}"
+out="$1"; mkdir -p $DEV/shots; keys="${2:-}"; dir="${3:-$DEV/tree}"; shift $(( $# < 3 ? $# : 3 ))
+bin="$(dirname "$0")/../target/release/vector-fm"
 bin="$(realpath "$bin")"
-rm -f "$out" /tmp/claude-1000/vector-cfg/vector/settings.ini
+rm -f "$out" $DEV/config/vector/settings.ini
 q() { printf '%q ' "$@"; }
-hyprctl dispatch exec "[workspace 9 silent;render_unfocused on] env XDG_CONFIG_HOME=/tmp/claude-1000/vector-cfg XDG_CACHE_HOME=/tmp/claude-1000/vector-cache VECTOR_TIMING=1 VECTOR_NO_CLIPBOARD=1 ${VECTOR_EDIT_CMD:+VECTOR_EDIT_CMD=$VECTOR_EDIT_CMD }$(q "$bin" "$dir" --snapshot "$out" --keys "$keys" --size 1400x860 "$@") 2>/tmp/claude-1000/vector-shots/last.log" >/dev/null
+hyprctl dispatch exec "[workspace 9 silent;render_unfocused on] env XDG_CONFIG_HOME=$DEV/config XDG_CACHE_HOME=$DEV/cache VECTOR_TIMING=1 VECTOR_NO_CLIPBOARD=1 ${VECTOR_EDIT_CMD:+VECTOR_EDIT_CMD=$VECTOR_EDIT_CMD }$(q "$bin" "$dir" --snapshot "$out" --keys "$keys" --size 1400x860 "$@") 2>$DEV/shots/last.log" >/dev/null
 for _ in $(seq 1 150); do [ -s "$out" ] && break; sleep 0.1; done
 sleep 0.3
 # it quits by itself after the snapshot; close it if it did not

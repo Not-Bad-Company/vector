@@ -1,11 +1,12 @@
-//! The stylesheet: the visual language of the bar's drop-down panels (~/.local/libexec/bar-panel):
+//! The stylesheet: the visual language of Omarchy's bar panels:
 //! square corners, JetBrains Mono, accent only for titles and the active state, dim lowercase
 //! secondary text, rows with a left accent border, a 97% background with a quiet 1px border.
 //! Colours come from the Omarchy theme at startup.
 
 use vector_core::theme::Theme;
 
-pub const FONT: &str = "JetBrainsMonoNL Nerd Font";
+/// A Nerd Font is needed for the icons; the first one installed wins.
+pub const FONT: &str = "'JetBrainsMonoNL Nerd Font', 'JetBrainsMono Nerd Font', 'JetBrainsMono NF', 'Symbols Nerd Font Mono', 'Symbols Nerd Font', monospace";
 
 pub fn css(t: &Theme) -> String {
     let (bg, fg, acc) = (&t.background, &t.foreground, &t.accent);
@@ -15,7 +16,7 @@ pub fn css(t: &Theme) -> String {
 window.vector {{
   background: transparent;
   color: {fg};
-  font-family: '{FONT}';
+  font-family: {FONT};
   font-size: 12px;
 }}
 .root {{ background: alpha({bg}, 0.97); }}
@@ -136,7 +137,7 @@ gridview > child > .tile.cursor {{ box-shadow: inset 0 -2px {acc}; }}
 .preview {{ border-left: 1px solid alpha({fg}, 0.08); padding: 14px 16px; }}
 .details {{ margin-top: 14px; }}
 .preview picture {{ border: 1px solid alpha({fg}, 0.12); }}
-.preview textview, .preview textview text {{ background: transparent; color: {fg}; font-family: '{FONT}'; font-size: 11px; }}
+.preview textview, .preview textview text {{ background: transparent; color: {fg}; font-family: {FONT}; font-size: 11px; }}
 .preview textview border, .preview gutter, .preview gutter > * {{ background: transparent; }}
 
 /* ── statusline and command line ── */

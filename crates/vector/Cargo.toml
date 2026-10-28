@@ -1,9 +1,13 @@
 [package]
-name = "vector"
+name = "vector-fm"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "A keyboard-and-mouse file manager for GTK4"
+description = "Vector: a fast GTK4 file manager with nvim-style keys"
+repository = "https://github.com/Not-Bad-Company/vector"
+readme = "../../README.md"
+keywords = ["file-manager", "gtk4", "neovim", "linux"]
+categories = ["filesystem", "gui"]
 
 [dependencies]
 vector-core.workspace = true

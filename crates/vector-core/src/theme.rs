@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 /// Theme file, relative to `$HOME`.
 const THEME_PATH: &str = ".config/omarchy/current/theme/colors.toml";
 
+/// The user's own colours, same format; wins over the Omarchy theme.
+const USER_THEME: &str = "vector/theme.toml";
+
 /// The colours vector draws with. Every value is a lowercase `#rrggbb` string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Theme {
@@ -58,8 +61,16 @@ impl Theme {
         theme
     }
 
-    /// Loads the theme from `$HOME`. Returns the default on any error.
+    /// `$XDG_CONFIG_HOME/vector/theme.toml` if it exists, else the active Omarchy theme, else
+    /// the defaults. Both files use `key = "#rrggbb"` lines; missing keys keep their default.
     pub fn load() -> Theme {
+        let config = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")));
+        if let Some(text) = config.and_then(|c| fs::read_to_string(c.join(USER_THEME)).ok()) {
+            return Theme::parse(&text);
+        }
         load_from(std::env::var_os("HOME").map(PathBuf::from).as_deref())
     }
 }

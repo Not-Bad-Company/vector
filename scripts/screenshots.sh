@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Renders the reference screenshots (dummy tree only) into docs/screenshots.
 set -euo pipefail
+# scratch space for the dummy tree, screenshots and a private config (never real files)
+DEV="${VECTOR_DEV:-${TMPDIR:-/tmp}/vector-dev}"
 cd "$(dirname "$0")/.."
-T=/tmp/claude-1000/vector-test
+T=$DEV/tree
 [ -d "$T" ] || BIG=1 scripts/make-test-tree.sh >/dev/null
 O=docs/screenshots
 mkdir -p "$O"

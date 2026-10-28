@@ -14,6 +14,7 @@ mod preview;
 mod settings;
 mod sidebar;
 mod style;
+mod terminal;
 mod thumbs;
 mod window;
 
@@ -25,7 +26,7 @@ use std::time::Duration;
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
 
-const APP_ID: &str = "dev.vector.Vector";
+const APP_ID: &str = "io.github.not_bad_company.Vector";
 
 #[derive(Default, Clone)]
 struct Args {
@@ -70,8 +71,7 @@ fn parse_args() -> Result<Args, String> {
             "--portal" => a.portal = true,
             "-h" | "--help" => {
                 println!(
-                    "usage: {} [FOLDER] [--snapshot OUT.png [--after MS] [--keys KEYS] [--size WxH]]",
-                    vector_core::APP_NAME
+                    "usage: vector-fm [FOLDER]\n\n  --service    serve org.freedesktop.FileManager1 (D-Bus activation)\n  --portal     serve the xdg-desktop-portal file chooser\n\ndevelopment:\n  --snapshot OUT.png [--after MS] [--keys KEYS] [--size WxH]"
                 );
                 std::process::exit(0);
             }
@@ -96,7 +96,7 @@ fn main() -> glib::ExitCode {
     let args = Rc::new(args);
     let keep: Rc<RefCell<Vec<Rc<window::Win>>>> = Rc::default();
     app.connect_activate(move |app| {
-        gtk::Window::set_default_icon_name(vector_core::APP_NAME);
+        gtk::Window::set_default_icon_name(APP_ID);
         let theme = vector_core::theme::Theme::load();
         if let Some(display) = gdk::Display::default() {
             let provider = gtk::CssProvider::new();
