@@ -315,6 +315,17 @@ impl Preview {
             self.details.remove(&c);
         }
         for (i, (k, v)) in rows.iter().enumerate() {
+            if let Some(title) = k.strip_prefix('§') {
+                let l = gtk::Label::new(Some(title));
+                l.add_css_class("dim");
+                l.add_css_class("details-section");
+                l.set_xalign(0.0);
+                if i > 0 {
+                    l.set_margin_top(12);
+                }
+                self.details.attach(&l, 0, i as i32, 2, 1);
+                continue;
+            }
             let kl = gtk::Label::new(Some(k));
             kl.add_css_class("dim");
             kl.set_xalign(0.0);

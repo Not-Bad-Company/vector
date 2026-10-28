@@ -17,6 +17,27 @@ const SIZE_DEADLINE: Duration = Duration::from_millis(1500);
 /// Rows that need a scan or a helper program (folder totals, image header, ffprobe, pdfinfo,
 /// text statistics). Shown above the quick rows once ready.
 pub fn slow(e: &Entry) -> Vec<Row> {
+    let mut rows = slow_rows(e);
+    if !rows.is_empty() {
+        let ct = e.content_type.as_str();
+        let name = if e.is_dir() {
+            "folder"
+        } else if let Some((top, _)) = ct
+            .split_once('/')
+            .filter(|(t, _)| matches!(*t, "image" | "video" | "audio"))
+        {
+            top
+        } else if ct == "application/pdf" {
+            "document"
+        } else {
+            "text"
+        };
+        rows.insert(0, section(name));
+    }
+    rows
+}
+
+fn slow_rows(e: &Entry) -> Vec<Row> {
     let mut rows: Vec<Row> = Vec::new();
     let ct = e.content_type.as_str();
     let p = &e.path;
@@ -80,14 +101,6 @@ pub fn quick(e: &Entry) -> Vec<Row> {
             "owner".into(),
             format!("{}:{}", user_name(m.uid()), group_name(m.gid())),
         ));
-        rows.push(("modified".into(), timestamp(m.mtime())));
-        if let Ok(created) = m.created() {
-            let secs = created
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_secs() as i64);
-            rows.push(("created".into(), timestamp(secs)));
-        }
-        rows.push(("accessed".into(), timestamp(m.atime())));
         if m.file_type().is_symlink()
             && let Ok(t) = std::fs::read_link(p)
         {
@@ -102,9 +115,26 @@ pub fn quick(e: &Entry) -> Vec<Row> {
                 if m.nlink() == 1 { "" } else { "s" }
             ),
         ));
+        rows.push(("path".into(), p.display().to_string()));
+        rows.push(section("time"));
+        rows.push(("modified".into(), timestamp(m.mtime())));
+        if let Ok(created) = m.created() {
+            let secs = created
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs() as i64);
+            rows.push(("created".into(), timestamp(secs)));
+        }
+        rows.push(("accessed".into(), timestamp(m.atime())));
+    } else {
+        rows.push(("path".into(), p.display().to_string()));
     }
-    rows.push(("path".into(), p.display().to_string()));
+    rows.insert(0, section("file"));
     rows
+}
+
+/// A section title row: the key starts with `§`.
+fn section(name: &str) -> Row {
+    (format!("§{name}"), String::new())
 }
 
 fn folder(p: &Path) -> Vec<Row> {

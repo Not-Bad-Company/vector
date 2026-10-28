@@ -103,6 +103,8 @@ pub struct Win {
     setting_line: Cell<bool>,
     pick_slot: gtk::Box,
     pick: RefCell<Option<Pick>>,
+    /// The rename card is open (statusline shows RENAME).
+    renaming: Cell<bool>,
     notice: gtk::Label,
     notice_timer: RefCell<Option<glib::SourceId>>,
     weak_self: RefCell<std::rc::Weak<Win>>,
@@ -137,9 +139,14 @@ impl Win {
         preview_box.append(preview.widget());
         let settings = crate::settings::Settings::load();
         preview_box.set_visible(settings.preview);
-        let body = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        body.append(&stack);
-        body.append(&preview_box);
+        // the preview can be dragged wider or narrower
+        let body = gtk::Paned::new(gtk::Orientation::Horizontal);
+        body.set_start_child(Some(&stack));
+        body.set_end_child(Some(&preview_box));
+        body.set_resize_start_child(true);
+        body.set_resize_end_child(false);
+        body.set_shrink_end_child(false);
+        body.set_shrink_start_child(false);
 
         let mode_label = gtk::Label::new(Some("NORMAL"));
         mode_label.add_css_class("mode");
@@ -252,6 +259,7 @@ impl Win {
                 setting_line: Cell::new(false),
                 pick_slot,
                 pick: RefCell::new(None),
+                renaming: Cell::new(false),
                 notice,
                 notice_timer: RefCell::new(None),
                 settings: RefCell::new(settings),
@@ -638,7 +646,20 @@ impl Win {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "/".into());
-            t.button.set_label(&format!("{} {name}", i + 1));
+            // two tabs with the same folder name: add the parent
+            let same = tabs
+                .iter()
+                .filter(|o| {
+                    let od = o.panes.borrow()[o.active.get().min(o.panes.borrow().len() - 1)].dir();
+                    od.file_name() == d.file_name() && od != d
+                })
+                .count();
+            let label = match (same, d.parent().and_then(|p| p.file_name())) {
+                (n, Some(parent)) if n > 0 => format!("{}/{name}", parent.to_string_lossy()),
+                _ => name,
+            };
+            t.button.set_label(&format!("{} {label}", i + 1));
+            t.button.set_tooltip_text(Some(&display_path(&d)));
             if i == self.current.get() {
                 t.button.add_css_class("primary");
                 t.item.add_css_class("active");
@@ -654,7 +675,11 @@ impl Win {
 
     fn update_status(&self) {
         let mode = self.mode.get();
-        let picker_title = self.picker.borrow().as_ref().map(|p| p.title);
+        let picker_title = if self.renaming.get() {
+            Some("RENAME")
+        } else {
+            self.picker.borrow().as_ref().map(|p| p.title)
+        };
         self.mode_label
             .set_text(picker_title.unwrap_or(mode.label()));
         if mode == Mode::Normal && picker_title.is_none() {
@@ -2049,6 +2074,8 @@ impl Win {
             ],
             Some(entry.clone()),
         );
+        self.renaming.set(true);
+        self.update_status();
         entry.grab_focus();
         // select the name without its extension, like other file managers
         let stem = if e.is_dir() {
@@ -2607,6 +2634,8 @@ impl Win {
         let Some(d) = self.dialog.borrow_mut().take() else {
             return;
         };
+        self.renaming.set(false);
+        self.update_status();
         self.overlay_layer.set_visible(false);
         while let Some(c) = self.overlay_layer.first_child() {
             self.overlay_layer.remove(&c);

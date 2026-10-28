@@ -134,8 +134,9 @@ gridview > child > .tile.cursor {{ box-shadow: inset 0 -2px {acc}; }}
 .empty {{ padding: 14px 16px; opacity: 0.45; }}
 
 /* ── preview ── */
-.preview {{ border-left: 1px solid alpha({fg}, 0.08); padding: 14px 16px; }}
+.preview {{ padding: 14px 16px; }}
 .details {{ margin-top: 14px; }}
+.details-section {{ font-weight: bold; margin-bottom: 2px; }}
 .preview picture {{ border: 1px solid alpha({fg}, 0.12); }}
 .preview textview, .preview textview text {{ background: transparent; color: {fg}; font-family: {FONT}; font-size: 11px; }}
 .preview textview border, .preview gutter, .preview gutter > * {{ background: transparent; }}
