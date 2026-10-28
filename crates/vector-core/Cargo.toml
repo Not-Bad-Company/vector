@@ -16,6 +16,8 @@ grep-matcher.workspace = true
 ignore.workspace = true
 gix.workspace = true
 mlua = { workspace = true, optional = true }
+png = "0.18"
+imagesize = "0.15"
 
 [features]
 # the Lua config engine (vector's init.lua); off for vector-view, whose libmpv brings LuaJIT

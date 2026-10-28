@@ -44,7 +44,10 @@ fn slow_rows(e: &Entry) -> Vec<Row> {
     if e.is_dir() {
         rows.extend(folder(p));
     } else if ct.starts_with("image/") {
-        if let Some((fmt, w, h)) = gtk::gdk_pixbuf::Pixbuf::file_info(p) {
+        // the header alone, in-process; gdk-pixbuf (slow, a loader process) only as a fallback
+        if let Some((w, h, fmt)) = vector_core::image::dimensions(p) {
+            rows.extend(details::image(w as u64, h as u64, fmt));
+        } else if let Some((fmt, w, h)) = gtk::gdk_pixbuf::Pixbuf::file_info(p) {
             rows.extend(details::image(
                 w as u64,
                 h as u64,

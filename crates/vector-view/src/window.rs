@@ -1220,6 +1220,50 @@ impl Win {
         ));
         self.video.area.add_controller(vdrag);
 
+        // PDFs: drag the page around once it is zoomed in (the theme's hand cursors)
+        let pdrag = gtk::GestureDrag::new();
+        pdrag.set_button(1);
+        let start = Rc::new(Cell::new((0.0, 0.0)));
+        pdrag.connect_drag_begin(glib::clone!(
+            #[strong]
+            me,
+            #[strong]
+            start,
+            move |g, _, _| {
+                let Some(me) = me.upgrade() else { return };
+                if !me.pdf.can_pan() {
+                    g.set_state(gtk::EventSequenceState::Denied);
+                    return;
+                }
+                let w = &me.pdf.widget;
+                start.set((w.hadjustment().value(), w.vadjustment().value()));
+                w.set_cursor_from_name(Some("grabbing"));
+            }
+        ));
+        pdrag.connect_drag_update(glib::clone!(
+            #[strong]
+            me,
+            #[strong]
+            start,
+            move |_, dx, dy| {
+                let Some(me) = me.upgrade() else { return };
+                let (x, y) = start.get();
+                let w = &me.pdf.widget;
+                w.hadjustment().set_value(x - dx);
+                w.vadjustment().set_value(y - dy);
+            }
+        ));
+        pdrag.connect_drag_end(glib::clone!(
+            #[strong]
+            me,
+            move |_, _, _| {
+                if let Some(me) = me.upgrade() {
+                    me.pdf.update_cursor();
+                }
+            }
+        ));
+        self.pdf.widget.add_controller(pdrag);
+
         // clicks: double = fullscreen, middle = fit, right = menu
         let click = gtk::GestureClick::new();
         click.set_button(0);

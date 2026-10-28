@@ -200,7 +200,7 @@ impl Preview {
     fn show_text(self: &Rc<Self>, entry: Entry, generation: u64) {
         let path = entry.path.clone();
         let weak = Rc::downgrade(self);
-        let task = gio::spawn_blocking(move || {
+        let task = crate::thumbs::preview_work(move || {
             let mut bytes = Vec::new();
             fs::File::open(path)
                 .ok()?
@@ -215,7 +215,7 @@ impl Preview {
                 return;
             };
             if this.generation.get() == generation {
-                let bytes = result.ok().flatten();
+                let bytes = result.flatten();
                 if let Some(bytes) = bytes.filter(|b| !b[..b.len().min(8192)].contains(&0)) {
                     this.install_text(&entry, &String::from_utf8_lossy(&bytes));
                 } else {
@@ -256,7 +256,7 @@ impl Preview {
     fn show_folder(self: &Rc<Self>, entry: Entry, generation: u64) {
         let path = entry.path.clone();
         let weak = Rc::downgrade(self);
-        let task = gio::spawn_blocking(move || {
+        let task = crate::thumbs::preview_work(move || {
             let mut entries = Vec::new();
             let listed =
                 vector_core::listing::list_blocking(&path, &gio::Cancellable::new(), |batch| {
@@ -275,7 +275,7 @@ impl Preview {
                 return;
             };
             if this.generation.get() == generation {
-                if let Ok(Ok(mut entries)) = result {
+                if let Some(Ok(mut entries)) = result {
                     entries.truncate(200);
                     // a long folder scrolls inside the preview; the details stay visible
                     let list = gtk::Box::new(gtk::Orientation::Vertical, 4);
@@ -321,7 +321,8 @@ impl Preview {
         let e = entry.clone();
         glib::MainContext::default().spawn_local(async move {
             let q = e.clone();
-            let Ok(quick) = gio::spawn_blocking(move || crate::details::quick(&q)).await else {
+            let Some(quick) = crate::thumbs::preview_work(move || crate::details::quick(&q)).await
+            else {
                 return;
             };
             let Some(this) = weak.upgrade() else { return };
@@ -330,7 +331,8 @@ impl Preview {
             }
             this.fill_details(&quick);
             drop(this);
-            let Ok(slow) = gio::spawn_blocking(move || crate::details::slow(&e)).await else {
+            let Some(slow) = crate::thumbs::preview_work(move || crate::details::slow(&e)).await
+            else {
                 return;
             };
             let Some(this) = weak.upgrade() else { return };

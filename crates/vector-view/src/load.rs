@@ -28,6 +28,19 @@ impl Pixels {
         })
     }
 
+    /// JPEG and PNG through vector-core's fast in-process decoders (upright, scaled down while
+    /// decoding when `max` is given).
+    fn fast(path: &Path, max: Option<u32>) -> Option<Pixels> {
+        let px = vector_core::image::decode(path, max)?;
+        Some(Pixels {
+            stride: px.width as usize * 4,
+            data: px.rgba,
+            alpha: true,
+            width: px.width as i32,
+            height: px.height as i32,
+        })
+    }
+
     fn texture(self) -> gdk::Texture {
         let format = if self.alpha {
             gdk::MemoryFormat::R8g8b8a8
@@ -48,6 +61,10 @@ impl Pixels {
 /// The whole image. `Err` carries a message for the user.
 pub async fn image(path: PathBuf) -> Result<gdk::Texture, String> {
     let px = gio::spawn_blocking(move || {
+        if let Some(px) = Pixels::fast(&path, None) {
+            return Ok(px);
+        }
+        // other formats: gdk-pixbuf (slower: a loader process per image)
         gdk_pixbuf::Pixbuf::from_file(&path)
             .map_err(|e| e.message().to_string())
             .and_then(|pb| Pixels::from_pixbuf(pb).ok_or_else(|| "can't read this image".into()))
@@ -153,6 +170,9 @@ pub async fn thumbnail(path: PathBuf, kind: Kind, size: i32) -> Option<gdk::Text
             } else {
                 path
             };
+            if let Some(px) = Pixels::fast(&src, Some(size as u32)) {
+                return Some(Ok(px));
+            }
             let pb = gdk_pixbuf::Pixbuf::from_file_at_scale(&src, size, size, true).ok()?;
             Pixels::from_pixbuf(pb).map(Ok)
         }

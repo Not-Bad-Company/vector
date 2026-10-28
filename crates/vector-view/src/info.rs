@@ -38,7 +38,9 @@ pub fn rows(item: &Item) -> Vec<(String, Vec<Row>)> {
     let mut media: Vec<Row> = Vec::new();
     match item.kind {
         Kind::Image => {
-            if let Some((fmt, w, h)) = gdk_pixbuf::Pixbuf::file_info(&item.path) {
+            if let Some((w, h, fmt)) = vector_core::image::dimensions(&item.path) {
+                media.extend(details::image(w as u64, h as u64, fmt));
+            } else if let Some((fmt, w, h)) = gdk_pixbuf::Pixbuf::file_info(&item.path) {
                 media.extend(details::image(
                     w as u64,
                     h as u64,

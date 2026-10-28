@@ -1806,36 +1806,50 @@ impl Win {
         if self.pick_file(path) {
             return;
         }
-        let ct = gio::content_type_guess(Some(path), None).0;
-        if vector_core::no_launch() && gio::AppInfo::default_for_type(&ct, false).is_some() {
-            self.flash(&format!("test run: would open {}", file_name(path)));
-            return;
-        }
-        if gio::AppInfo::default_for_type(&ct, false).is_none() {
+        let ct = self.content_type_of(path);
+        let Some(app) = gio::AppInfo::default_for_type(&ct, false) else {
             // nothing is set up for this type: ask instead of failing quietly
-            self.open_with_dialog(path.to_path_buf());
+            self.open_with_dialog(path.to_path_buf(), &ct);
+            return;
+        };
+        if vector_core::no_launch() {
+            self.flash(&format!(
+                "test run: would open {} in {}",
+                file_name(path),
+                app.display_name()
+            ));
             return;
         }
-        let uri = gio::File::for_path(path).uri();
         let ctx = WidgetExt::display(&self.window).app_launch_context();
         let weak = self.weak_self.borrow().clone();
-        let path = path.to_path_buf();
-        gio::AppInfo::launch_default_for_uri_async(
-            &uri,
-            Some(&ctx),
-            gio::Cancellable::NONE,
-            move |r| {
-                if let (Err(_), Some(win)) = (r, weak.upgrade()) {
-                    win.open_with_dialog(path);
-                }
-            },
-        );
+        let (path, ct) = (path.to_path_buf(), ct.to_string());
+        let uri = gio::File::for_path(&path).uri();
+        let name = app.display_name();
+        app.launch_uris_async(&[&uri], Some(&ctx), gio::Cancellable::NONE, move |r| {
+            if let (Err(e), Some(win)) = (r, weak.upgrade()) {
+                // say why, then offer the other apps
+                win.flash_error(&format!("{name}: {}", e.message()));
+                win.open_with_dialog(path, &ct);
+            }
+        });
+    }
+
+    /// The type of a file: what the listing sniffed from its contents when it is in the folder
+    /// shown (a name without an extension is still a picture), else a guess from the name.
+    fn content_type_of(&self, path: &Path) -> String {
+        let pane = self.pane();
+        let model = pane.model.borrow();
+        path.file_name()
+            .and_then(|n| model.find(&n.to_string_lossy()))
+            .filter(|e| e.path == path && !e.content_type.is_empty())
+            .map(|e| e.content_type.clone())
+            .unwrap_or_else(|| gio::content_type_guess(Some(path), None).0.to_string())
     }
 
     /// Lets the user pick an app for a file no app is set up for: apps that say they handle
     /// the type first, then all others. Typing filters; Enter opens the first match.
-    fn open_with_dialog(&self, path: PathBuf) {
-        let ct = gio::content_type_guess(Some(&path), None).0;
+    fn open_with_dialog(&self, path: PathBuf, ct: &str) {
+        let ct = glib::GString::from(ct);
         let mut apps = gio::AppInfo::all_for_type(&ct);
         let known: Vec<_> = apps.iter().filter_map(|a| a.id()).collect();
         let mut rest: Vec<gio::AppInfo> = gio::AppInfo::all()

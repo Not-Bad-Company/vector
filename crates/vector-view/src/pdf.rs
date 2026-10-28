@@ -347,6 +347,7 @@ impl PdfView {
     fn reset(&self) {
         self.generation.set(self.generation.get() + 1);
         self.zoom.set(1.0);
+        self.widget.set_cursor_from_name(Some("default"));
         self.restore.set(None);
         while let Some(c) = self.column.first_child() {
             self.column.remove(&c);
@@ -463,6 +464,18 @@ impl PdfView {
         (self.scale() * self.widget.scale_factor() as f64 / 96.0 * 72.0 * 100.0).round() as u32
     }
 
+    /// Whether a drag should move the pages: zoomed in, or wider than the view.
+    pub fn can_pan(&self) -> bool {
+        let h = self.widget.hadjustment();
+        self.zoom.get() > 1.0 || h.upper() > h.page_size() + 1.0
+    }
+
+    /// The hand over a page that can be dragged; the normal arrow otherwise.
+    pub fn update_cursor(&self) {
+        self.widget
+            .set_cursor_from_name(Some(if self.can_pan() { "grab" } else { "default" }));
+    }
+
     pub fn set_zoom(&self, z: f64) {
         let adj = self.widget.vadjustment();
         // the middle of the view, as a fraction of the strip
@@ -471,6 +484,7 @@ impl PdfView {
         ));
         self.zoom.set(z.clamp(0.25, 8.0));
         self.layout();
+        self.update_cursor();
         self.changed();
     }
 

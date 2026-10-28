@@ -9,11 +9,13 @@ pub mod entry;
 pub mod filter;
 pub mod git;
 pub mod icons;
+pub mod image;
 pub mod keymap;
 pub mod listing;
 pub mod model;
 pub mod ops;
 pub mod pins;
+pub mod pool;
 #[cfg(feature = "script")]
 pub mod script;
 pub mod search;
