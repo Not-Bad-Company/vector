@@ -286,6 +286,14 @@ impl Win {
             }
         });
         win.sidebar.set_pinned(&crate::pinstore::global());
+        // audio from the preview stops with the window
+        let weak = Rc::downgrade(&win);
+        win.window.connect_close_request(move |_| {
+            if let Some(w) = weak.upgrade() {
+                w.preview.stop_audio();
+            }
+            glib::Propagation::Proceed
+        });
         win.connect_keys();
         win.connect_entries();
         win.connect_actions();

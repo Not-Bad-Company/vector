@@ -142,6 +142,8 @@ gridview > child > .tile.cursor {{ box-shadow: inset 0 -2px {acc}; }}
 /* ── preview ── */
 .preview {{ padding: 14px 16px; }}
 .details {{ margin-top: 14px; }}
+.playhead {{ background: {fg}; min-width: 2px; }}
+.wave {{ border: 1px solid alpha({fg}, 0.12); background: alpha({fg}, 0.03); }}
 .details-section {{ font-weight: bold; margin-bottom: 2px; }}
 .preview picture {{ border: 1px solid alpha({fg}, 0.12); }}
 .preview textview, .preview textview text {{ background: transparent; color: {fg}; font-family: {FONT}; font-size: 11px; }}

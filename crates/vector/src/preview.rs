@@ -19,6 +19,8 @@ pub struct Preview {
     body: gtk::Box,
     details: gtk::Grid,
     generation: Cell<u64>,
+    /// The audio player of the current preview, if playing.
+    player: std::cell::RefCell<Option<Player>>,
     theme: vector_core::theme::Theme,
 }
 
@@ -56,6 +58,7 @@ impl Preview {
             body,
             details,
             generation: Cell::new(0),
+            player: Default::default(),
             theme: theme.clone(),
         })
     }
@@ -66,6 +69,7 @@ impl Preview {
 
     pub fn show(self: &Rc<Self>, entry: Option<&Entry>) {
         self.generation.set(self.generation.get().wrapping_add(1));
+        self.stop_audio();
         let generation = self.generation.get();
         clear(&self.body);
         self.body.set_vexpand(false);
@@ -95,6 +99,8 @@ impl Preview {
         let ty = entry.content_type.as_str();
         if ty.starts_with("image/") {
             self.show_image(entry, generation, None);
+        } else if ty.starts_with("audio/") {
+            self.show_audio(entry, generation);
         } else if ty.starts_with("video/") {
             self.show_generated(entry, generation, true);
         } else if ty == "application/pdf" {
@@ -342,6 +348,294 @@ impl Preview {
             self.details.attach(&kl, 0, i as i32, 1, 1);
             self.details.attach(&vl, 1, i as i32, 1, 1);
         }
+    }
+}
+
+/// A running audio preview: the player process, where playback started, the playhead.
+struct Player {
+    process: Option<gio::Subprocess>,
+    /// Seconds into the file when the process started, and when.
+    from: f64,
+    started: std::time::Instant,
+    duration: f64,
+    tick: Option<glib::SourceId>,
+    playhead: gtk::Box,
+    wave: gtk::Picture,
+    button: gtk::Button,
+    time: gtk::Label,
+    path: PathBuf,
+}
+
+impl Preview {
+    /// Audio: a waveform (ffmpeg) with play/pause; a click on the waveform seeks.
+    fn show_audio(self: &Rc<Self>, entry: Entry, generation: u64) {
+        let path = entry.path.clone();
+        let uri = gio::File::for_path(&path).uri();
+        let out = glib::user_cache_dir()
+            .join(vector_core::APP_NAME)
+            .join("thumbs")
+            .join(format!("{}-{}-wave.png", md5(&uri), entry.modified));
+        let colour = self.theme.accent.clone();
+        let weak = Rc::downgrade(self);
+        glib::MainContext::default().spawn_local(async move {
+            let (p, o) = (path.clone(), out.clone());
+            let made = gio::spawn_blocking(move || {
+                if fs::metadata(&o).is_err() {
+                    if let Some(d) = o.parent() {
+                        let _ = fs::create_dir_all(d);
+                    }
+                    let filter = format!(
+                        "aformat=channel_layouts=mono,showwavespic=s=720x110:colors={colour}"
+                    );
+                    let _ = std::process::Command::new("ffmpeg")
+                        .args(["-v", "error", "-y", "-i"])
+                        .arg(&p)
+                        .args(["-filter_complex", &filter, "-frames:v", "1"])
+                        .arg(&o)
+                        .stdin(std::process::Stdio::null())
+                        .status();
+                }
+                let duration = std::process::Command::new("ffprobe")
+                    .args([
+                        "-v",
+                        "error",
+                        "-show_entries",
+                        "format=duration",
+                        "-of",
+                        "csv=p=0",
+                    ])
+                    .arg(&p)
+                    .output()
+                    .ok()
+                    .and_then(|o| {
+                        String::from_utf8_lossy(&o.stdout)
+                            .trim()
+                            .parse::<f64>()
+                            .ok()
+                    })
+                    .unwrap_or(0.0);
+                (fs::metadata(&o).is_ok(), duration)
+            })
+            .await;
+            let Some(this) = weak.upgrade() else { return };
+            if this.generation.get() != generation {
+                return;
+            }
+            let Ok((has_wave, duration)) = made else {
+                this.no_preview(&entry);
+                return;
+            };
+            let wave = gtk::Picture::new();
+            if has_wave {
+                wave.set_filename(Some(&out));
+            }
+            wave.set_content_fit(gtk::ContentFit::Fill);
+            wave.set_can_shrink(true);
+            wave.set_size_request(-1, 90);
+            wave.add_css_class("wave");
+            let playhead = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            playhead.add_css_class("playhead");
+            playhead.set_halign(gtk::Align::Start);
+            playhead.set_visible(false);
+            let overlay = gtk::Overlay::new();
+            overlay.set_child(Some(&wave));
+            overlay.add_overlay(&playhead);
+            let button = gtk::Button::with_label("\u{F040A}  play");
+            button.add_css_class("link");
+            let time = gtk::Label::new(Some(&format!(
+                "0:00 / {}",
+                vector_core::details::duration(duration)
+            )));
+            time.add_css_class("dim");
+            let bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            bar.append(&button);
+            bar.append(&time);
+            this.body.append(&overlay);
+            this.body.append(&bar);
+            *this.player.borrow_mut() = Some(Player {
+                process: None,
+                from: 0.0,
+                started: std::time::Instant::now(),
+                duration,
+                tick: None,
+                playhead,
+                wave: wave.clone(),
+                button: button.clone(),
+                time,
+                path,
+            });
+            let w = Rc::downgrade(&this);
+            button.connect_clicked(move |_| {
+                if let Some(p) = w.upgrade() {
+                    p.toggle_audio();
+                }
+            });
+            let click = gtk::GestureClick::new();
+            let w = Rc::downgrade(&this);
+            click.connect_released(move |g, _, x, _| {
+                let (Some(p), Some(widget)) = (w.upgrade(), g.widget()) else {
+                    return;
+                };
+                let width = widget.width().max(1) as f64;
+                let dur = p.player.borrow().as_ref().map_or(0.0, |pl| pl.duration);
+                p.play_audio_from((x / width).clamp(0.0, 1.0) * dur);
+            });
+            overlay.add_controller(click);
+            overlay.set_cursor_from_name(Some("pointer"));
+        });
+    }
+
+    fn playing(&self) -> bool {
+        self.player
+            .borrow()
+            .as_ref()
+            .is_some_and(|p| p.process.is_some())
+    }
+
+    fn position(&self) -> f64 {
+        self.player.borrow().as_ref().map_or(0.0, |p| {
+            if p.process.is_some() {
+                p.from + p.started.elapsed().as_secs_f64()
+            } else {
+                p.from
+            }
+        })
+    }
+
+    fn toggle_audio(self: &Rc<Self>) {
+        if self.playing() {
+            let pos = self.position();
+            self.kill_player();
+            if let Some(p) = self.player.borrow_mut().as_mut() {
+                p.from = pos;
+                p.button.set_label("\u{F040A}  play");
+            }
+        } else {
+            let from = self.position();
+            let dur = self.player.borrow().as_ref().map_or(0.0, |p| p.duration);
+            self.play_audio_from(if dur > 0.0 && from >= dur - 0.2 {
+                0.0
+            } else {
+                from
+            });
+        }
+    }
+
+    /// (Re)starts playback at `secs` with mpv, or ffplay when mpv isn't installed.
+    fn play_audio_from(self: &Rc<Self>, secs: f64) {
+        self.kill_player();
+        let Some(path) = self.player.borrow().as_ref().map(|p| p.path.clone()) else {
+            return;
+        };
+        let start = format!("{secs:.2}");
+        let mpv = glib::find_program_in_path("mpv").is_some();
+        let mut argv: Vec<std::ffi::OsString> = if mpv {
+            vec![
+                "mpv".into(),
+                "--no-video".into(),
+                "--really-quiet".into(),
+                "--no-terminal".into(),
+                format!("--start={start}").into(),
+            ]
+        } else {
+            vec![
+                "ffplay".into(),
+                "-nodisp".into(),
+                "-autoexit".into(),
+                "-loglevel".into(),
+                "quiet".into(),
+                "-ss".into(),
+                start.into(),
+            ]
+        };
+        argv.push(path.into_os_string());
+        let refs: Vec<&std::ffi::OsStr> = argv.iter().map(|a| a.as_os_str()).collect();
+        let Ok(process) = gio::Subprocess::newv(
+            &refs,
+            gio::SubprocessFlags::STDIN_PIPE
+                | gio::SubprocessFlags::STDOUT_SILENCE
+                | gio::SubprocessFlags::STDERR_SILENCE,
+        ) else {
+            return;
+        };
+        let weak = Rc::downgrade(self);
+        let tick = glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+            let Some(p) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            p.update_playhead();
+            glib::ControlFlow::Continue
+        });
+        // when the file ends, the button goes back to play
+        let weak = Rc::downgrade(self);
+        let done = process.clone();
+        process.wait_async(gio::Cancellable::NONE, move |_| {
+            let Some(p) = weak.upgrade() else { return };
+            let finished = p
+                .player
+                .borrow()
+                .as_ref()
+                .and_then(|pl| pl.process.clone())
+                .is_some_and(|cur| cur == done);
+            if finished {
+                let pos = p.position();
+                p.kill_player();
+                if let Some(pl) = p.player.borrow_mut().as_mut() {
+                    pl.from = if pl.duration > 0.0 && pos >= pl.duration - 0.5 {
+                        0.0
+                    } else {
+                        pos
+                    };
+                    pl.button.set_label("\u{F040A}  play");
+                }
+                p.update_playhead();
+            }
+        });
+        if let Some(p) = self.player.borrow_mut().as_mut() {
+            p.process = Some(process);
+            p.from = secs;
+            p.started = std::time::Instant::now();
+            p.tick = Some(tick);
+            p.button.set_label("\u{F03E4}  pause");
+            p.playhead.set_visible(true);
+        }
+        self.update_playhead();
+    }
+
+    fn update_playhead(&self) {
+        let pos = self.position();
+        let pl = self.player.borrow();
+        let Some(p) = pl.as_ref() else { return };
+        let frac = if p.duration > 0.0 {
+            (pos / p.duration).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        p.playhead
+            .set_margin_start((frac * p.wave.width() as f64) as i32);
+        p.playhead.set_visible(pos > 0.0);
+        p.time.set_text(&format!(
+            "{} / {}",
+            vector_core::details::duration(pos.min(p.duration.max(pos))),
+            vector_core::details::duration(p.duration)
+        ));
+    }
+
+    fn kill_player(&self) {
+        if let Some(p) = self.player.borrow_mut().as_mut() {
+            if let Some(proc_) = p.process.take() {
+                proc_.force_exit();
+            }
+            if let Some(t) = p.tick.take() {
+                t.remove();
+            }
+        }
+    }
+
+    /// Stops playback (the preview moved on, or closed).
+    pub fn stop_audio(&self) {
+        self.kill_player();
+        self.player.borrow_mut().take();
     }
 }
 
