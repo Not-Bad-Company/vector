@@ -593,23 +593,47 @@ fn schedule(
 
 /// Formats plan operations for a confirmation list.
 pub fn describe(plan: &Plan) -> Vec<String> {
+    // Show what the user asked for, not how it is carried out: a swap goes through a
+    // temporary name, but the list says "a → b" and "b → a".
+    // (current name, original name, position in the list)
+    let mut origin: Vec<(String, String, usize)> = Vec::new();
+    let mut out: Vec<String> = Vec::new();
+    for change in &plan.changes {
+        match change {
+            Change::Delete { name } => out.push(format!("trash   {name}")),
+            Change::Create { path, dir } => {
+                out.push(format!("create  {}{}", path, if *dir { "/" } else { "" }))
+            }
+            Change::Rename { from, to } => {
+                match origin.iter_mut().find(|(cur, _, _)| cur == from) {
+                    Some(entry) => entry.0 = to.clone(),
+                    None => {
+                        origin.push((to.clone(), from.clone(), out.len()));
+                        out.push(String::new());
+                    }
+                }
+            }
+        }
+    }
+    for (to, from, slot) in origin {
+        if to != from {
+            let verb = if from.contains('/') || to.contains('/') {
+                "move  "
+            } else {
+                "rename"
+            };
+            out[slot] = format!("{verb}  {from} → {to}");
+        }
+    }
+    out.retain(|l| !l.is_empty());
+    out
+}
+
+/// Whether the plan moves anything to the trash.
+pub fn trashes(plan: &Plan) -> bool {
     plan.changes
         .iter()
-        .map(|change| match change {
-            Change::Delete { name } => format!("trash   {name}"),
-            Change::Create { path, dir } => {
-                format!("create  {}{}", path, if *dir { "/" } else { "" })
-            }
-            Change::Rename { from, to } => format!(
-                "{}  {from} → {to}",
-                if from.contains('/') || to.contains('/') {
-                    "move  "
-                } else {
-                    "rename"
-                }
-            ),
-        })
-        .collect()
+        .any(|c| matches!(c, Change::Delete { .. }))
 }
 
 #[cfg(test)]
@@ -987,5 +1011,21 @@ mod tests {
             set(&p.changes, &["a"]),
             BTreeSet::from(["a".into(), "b".into()])
         );
+    }
+
+    #[test]
+    fn describe_shows_a_swap_as_two_renames() {
+        let entries = [file(1, "a"), file(2, "b"), file(3, "c")];
+        let p = plan(&entries, "/001 b\n/002 a\n/003 c\nnew\n").unwrap();
+        let lines = describe(&p);
+        assert!(
+            lines.iter().all(|l| !l.contains(".vector-tmp")),
+            "{lines:?}"
+        );
+        assert!(lines.contains(&"rename  a → b".to_string()), "{lines:?}");
+        assert!(lines.contains(&"rename  b → a".to_string()), "{lines:?}");
+        assert!(lines.contains(&"create  new".to_string()));
+        assert_eq!(lines.len(), 3);
+        assert!(!trashes(&p));
     }
 }

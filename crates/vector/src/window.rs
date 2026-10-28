@@ -1969,7 +1969,11 @@ impl Win {
                         if lines.len() == 1 { "" } else { "s" }
                     ),
                     &lines,
-                    "deleted entries go to the trash",
+                    if edit::trashes(&plan) {
+                        "deleted entries go to the trash"
+                    } else {
+                        ""
+                    },
                     vec![
                         cancel(),
                         button("apply", "primary", move |w, _| {

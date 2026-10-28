@@ -155,15 +155,21 @@ fn schedule_script(win: Rc<window::Win>, args: Rc<Args>, app: gtk::Application) 
             glib::timeout_future(Duration::from_millis(25)).await;
         }
         glib::timeout_future(Duration::from_millis(150)).await;
-        for key in vector_core::keymap::parse_keys(&args.keys) {
-            win.handle_key(key, true);
-            // let listings, completions and dialogs settle between keys
-            glib::timeout_future(Duration::from_millis(60)).await;
-            for _ in 0..80 {
-                if !win.pane().loading.get() {
-                    break;
+        // "<wait>" in --keys pauses half a second (for an editor or an operation to finish)
+        for (i, part) in args.keys.split("<wait>").enumerate() {
+            if i > 0 {
+                glib::timeout_future(Duration::from_millis(500)).await;
+            }
+            for key in vector_core::keymap::parse_keys(part) {
+                win.handle_key(key, true);
+                // let listings, completions and dialogs settle between keys
+                glib::timeout_future(Duration::from_millis(60)).await;
+                for _ in 0..80 {
+                    if !win.pane().loading.get() {
+                        break;
+                    }
+                    glib::timeout_future(Duration::from_millis(25)).await;
                 }
-                glib::timeout_future(Duration::from_millis(25)).await;
             }
         }
         let Some(out) = args.snapshot.clone() else {
