@@ -129,12 +129,12 @@ listview > row > .file.cursor {{ box-shadow: inset 2px 0 {acc}; background: alph
 .notice.crit {{ border-left-color: {red}; color: {red}; }}
 gridview > child {{
   padding: 10px 6px 8px 6px;
-  border-left: 2px solid transparent;
   background: transparent;
 }}
 gridview > child:hover {{ background: alpha({fg}, 0.06); }}
-gridview > child:selected {{ background: alpha({fg}, 0.08); border-left-color: alpha({fg}, 0.45); color: {fg}; }}
-gridview > child > .tile.cursor {{ box-shadow: inset 0 -2px {acc}; }}
+/* no edge lines in the grid: grey for selected tiles, the accent tint for the cursor */
+gridview > child:selected {{ background: alpha({fg}, 0.08); color: {fg}; }}
+gridview > child > .tile.cursor {{ background: alpha({acc}, 0.16); }}
 .tile .big-icon {{ font-size: 34px; min-height: 64px; }}
 .tile picture {{ border: 1px solid alpha({fg}, 0.12); }}
 .drop-target {{ background: alpha({acc}, 0.10); }}

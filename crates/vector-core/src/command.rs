@@ -34,6 +34,8 @@ pub enum Command {
         reverse: bool,
     },
     Hidden(Toggle),
+    /// `:view [list|grid]`: show the folder as a list or a grid (no arg toggles).
+    View(Option<bool>),
     Open(Option<String>),
     Term,
     /// `:e`: rename/delete/create in nvim as a buffer (oil style); `:e name`: open or create
@@ -91,8 +93,8 @@ pub const AGENTS: [&str; 7] = [
 
 /// Command names, in the order completion offers them.
 pub const COMMANDS: &[&str] = &[
-    "new", "mkdir", "find", "grep", "cd", "sort", "hidden", "open", "term", "edit", "touch",
-    "filter", "flat", "biggest", "agent", "quit", "quitall",
+    "new", "mkdir", "find", "grep", "cd", "sort", "hidden", "view", "open", "term", "edit",
+    "touch", "filter", "flat", "biggest", "agent", "quit", "quitall",
 ];
 
 /// Parses what follows the `:` (a leading `:` is skipped too).
@@ -162,6 +164,15 @@ pub fn parse(line: &str) -> Result<Command, ParseError> {
             "off" | "false" | "hide" => Ok(Command::Hidden(Toggle::Off)),
             _ => Err(ParseError::BadArg {
                 command: "hidden",
+                arg: arg.into(),
+            }),
+        },
+        "view" => match arg.to_ascii_lowercase().as_str() {
+            "" => Ok(Command::View(None)),
+            "grid" => Ok(Command::View(Some(true))),
+            "list" => Ok(Command::View(Some(false))),
+            _ => Err(ParseError::BadArg {
+                command: "view",
                 arg: arg.into(),
             }),
         },
@@ -318,6 +329,7 @@ pub fn complete(line: &str, ctx: &CompletionCtx<'_>) -> Completion {
     let candidates = match name {
         "sort" => prefixed(&["name", "size", "mtime", "type"], arg),
         "hidden" => prefixed(&["on", "off"], arg),
+        "view" => prefixed(&["list", "grid"], arg),
         "biggest" => prefixed(&["here", "/", "all"], arg),
         "agent" => prefixed(&AGENTS, arg),
         "cd" => path_candidates(arg, ctx, true),
@@ -462,6 +474,13 @@ mod tests {
         }
         assert!(matches!(
             parse("hidden maybe"),
+            Err(ParseError::BadArg { .. })
+        ));
+        assert_eq!(parse("view grid"), Ok(Command::View(Some(true))));
+        assert_eq!(parse("view list"), Ok(Command::View(Some(false))));
+        assert_eq!(parse("view"), Ok(Command::View(None)));
+        assert!(matches!(
+            parse("view tiles"),
             Err(ParseError::BadArg { .. })
         ));
     }

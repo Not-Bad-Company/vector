@@ -158,15 +158,7 @@ fn folder(p: &Path) -> Vec<Row> {
             files += 1;
         }
     }
-    rows.push((
-        "contains".into(),
-        format!(
-            "{} folders · {} files · {} hidden",
-            group_digits(dirs),
-            group_digits(files),
-            group_digits(hidden)
-        ),
-    ));
+    rows.push(("contains".into(), contains(dirs, files, hidden)));
     let (bytes, n, done) = size_until(p, Instant::now() + SIZE_DEADLINE);
     let more = if done {
         ""
@@ -248,4 +240,34 @@ pub fn user_name(uid: u32) -> String {
 
 fn group_name(gid: u32) -> String {
     lookup("/etc/group", gid).unwrap_or_else(|| gid.to_string())
+}
+
+/// `2 folders · 1 file`, leaving out what there is none of (short enough for the pane).
+fn contains(dirs: u64, files: u64, hidden: u64) -> String {
+    let part = |n: u64, one: &str, many: &str| {
+        (n > 0).then(|| format!("{} {}", group_digits(n), if n == 1 { one } else { many }))
+    };
+    let parts: Vec<String> = [
+        part(dirs, "folder", "folders"),
+        part(files, "file", "files"),
+        part(hidden, "hidden", "hidden"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if parts.is_empty() {
+        "nothing".into()
+    } else {
+        parts.join(" · ")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn contains_leaves_out_zeroes() {
+        assert_eq!(super::contains(0, 50_000, 0), "50 000 files");
+        assert_eq!(super::contains(2, 1, 3), "2 folders · 1 file · 3 hidden");
+        assert_eq!(super::contains(0, 0, 0), "nothing");
+    }
 }

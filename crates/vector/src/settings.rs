@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use gtk::glib;
 use vector_core::sort::{SortKey, SortSpec};
 
-/// Defaults: preview off (`i` shows it), list view, hidden files hidden, sorted by name.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// Defaults: preview on (`i` hides it), list view, hidden files hidden, sorted by name.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
     pub preview: bool,
     pub grid: bool,
@@ -15,6 +15,18 @@ pub struct Settings {
     pub sort: SortSpec,
     /// The terminal panel was open.
     pub terminal: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            preview: true,
+            grid: false,
+            show_hidden: false,
+            sort: SortSpec::default(),
+            terminal: false,
+        }
+    }
 }
 
 const GROUP: &str = "view";

@@ -25,5 +25,11 @@ pub mod theme;
 #[cfg(test)]
 mod test_support;
 
+/// Test runs (`VECTOR_NO_LAUNCH`): no other app, terminal or file manager is started, since it
+/// would open a window on the user's screen; the app says what it would have opened instead.
+pub fn no_launch() -> bool {
+    std::env::var_os("VECTOR_NO_LAUNCH").is_some()
+}
+
 /// Program name, shown in titles and used for config paths. Rename here and in Cargo.toml.
 pub const APP_NAME: &str = "vector";

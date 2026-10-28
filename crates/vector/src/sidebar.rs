@@ -167,8 +167,10 @@ impl Sidebar {
             (glib::UserDirectory::Pictures, "Pictures"),
             (glib::UserDirectory::Videos, "Videos"),
         ] {
+            // a folder set to home itself (XDG_DESKTOP_DIR=$HOME, common) would be Home twice
             if let Some(path) = glib::user_special_dir(dir)
                 && path.exists()
+                && path != glib::home_dir()
             {
                 self.add_row(
                     &self.places,

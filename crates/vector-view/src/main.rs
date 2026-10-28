@@ -91,7 +91,7 @@ fn css(t: &vector_core::theme::Theme) -> String {
 .statusline {{ min-height: 26px; }}
 .statusline button.link.glyph {{ font-size: 14px; padding: 2px 8px; }}
 .statusline .mode {{ margin-right: 6px; }}
-gridview > child:selected > .tile {{ box-shadow: inset 0 -2px {acc}; }}
+gridview > child:selected > .tile {{ background: alpha({acc}, 0.16); }}
 .statusline .time {{ padding: 0 10px; }}
 button.link.danger-hover:hover {{ color: {red}; }}
 .timeline {{ background: alpha({fg}, 0.035); }}

@@ -125,8 +125,6 @@ pub struct Win {
     weak_self: RefCell<std::rc::Weak<Win>>,
 }
 
-const HOME_GLYPH: &str = "\u{F02DC}";
-
 impl Win {
     pub fn new(app: &gtk::Application, start: &Path, theme: Theme) -> Rc<Win> {
         let window = gtk::ApplicationWindow::new(app);
@@ -687,27 +685,17 @@ impl Win {
         while let Some(c) = self.crumbs.first_child() {
             self.crumbs.remove(&c);
         }
-        let home = glib::home_dir();
-        let (mut acc, parts): (PathBuf, Vec<String>) = match dir.strip_prefix(&home) {
-            Ok(rest) => (
-                home.clone(),
-                std::iter::once(HOME_GLYPH.to_string())
-                    .chain(rest.iter().map(|s| s.to_string_lossy().into_owned()))
-                    .collect(),
-            ),
-            Err(_) => (
-                PathBuf::from("/"),
-                std::iter::once("/".to_string())
-                    .chain(dir.iter().skip(1).map(|s| s.to_string_lossy().into_owned()))
-                    .collect(),
-            ),
-        };
+        // the full path, every part clickable
+        let mut acc = PathBuf::from("/");
+        let parts: Vec<String> = std::iter::once("/".to_string())
+            .chain(dir.iter().skip(1).map(|s| s.to_string_lossy().into_owned()))
+            .collect();
         let n = parts.len();
         for (i, part) in parts.into_iter().enumerate() {
             if i > 0 {
                 acc.push(&part);
                 // no separator right after the root "/"
-                if !(i == 1 && acc.parent() == Some(Path::new("/")) && !dir.starts_with(&home)) {
+                if i > 1 {
                     let sep = gtk::Label::new(Some("/"));
                     sep.add_css_class("crumb-sep");
                     self.crumbs.append(&sep);
@@ -840,15 +828,12 @@ impl Win {
     }
 
     fn flash(&self, text: &str) {
-        self.message.remove_css_class("crit");
-        self.message.add_css_class("dim");
-        self.message.set_text(text);
+        // every message goes to the toast, where it is seen (and goes away by itself)
+        self.show_notice(text, false);
     }
 
     fn flash_error(&self, text: &str) {
-        self.message.remove_css_class("dim");
-        self.message.add_css_class("crit");
-        self.message.set_text(text);
+        self.show_notice(text, true);
     }
 
     fn schedule_preview(&self) {
@@ -1287,6 +1272,15 @@ impl Win {
                     pane.go_parent();
                 }
             }
+            // the grid moves sideways; the list goes up and into folders
+            Action::Left if pane.is_grid() => mv(rows(-1)),
+            Action::Right if pane.is_grid() => mv(rows(1)),
+            Action::Left => self.run_action(Action::Parent, 1),
+            Action::Right => self.run_action(Action::Open, 1),
+            Action::FocusSidebar => {
+                self.leave_visual();
+                self.enter_sidebar();
+            }
             Action::Back => pane.go_back(),
             Action::Forward => pane.go_forward(),
             Action::Yank | Action::Cut => {
@@ -1370,11 +1364,7 @@ impl Win {
             Action::CommandStart => self.enter_line(Mode::Command),
             Action::FilterStart => self.enter_line(Mode::Filter),
             Action::ToggleHidden => self.run_command(Command::Hidden(Toggle::Toggle)),
-            Action::ToggleView => {
-                pane.set_grid(!pane.is_grid());
-                self.save_settings();
-                pane.focus_view();
-            }
+            Action::ToggleView => self.run_command(Command::View(None)),
             Action::TogglePreview => self.toggle_preview(),
             Action::ToggleSplit => self.toggle_split(),
             Action::OtherPane => self.other_pane(),
@@ -1654,7 +1644,14 @@ impl Win {
                     self.run_command(Command::Cd(p.display().to_string()));
                 }
             }
-            Key::Esc | Key::Tab | Key::Char('h') | Key::Left => self.leave_sidebar(),
+            Key::Esc
+            | Key::Tab
+            | Key::Char('h')
+            | Key::Left
+            | Key::Ctrl('l')
+            | Key::CtrlRight
+            | Key::Ctrl('h')
+            | Key::CtrlLeft => self.leave_sidebar(),
             // everything else (":" and friends) works as usual once back in the list
             _ => {
                 self.leave_sidebar();
@@ -1741,6 +1738,14 @@ impl Win {
                     "hiding hidden files"
                 });
             }
+            Command::View(grid) => {
+                let grid = grid.unwrap_or(!pane.is_grid());
+                if grid != pane.is_grid() {
+                    pane.set_grid(grid);
+                    self.save_settings();
+                }
+                pane.focus_view();
+            }
             Command::Open(None) => self.run_action(Action::Open, 1),
             Command::Open(Some(name)) => {
                 let p = resolve(&dir, &name);
@@ -1799,6 +1804,10 @@ impl Win {
             return;
         }
         let ct = gio::content_type_guess(Some(path), None).0;
+        if vector_core::no_launch() && gio::AppInfo::default_for_type(&ct, false).is_some() {
+            self.flash(&format!("test run: would open {}", file_name(path)));
+            return;
+        }
         if gio::AppInfo::default_for_type(&ct, false).is_none() {
             // nothing is set up for this type: ask instead of failing quietly
             self.open_with_dialog(path.to_path_buf());
@@ -1862,6 +1871,10 @@ impl Win {
                     && let Err(e) = remember()
                 {
                     win.flash_error(&format!("{}: {}", app.display_name(), e.message()));
+                }
+                if vector_core::no_launch() {
+                    win.flash(&format!("test run: would open with {}", app.display_name()));
+                    return;
                 }
                 let ctx = WidgetExt::display(&win.window).app_launch_context();
                 if let Err(e) = app.launch(&[gio::File::for_path(&path)], Some(&ctx)) {
@@ -2256,6 +2269,10 @@ impl Win {
     /// Opens `path` in $VISUAL / $EDITOR (nvim by default) in a new terminal; like vim, a path
     /// that doesn't exist yet is created when the editor saves it.
     fn open_in_editor(&self, path: &Path) {
+        if vector_core::no_launch() {
+            self.flash(&format!("test run: would edit {}", file_name(path)));
+            return;
+        }
         let launcher = gio::SubprocessLauncher::new(gio::SubprocessFlags::NONE);
         if let Some(parent) = path.parent() {
             launcher.set_cwd(parent);
@@ -2279,6 +2296,10 @@ impl Win {
     }
 
     fn open_terminal(&self, dir: &Path) {
+        if vector_core::no_launch() {
+            self.flash("test run: would open a terminal here");
+            return;
+        }
         let launcher = gio::SubprocessLauncher::new(gio::SubprocessFlags::NONE);
         launcher.set_cwd(dir);
         let Some(argv) = crate::terminal::argv(&[]) else {
@@ -2817,6 +2838,10 @@ impl Win {
                 "-c".into(),
                 format!("{} \"$1\"; : > \"$1.done\"", cmd.to_string_lossy()).into(),
             ],
+            None if vector_core::no_launch() => {
+                self.flash("test run: would open the editor (set VECTOR_EDIT_CMD)");
+                return;
+            }
             None => {
                 let cmd = [OsStr::new("sh"), OsStr::new("-c"), OsStr::new(script)];
                 match crate::terminal::argv(&cmd) {
@@ -2984,8 +3009,9 @@ impl Win {
                 &[
                     ("j k", "down, up (5j: five down)"),
                     ("gg G", "first, last"),
-                    ("l enter", "open"),
-                    ("h -", "parent folder"),
+                    ("l enter", "open (grid: l moves right)"),
+                    ("h -", "parent folder (grid: h moves left)"),
+                    ("ctrl+h ctrl+l", "sidebar, files"),
                     ("H L", "back, forward"),
                     ("ctrl+d ctrl+u", "page down, up"),
                 ],
@@ -3001,7 +3027,7 @@ impl Win {
                     ("Y", "copy folder path"),
                     ("m M", "pin here, pin everywhere"),
                     ("u .", "undo, repeat"),
-                    ("v space", "select range, toggle one"),
+                    ("v space", "select range, mark one and move on"),
                 ],
             ),
             (
@@ -3010,8 +3036,8 @@ impl Win {
                     ("/", "filter: text, *.exe, ext:pdf, type:image"),
                     ("", "size>10m, mod<7d, !not"),
                     ("i", "preview"),
-                    ("w", "list / grid"),
-                    ("ctrl+h", "hidden files"),
+                    ("w :view", "list / grid"),
+                    ("zh", "hidden files"),
                     ("s tab", "split, other pane"),
                     ("ctrl+t gt ctrl+w", "new tab, next tab, close tab"),
                     (":q :qa", "close pane or tab, close window"),
@@ -3187,6 +3213,10 @@ impl Win {
                 .iter()
                 .map(|e| gio::File::for_path(&e.path))
                 .collect();
+            if vector_core::no_launch() {
+                win.flash(&format!("test run: would open with {}", app.name()));
+                return;
+            }
             let ctx = WidgetExt::display(&win.window).app_launch_context();
             if let Err(e) = app.launch(&files, Some(&ctx)) {
                 win.flash_error(&format!("{}: {}", app.name(), e.message()));
@@ -3406,6 +3436,8 @@ fn to_key(keyval: gdk::Key, state: gdk::ModifierType) -> Option<Key> {
         K::Delete if shift => Key::ShiftDelete,
         K::Delete => Key::Delete,
         // shift+arrows: let the list do range selection
+        K::Left if ctrl && !shift => Key::CtrlLeft,
+        K::Right if ctrl && !shift => Key::CtrlRight,
         K::Up | K::Down | K::Left | K::Right | K::Home | K::End if shift || ctrl => return None,
         K::Up => Key::Up,
         K::Down => Key::Down,

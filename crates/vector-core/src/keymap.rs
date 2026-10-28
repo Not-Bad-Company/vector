@@ -47,6 +47,9 @@ pub enum Key {
     End,
     PageUp,
     PageDown,
+    /// Ctrl plus an arrow: moving between the sidebar and the files.
+    CtrlLeft,
+    CtrlRight,
     F(u8),
 }
 
@@ -56,6 +59,8 @@ impl fmt::Display for Key {
             Key::Char(c) => write!(f, "{c}"),
             Key::Ctrl(c) => write!(f, "<C-{c}>"),
             Key::F(n) => write!(f, "<F{n}>"),
+            Key::CtrlLeft => write!(f, "<C-Left>"),
+            Key::CtrlRight => write!(f, "<C-Right>"),
             other => write!(f, "<{other:?}>"),
         }
     }
@@ -107,6 +112,8 @@ fn named_key(name: &str) -> Option<Key> {
         "end" => Key::End,
         "pageup" => Key::PageUp,
         "pagedown" => Key::PageDown,
+        "c-left" => Key::CtrlLeft,
+        "c-right" => Key::CtrlRight,
         "space" => Key::Char(' '),
         "lt" => Key::Char('<'),
         _ => return None,
@@ -125,6 +132,12 @@ pub enum Action {
     /// Open the entry under the cursor (folder: go in; file: default app).
     Open,
     Parent,
+    /// `h` / left arrow: the parent folder in the list, one tile left in the grid.
+    Left,
+    /// `l` / right arrow: open in the list, one tile right in the grid.
+    Right,
+    /// `ctrl+h` / `ctrl+left`: move the keyboard into the sidebar, like nvim's window keys.
+    FocusSidebar,
     Back,
     Forward,
     Yank,
@@ -196,13 +209,15 @@ pub const BINDINGS: &[(&str, Action)] = &[
     ("<Home>", Action::Top),
     ("G", Action::Bottom),
     ("<End>", Action::Bottom),
-    ("l", Action::Open),
-    ("<Right>", Action::Open),
+    ("l", Action::Right),
+    ("<Right>", Action::Right),
     ("<CR>", Action::Open),
-    ("h", Action::Parent),
+    ("h", Action::Left),
     ("-", Action::Parent),
-    ("<Left>", Action::Parent),
+    ("<Left>", Action::Left),
     ("<BS>", Action::Parent),
+    ("<C-h>", Action::FocusSidebar),
+    ("<C-Left>", Action::FocusSidebar),
     ("H", Action::Back),
     ("L", Action::Forward),
     // single keys: no doubled presses (yy/dd) needed
@@ -228,7 +243,6 @@ pub const BINDINGS: &[(&str, Action)] = &[
     (":", Action::CommandStart),
     ("/", Action::FilterStart),
     ("zh", Action::ToggleHidden),
-    ("<C-h>", Action::ToggleHidden),
     ("w", Action::ToggleView),
     ("i", Action::TogglePreview),
     ("s", Action::ToggleSplit),

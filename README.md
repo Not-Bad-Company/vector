@@ -299,15 +299,16 @@ are on the keyboard. Press `?` in Vector Find for the same list.
 |---|---|
 | `j` `k`, arrows | down, up (`5j` moves five) |
 | `gg` `G` | first, last |
-| `l` `enter` | open |
-| `h` `-` `backspace` | parent folder (at `/` it moves into the sidebar) |
+| `l` `enter`, `→` | open (in the grid `l` and `→` move right; `enter` opens) |
+| `h` `-` `backspace`, `←` | parent folder (in the grid `h` and `←` move left); at `/` it moves into the sidebar |
+| `ctrl+h` `ctrl+←` / `ctrl+l` `ctrl+→` | into the sidebar / back to the files, like nvim's window keys |
 | `H` `L` | back, forward |
 | `ctrl+d` `ctrl+u` | page down, up |
 | `y` `x` `p` | copy, cut, paste (also `ctrl+c` `ctrl+x` `ctrl+v`, and with other apps) |
 | `d` / `D` | move to trash / delete permanently (asks first) |
 | `r` `F2` | rename |
 | `u` `.` | undo, repeat |
-| `v` `space` `ctrl+a` | select a range, toggle one, select all |
+| `v` `space` `ctrl+a` | select a range, mark one (and move to the next), select all |
 | `e` | edit the file in `$EDITOR` |
 | `ge` | edit the names in this folder in `$EDITOR` |
 | `Y` | copy the path |
@@ -315,11 +316,11 @@ are on the keyboard. Press `?` in Vector Find for the same list.
 | `/` | filter |
 | `:` | command line (`tab` completes) |
 | `i` | preview pane |
-| `w` | list or grid |
-| `ctrl+h` `zh` | hidden files |
+| `w` | list or grid (`:view list`, `:view grid`) |
+| `zh` | hidden files |
 | `s` `tab` | split, switch pane |
 | `ctrl+t` `gt` `gT` `ctrl+w` | new tab, next, previous, close |
-| `ctrl+l` | type or paste a path |
+| `ctrl+l` | type or paste a path (from the sidebar: back to the files) |
 | `gs` | measure folder size |
 | `gm` | context menu |
 | `gx` | terminal here |
@@ -343,6 +344,7 @@ are on the keyboard. Press `?` in Vector Find for the same list.
 | `:sort name\|size\|mtime\|type [rev]` | sort (`:sort!` or `rev` reverses) |
 | `:filter expr` | set the filter |
 | `:hidden [on\|off]` | hidden files |
+| `:view [list\|grid]` | list or grid view (no argument switches) |
 | `:open [name]` | open with the default app |
 | `:term` | terminal here |
 | `:agent [name]` | start a coding agent (claude, codex, gemini, aider…) in the terminal panel |
@@ -446,9 +448,16 @@ vector.command("size", function(args)
   end)
 end)
 
--- hooks
+-- hooks: a grid for picture folders, a list sorted by size for downloads, a list elsewhere
 vector.on("cd", function(dir)
-  if dir:match("/node_modules$") then vector.notify("careful") end
+  if dir:match("/Pictures") then
+    vector.cmd("view grid")
+  elseif dir:match("/Downloads$") then
+    vector.cmd("view list")
+    vector.cmd("sort size rev")
+  else
+    vector.cmd("view list")
+  end
 end)
 ```
 

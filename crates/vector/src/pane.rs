@@ -161,10 +161,24 @@ impl Pane {
         if let Some(sw) = pane.list.parent().and_downcast::<gtk::ScrolledWindow>() {
             let weak = Rc::downgrade(&pane);
             sw.hadjustment().connect_changed(move |a| {
-                if let Some(p) = weak.upgrade()
-                    && a.page_size() > 0.0
-                {
-                    p.set_compact(a.page_size() < 720.0);
+                let w = a.page_size();
+                let Some(p) = weak.upgrade().filter(|_| w > 0.0) else {
+                    return;
+                };
+                // a band around the threshold, so a resize that hovers near it (tiling
+                // animations) doesn't switch back and forth; and never during layout itself
+                let compact = if p.compact.get() {
+                    w < 760.0
+                } else {
+                    w < 700.0
+                };
+                if compact != p.compact.get() {
+                    let weak = Rc::downgrade(&p);
+                    glib::idle_add_local_once(move || {
+                        if let Some(p) = weak.upgrade() {
+                            p.set_compact(compact);
+                        }
+                    });
                 }
             });
         }
@@ -274,8 +288,9 @@ impl Pane {
         self.grid_mode.get()
     }
 
-    pub fn set_grid(&self, grid: bool) {
+    pub fn set_grid(self: &Rc<Self>, grid: bool) {
         self.grid_mode.set(grid);
+        self.build_header();
         self.update_stack();
         self.push_selection(true);
     }
@@ -628,7 +643,17 @@ impl Pane {
                 let mut end = None;
                 for ev in events {
                     match ev {
-                        ListEvent::Batch(batch) => pending.extend(batch),
+                        ListEvent::Batch(mut batch) => {
+                            // folders show (and sort by) their last known size at once, not
+                            // after the listing is done
+                            for e in batch.iter_mut().filter(|e| e.is_dir() && !e.symlink) {
+                                if let Some((n, _)) = cached_size(&e.path) {
+                                    e.size = n;
+                                    p.measured.borrow_mut().insert(e.name.clone());
+                                }
+                            }
+                            pending.extend(batch)
+                        }
                         ListEvent::Progress(n) => {
                             p.progress.set(Some(n));
                             (p.on_event)(PaneEvent::Cursor);
@@ -852,7 +877,7 @@ impl Pane {
             Some(if !m.options().filter.is_empty() {
                 format!("nothing matches {}", m.options().filter)
             } else if m.total() > 0 {
-                format!("{} hidden items · ctrl+h shows them", m.total())
+                format!("{} hidden items · zh shows them", m.total())
             } else {
                 "empty folder".to_string()
             })
@@ -870,7 +895,6 @@ impl Pane {
                 "list"
             }),
         }
-        self.header.set_visible(!self.grid_mode.get());
     }
 
     /// Column titles over the list; the sorted one is highlighted with its direction, and a
@@ -914,6 +938,23 @@ impl Pane {
             l.add_controller(click);
             l
         };
+        if self.grid_mode.get() {
+            // the grid has no columns: the same sort keys in one row
+            let title = gtk::Label::new(Some("sort"));
+            title.add_css_class("faint");
+            self.header.append(&title);
+            for (text, key) in [
+                ("name", SortKey::Name),
+                ("size", SortKey::Size),
+                ("modified", SortKey::Modified),
+                ("type", SortKey::Type),
+            ] {
+                let l = col(text, key, 0, 0.0, false);
+                l.set_margin_start(10);
+                self.header.append(&l);
+            }
+            return;
+        }
         let icon = gtk::Label::new(None);
         icon.add_css_class("icon");
         self.header.append(&icon);

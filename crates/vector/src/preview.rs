@@ -26,6 +26,23 @@ pub struct Preview {
     theme: vector_core::theme::Theme,
 }
 
+/// Whether a refresh shows the same thing: same file, not modified since. A folder's size is
+/// left out: it changes while sizes are measured in the background, and the preview measures
+/// it itself.
+fn same_item(a: Option<&Entry>, b: Option<&Entry>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => {
+            a.path == b.path
+                && a.modified == b.modified
+                && a.kind == b.kind
+                && a.content_type == b.content_type
+                && (a.is_dir() || a.size == b.size)
+        }
+        _ => false,
+    }
+}
+
 impl Preview {
     pub fn new(theme: &vector_core::theme::Theme) -> Rc<Preview> {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
@@ -71,7 +88,7 @@ impl Preview {
     }
 
     pub fn show(self: &Rc<Self>, entry: Option<&Entry>) {
-        if self.shown.borrow().as_ref() == entry {
+        if same_item(self.shown.borrow().as_ref(), entry) {
             return;
         }
         *self.shown.borrow_mut() = entry.cloned();
@@ -262,6 +279,8 @@ impl Preview {
                     entries.truncate(200);
                     // a long folder scrolls inside the preview; the details stay visible
                     let list = gtk::Box::new(gtk::Orientation::Vertical, 4);
+                    // inside the folder: lined up under its name, right of its icon
+                    list.set_margin_start(30);
                     let scroll = gtk::ScrolledWindow::builder()
                         .child(&list)
                         .hscrollbar_policy(gtk::PolicyType::Never)
@@ -760,6 +779,23 @@ fn scheme_xml(theme: &vector_core::theme::Theme) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn folder_size_changes_keep_the_preview() {
+        let mut a = Entry::query(std::path::Path::new("/tmp")).expect("/tmp");
+        let mut b = a.clone();
+        b.size += 4096;
+        assert!(same_item(Some(&a), Some(&b)));
+        // a file whose size changed is shown again
+        a.kind = Kind::File;
+        b.kind = Kind::File;
+        assert!(!same_item(Some(&a), Some(&b)));
+        b.size = a.size;
+        b.modified += 1;
+        assert!(!same_item(Some(&a), Some(&b)));
+        assert!(same_item(None, None));
+        assert!(!same_item(Some(&a), None));
+    }
+
     #[test]
     fn detects_text_types() {
         assert!(is_text_type("text/plain"));

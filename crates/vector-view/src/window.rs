@@ -1239,11 +1239,20 @@ impl Win {
         ));
         self.stack.add_controller(click);
 
-        // the fitted zoom (shown in the header) follows the window size
+        // the fitted zoom (shown in the header) follows the window size; updated once the
+        // resize settles into a frame, not from inside the layout pass
+        let queued = Rc::new(Cell::new(false));
         self.canvas.connect_resized(move || {
-            if let Some(me) = me.upgrade() {
-                me.update_chrome();
+            if queued.replace(true) {
+                return;
             }
+            let (me, queued) = (me.clone(), queued.clone());
+            glib::idle_add_local_once(move || {
+                queued.set(false);
+                if let Some(me) = me.upgrade() {
+                    me.update_chrome();
+                }
+            });
         });
     }
 
@@ -1355,6 +1364,10 @@ impl Win {
     // ── actions: open with, copy, trash, info ───────────────────────────────
 
     fn launch(&self, app: &gio::AppInfo, path: &Path) {
+        if vector_core::no_launch() {
+            self.notify(&format!("test run: would open in {}", app.display_name()));
+            return;
+        }
         let ctx = gtk::prelude::WidgetExt::display(&self.window).app_launch_context();
         match app.launch(&[gio::File::for_path(path)], Some(&ctx)) {
             Ok(()) => self.notify(&format!("opened in {}", app.display_name())),
@@ -1384,6 +1397,10 @@ impl Win {
     /// or opens the folder.
     fn show_in_folder(&self) {
         let Some(item) = self.current() else { return };
+        if vector_core::no_launch() {
+            self.notify("test run: would show the file in its folder");
+            return;
+        }
         let uri = gio::File::for_path(&item.path).uri().to_string();
         let dir = item
             .path
