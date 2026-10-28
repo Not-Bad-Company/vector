@@ -63,7 +63,7 @@ pub struct Pane {
     /// Files looked at by a running `:biggest` scan.
     pub progress: Cell<Option<u64>>,
     /// `:biggest` view: (roots, how many, stay on one file system), and the sort to go back to.
-    biggest: RefCell<Option<(Vec<PathBuf>, usize, bool, vector_core::sort::SortSpec)>>,
+    biggest: RefCell<Option<Biggest>>,
     grid_mode: Cell<bool>,
     /// Narrow (split) pane: no date column.
     compact: Cell<bool>,
@@ -327,10 +327,10 @@ impl Pane {
             .biggest
             .borrow()
             .as_ref()
-            .map(|b| b.3)
+            .map(|b| b.sort_before)
             .unwrap_or(self.model.borrow().options().sort);
         self.flat.set(false);
-        *self.biggest.borrow_mut() = Some((roots, n, one_fs, before));
+        *self.biggest.borrow_mut() = Some(Biggest { roots, n, one_fs, sort_before: before });
         self.model
             .borrow_mut()
             .set_sort(vector_core::sort::SortSpec {
@@ -342,8 +342,8 @@ impl Pane {
     }
 
     fn leave_biggest(&self) {
-        if let Some((_, _, _, sort)) = self.biggest.borrow_mut().take() {
-            self.model.borrow_mut().set_sort(sort);
+        if let Some(b) = self.biggest.borrow_mut().take() {
+            self.model.borrow_mut().set_sort(b.sort_before);
         }
     }
 
@@ -541,8 +541,8 @@ impl Pane {
                 // some file systems can't be watched; the listing still works
             }
         }
-        let l = if let Some((roots, n, one_fs, _)) = biggest {
-            listing::spawn_biggest(roots, n, one_fs)
+        let l = if let Some(b) = biggest {
+            listing::spawn_biggest(b.roots, b.n, b.one_fs)
         } else if flat {
             listing::spawn_flat(dir, self.model.borrow().options().show_hidden)
         } else {
@@ -935,6 +935,16 @@ impl Pane {
         // tiles are 116 px wide including padding (see tile_factory)
         (self.grid.width() / 116).max(1) as isize
     }
+}
+
+/// A `:biggest` view: where it looks, how many, whether it stays on one file system, and the
+/// sort to go back to afterwards.
+#[derive(Clone)]
+struct Biggest {
+    roots: Vec<PathBuf>,
+    n: usize,
+    one_fs: bool,
+    sort_before: vector_core::sort::SortSpec,
 }
 
 thread_local! {

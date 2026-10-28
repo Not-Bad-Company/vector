@@ -126,7 +126,8 @@ fn main() -> glib::ExitCode {
         };
         if args.snapshot.is_none() {
             // test runs leave the bus name to the real file manager
-            std::mem::forget(dbus::own(open.clone()));
+            // the name stays owned for the life of the process
+            let _ = dbus::own(open.clone());
         }
         if args.service {
             // started by D-Bus activation: stay up for ShowItems/ShowFolders calls
