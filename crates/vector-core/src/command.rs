@@ -34,6 +34,10 @@ pub enum Command {
         reverse: bool,
     },
     Hidden(Toggle),
+    /// `:z words`: the folder visited most (and most lately) whose path has those words.
+    Z(String),
+    /// `:places reset`: show the places that were hidden from the sidebar again.
+    PlacesReset,
     /// `:number [on|off]`: relative line numbers in the list.
     Number(Toggle),
     /// `:view [list|grid]`: show the folder as a list or a grid (no arg toggles).
@@ -110,10 +114,12 @@ pub const COMMANDS: &[&str] = &[
     "find",
     "grep",
     "cd",
+    "z",
     "sort",
     "hidden",
     "number",
     "view",
+    "places",
     "extract",
     "rename",
     "restore",
@@ -198,6 +204,14 @@ pub fn parse(line: &str) -> Result<Command, ParseError> {
             "off" | "false" | "hide" => Ok(Command::Hidden(Toggle::Off)),
             _ => Err(ParseError::BadArg {
                 command: "hidden",
+                arg: arg.into(),
+            }),
+        },
+        "z" => required(arg, "z").map(Command::Z),
+        "places" => match arg.to_ascii_lowercase().as_str() {
+            "reset" => Ok(Command::PlacesReset),
+            _ => Err(ParseError::BadArg {
+                command: "places",
                 arg: arg.into(),
             }),
         },
@@ -384,6 +398,7 @@ pub fn complete(line: &str, ctx: &CompletionCtx<'_>) -> Completion {
     let candidates = match name {
         "sort" => prefixed(&["name", "size", "mtime", "type"], arg),
         "hidden" | "number" => prefixed(&["on", "off"], arg),
+        "places" => prefixed(&["reset"], arg),
         "view" => prefixed(&["list", "grid"], arg),
         "biggest" => prefixed(&["here", "/", "all"], arg),
         "agent" => prefixed(&AGENTS, arg),

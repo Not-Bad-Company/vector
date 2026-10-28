@@ -8,6 +8,7 @@ pub mod du;
 pub mod edit;
 pub mod entry;
 pub mod filter;
+pub mod frecency;
 pub mod git;
 pub mod help;
 pub mod icons;

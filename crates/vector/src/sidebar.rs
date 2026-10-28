@@ -1,4 +1,5 @@
-//! Sidebar: places, mounted drives and volumes from GIO, GTK bookmarks.
+//! Sidebar: places (the standard folders, then the user's own from the GTK bookmarks, the
+//! first nine numbered for `g1`…`g9`), recent folders, mounted drives and volumes, pins.
 
 use std::{
     cell::RefCell,
@@ -15,6 +16,8 @@ pub enum SidebarEvent {
     Open(PathBuf),
     OpenTab(PathBuf),
     Unpin(PathBuf),
+    /// Take a folder off the recent list.
+    Forget(PathBuf),
     Notify(String),
 }
 
@@ -28,6 +31,7 @@ enum Section {
     Devices,
     Pinned,
     Bookmarks,
+    Recent,
 }
 
 pub struct Sidebar {
@@ -38,6 +42,9 @@ pub struct Sidebar {
     devices: gtk::Box,
     bookmark_rows: gtk::Box,
     pinned_rows: gtk::Box,
+    recent_rows: gtk::Box,
+    /// Standard places the user took off the sidebar.
+    hidden: RefCell<Vec<PathBuf>>,
     monitor: gio::VolumeMonitor,
     bookmarks_monitor: RefCell<Option<gio::FileMonitor>>,
     sections: RefCell<Vec<(gtk::Label, gtk::Box)>>,
@@ -73,6 +80,8 @@ impl Sidebar {
             devices: gtk::Box::new(gtk::Orientation::Vertical, 0),
             bookmark_rows: gtk::Box::new(gtk::Orientation::Vertical, 0),
             pinned_rows: gtk::Box::new(gtk::Orientation::Vertical, 0),
+            recent_rows: gtk::Box::new(gtk::Orientation::Vertical, 0),
+            hidden: RefCell::new(load_hidden()),
             monitor: gio::VolumeMonitor::get(),
             bookmarks_monitor: RefCell::new(None),
             sections: RefCell::new(Vec::new()),
@@ -85,12 +94,17 @@ impl Sidebar {
         *sidebar.weak.borrow_mut() = Rc::downgrade(&sidebar);
         sidebar.connect_menu();
         sidebar.populate_places();
+        sidebar.number_places();
         let content = sidebar.content.clone();
-        sidebar.add_section(&content, "places", &sidebar.places);
+        // one list: the standard places, then the user's own
+        let all = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        all.append(&sidebar.places);
+        all.append(&sidebar.bookmark_rows);
+        sidebar.add_section(&content, "places", &all);
+        sidebar.add_section(&content, "recent", &sidebar.recent_rows);
         sidebar.rebuild_devices();
         sidebar.add_section(&content, "devices", &sidebar.devices);
         sidebar.add_section(&content, "pinned", &sidebar.pinned_rows);
-        sidebar.add_section(&content, "bookmarks", &sidebar.bookmark_rows);
         sidebar.load_bookmarks();
         sidebar.watch_volumes();
         sidebar.watch_bookmarks();
@@ -108,7 +122,7 @@ impl Sidebar {
         }
         self.rows
             .borrow_mut()
-            .retain(|(_, row)| row.parent().as_ref() != Some(self.pinned_rows.upcast_ref()));
+            .retain(|(_, row)| row.parent().is_some());
         for p in items {
             let name = p
                 .file_name()
@@ -123,6 +137,149 @@ impl Sidebar {
             }
         }
         self.update_sections();
+    }
+
+    /// Shows the most used folders under "recent".
+    pub fn set_recent(&self, dirs: &[PathBuf]) {
+        while let Some(child) = self.recent_rows.first_child() {
+            self.recent_rows.remove(&child);
+        }
+        self.rows
+            .borrow_mut()
+            .retain(|(_, row)| row.parent().is_some());
+        for p in dirs {
+            let name = p
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| p.display().to_string());
+            let glyph = vector_core::icons::icon_for(&name, true, false);
+            self.add_row(&self.recent_rows, p.clone(), &name, glyph, None);
+        }
+        self.update_sections();
+    }
+
+    /// Whether `p` is listed under places (standard or the user's own).
+    pub fn is_place(&self, p: &Path) -> bool {
+        self.place_rows().iter().any(|(r, _)| r == p)
+    }
+
+    /// The place numbered `n` (1-based), for `g1`…`g9`.
+    pub fn place(&self, n: usize) -> Option<PathBuf> {
+        self.place_rows()
+            .into_iter()
+            .nth(n.checked_sub(1)?)
+            .map(|(p, _)| p)
+    }
+
+    fn place_rows(&self) -> Vec<(PathBuf, gtk::Widget)> {
+        let parents = [
+            self.places.upcast_ref::<gtk::Widget>().clone(),
+            self.bookmark_rows.clone().upcast(),
+        ];
+        let rows = self.rows.borrow();
+        let mut out = Vec::new();
+        for parent in parents {
+            let mut c = parent.first_child();
+            while let Some(w) = c {
+                if let Some((p, _)) = rows.iter().find(|(_, r)| *r == w) {
+                    out.push((p.clone(), w.clone()));
+                }
+                c = w.next_sibling();
+            }
+        }
+        out
+    }
+
+    /// Puts 1…9 next to the first nine places.
+    fn number_places(&self) {
+        for (i, (_, row)) in self.place_rows().iter().enumerate() {
+            if let Some(num) = row.last_child().and_downcast::<gtk::Label>()
+                && num.has_css_class("place-num")
+            {
+                num.set_text(&if i < 9 {
+                    (i + 1).to_string()
+                } else {
+                    String::new()
+                });
+            }
+        }
+    }
+
+    /// Whether `p` is one of the user's own places.
+    pub fn is_bookmark(&self, p: &Path) -> bool {
+        let rows = self.rows.borrow();
+        rows.iter()
+            .any(|(r, w)| r == p && w.parent().as_ref() == Some(self.bookmark_rows.upcast_ref()))
+    }
+
+    /// `b`: adds `p` to the places, or takes it off if it is one of the user's own.
+    pub fn toggle_bookmark(&self, p: &Path) {
+        if self.is_bookmark(p) {
+            self.edit_bookmarks(|t| bookmarks::remove(t, p), "taken off places");
+        } else if self.is_place(p) {
+            (self.on_event)(SidebarEvent::Notify("already in places".into()));
+        } else {
+            self.edit_bookmarks(
+                |t| bookmarks::add(t, p, None),
+                "added to places (g1…g9 jump)",
+            );
+        }
+    }
+
+    /// Moves one of the user's places up or down. Returns whether it moved.
+    pub fn shift_place(&self, p: &Path, up: bool) -> bool {
+        if !self.is_bookmark(p) {
+            (self.on_event)(SidebarEvent::Notify(
+                "only your own places move (b adds one)".into(),
+            ));
+            return false;
+        }
+        let path = bookmarks::default_path();
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let moved = bookmarks::shift(&text, p, up) != text;
+        if moved {
+            self.edit_bookmarks(|t| bookmarks::shift(t, p, up), "moved");
+        }
+        moved
+    }
+
+    /// Takes a standard place off the sidebar (`:places reset` brings it back).
+    fn hide_place(&self, p: PathBuf) {
+        self.hidden.borrow_mut().push(p);
+        self.save_hidden("hidden from places · :places reset shows it again");
+    }
+
+    pub fn reset_hidden(&self) {
+        self.hidden.borrow_mut().clear();
+        self.save_hidden("all places shown");
+    }
+
+    fn save_hidden(&self, done: &str) {
+        let text: String = self
+            .hidden
+            .borrow()
+            .iter()
+            .map(|p| format!("{}\n", p.display()))
+            .collect();
+        let file = hidden_path();
+        if let Some(d) = file.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        if let Err(e) = std::fs::write(&file, text) {
+            (self.on_event)(SidebarEvent::Notify(format!("places: {e}")));
+            return;
+        }
+        while let Some(child) = self.places.first_child() {
+            self.places.remove(&child);
+        }
+        self.rows
+            .borrow_mut()
+            .retain(|(_, row)| row.parent().is_some());
+        self.populate_places();
+        self.number_places();
+        let cur = self.current.borrow().clone();
+        self.set_current(&cur);
+        (self.on_event)(SidebarEvent::Notify(done.to_string()));
     }
 
     pub fn set_current(&self, path: &Path) {
@@ -156,8 +313,14 @@ impl Sidebar {
     }
 
     fn populate_places(&self) {
+        let hidden = self.hidden.borrow().clone();
+        let add = |path: PathBuf, name: &str, glyph: &str| {
+            if !hidden.contains(&path) {
+                self.add_row(&self.places, path, name, glyph, None);
+            }
+        };
         if let Some(home) = glib::home_dir().to_str() {
-            self.add_row(&self.places, PathBuf::from(home), "Home", "\u{F02DC}", None);
+            add(PathBuf::from(home), "Home", "\u{F02DC}");
         }
         for (dir, name) in [
             (glib::UserDirectory::Desktop, "Desktop"),
@@ -172,19 +335,13 @@ impl Sidebar {
                 && path.exists()
                 && path != glib::home_dir()
             {
-                self.add_row(
-                    &self.places,
-                    path,
-                    name,
-                    vector_core::icons::icon_for(name, true, false),
-                    None,
-                );
+                add(path, name, vector_core::icons::icon_for(name, true, false));
             }
         }
-        self.add_row(&self.places, PathBuf::from("/"), "Root", "\u{F02CA}", None);
+        add(PathBuf::from("/"), "Root", "\u{F02CA}");
         let trash = vector_core::trash::files_dir();
         if trash.is_dir() {
-            self.add_row(&self.places, trash, "Trash", "\u{F0A7A}", None);
+            add(trash, "Trash", "\u{F0A7A}");
         }
     }
 
@@ -215,6 +372,11 @@ impl Sidebar {
             button.set_tooltip_text(Some("Eject"));
             button.connect_clicked(move |_| action.run());
             row.append(&button);
+        }
+        if parent == &self.places || parent == &self.bookmark_rows {
+            let num = gtk::Label::new(None);
+            num.add_css_class("place-num");
+            row.append(&num);
         }
         let click = gtk::GestureClick::new();
         let callback = self.on_open.clone();
@@ -282,6 +444,7 @@ impl Sidebar {
             (&self.devices, Section::Devices),
             (&self.pinned_rows, Section::Pinned),
             (&self.bookmark_rows, Section::Bookmarks),
+            (&self.recent_rows, Section::Recent),
         ]
         .into_iter()
         .find(|(b, _)| parent == *b.upcast_ref::<gtk::Widget>())
@@ -313,13 +476,30 @@ impl Sidebar {
         );
         add(
             "bookmark",
-            Box::new(|s, p| s.edit_bookmarks(|t| bookmarks::add(t, &p, None), "bookmarked")),
+            Box::new(|s, p| s.edit_bookmarks(|t| bookmarks::add(t, &p, None), "added to places")),
         );
         add(
             "unbookmark",
-            Box::new(|s, p| s.edit_bookmarks(|t| bookmarks::remove(t, &p), "bookmark removed")),
+            Box::new(|s, p| s.edit_bookmarks(|t| bookmarks::remove(t, &p), "taken off places")),
         );
         add("rename", Box::new(|s, p| s.ask_name(p)));
+        add("hide", Box::new(|s, p| s.hide_place(p)));
+        add(
+            "up",
+            Box::new(|s, p| {
+                s.shift_place(&p, true);
+            }),
+        );
+        add(
+            "down",
+            Box::new(|s, p| {
+                s.shift_place(&p, false);
+            }),
+        );
+        add(
+            "forget",
+            Box::new(|s, p| (s.on_event)(SidebarEvent::Forget(p))),
+        );
         add("icon", Box::new(|s, p| s.ask_icon(p)));
         self.widget.insert_action_group("side", Some(&actions));
 
@@ -361,18 +541,25 @@ impl Sidebar {
                         Section::Bookmarks => {
                             item("rename", "rename", &p);
                             item("change icon", "icon", &p);
-                            item("remove bookmark", "unbookmark", &p);
+                            item("move up", "up", &p);
+                            item("move down", "down", &p);
+                            item("take off places", "unbookmark", &p);
+                        }
+                        Section::Places => item("hide from places", "hide", &p),
+                        Section::Recent => {
+                            item("add to places", "bookmark", &p);
+                            item("forget", "forget", &p);
                         }
                         Section::Pinned => {
                             item("change icon", "icon", &p);
                             item("unpin", "unpin", &p);
                         }
-                        Section::Places | Section::Devices => item("bookmark", "bookmark", &p),
+                        Section::Devices => item("add to places", "bookmark", &p),
                     }
                 }
                 _ => {
                     let cur = s.current.borrow().clone();
-                    item("bookmark this folder", "bookmark", &cur);
+                    item("add this folder to places", "bookmark", &cur);
                 }
             }
             let pop = gtk::PopoverMenu::from_model(Some(&menu));
@@ -413,9 +600,10 @@ impl Sidebar {
         let mut out = Vec::new();
         for b in [
             &self.places,
+            &self.bookmark_rows,
+            &self.recent_rows,
             &self.devices,
             &self.pinned_rows,
-            &self.bookmark_rows,
         ] {
             if !b.is_visible() {
                 continue;
@@ -448,6 +636,11 @@ impl Sidebar {
                 .map(|l| l.text().to_lowercase());
             (label.as_deref() == Some(want.as_str())).then(|| p.clone())
         })
+    }
+
+    /// The row at keyboard position `i`.
+    pub fn cursor_row(&self, i: usize) -> Option<(PathBuf, gtk::Widget)> {
+        self.visible_rows().into_iter().nth(i)
     }
 
     pub fn len(&self) -> usize {
@@ -575,7 +768,7 @@ impl Sidebar {
         }
         self.rows
             .borrow_mut()
-            .retain(|(_, row)| row.parent().as_ref() != Some(self.devices.upcast_ref()));
+            .retain(|(_, row)| row.parent().is_some());
         // screenshots (VECTOR_DEMO) leave the machine's own drives out
         let hide = std::env::var_os("VECTOR_DEMO").is_some();
         let (mounts, volumes) = if hide {
@@ -645,12 +838,19 @@ impl Sidebar {
     }
 
     fn show_bookmarks(&self, text: &str) {
+        // the keyboard cursor stays on its place when the list is redrawn
+        let cursor = self
+            .rows
+            .borrow()
+            .iter()
+            .find(|(_, w)| w.has_css_class("cursor"))
+            .map(|(p, _)| p.clone());
         while let Some(child) = self.bookmark_rows.first_child() {
             self.bookmark_rows.remove(&child);
         }
         self.rows
             .borrow_mut()
-            .retain(|(_, row)| row.parent().as_ref() != Some(self.bookmark_rows.upcast_ref()));
+            .retain(|(_, row)| row.parent().is_some());
         for bookmark in bookmarks::parse(text) {
             self.add_row(
                 &self.bookmark_rows,
@@ -660,7 +860,13 @@ impl Sidebar {
                 None,
             );
         }
+        self.number_places();
         self.update_sections();
+        if let Some(c) = cursor
+            && let Some(row) = self.row_of(&c)
+        {
+            row.add_css_class("cursor");
+        }
     }
 
     fn watch_bookmarks(self: &Rc<Self>) {
@@ -720,4 +926,20 @@ impl Eject {
             ),
         }
     }
+}
+
+/// The standard places the user hid, one path per line.
+fn hidden_path() -> PathBuf {
+    glib::user_config_dir()
+        .join(vector_core::APP_NAME)
+        .join("hidden-places")
+}
+
+fn load_hidden() -> Vec<PathBuf> {
+    std::fs::read_to_string(hidden_path())
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.starts_with('/'))
+        .map(PathBuf::from)
+        .collect()
 }

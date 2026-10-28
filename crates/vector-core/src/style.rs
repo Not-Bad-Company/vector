@@ -48,6 +48,9 @@ scrolledwindow, viewport {{ background: transparent; }}
 /* keyboard cursor in the sidebar */
 .row.cursor {{ border-left-color: {acc}; background: alpha({acc}, 0.16); }}
 .row .meta {{ opacity: 0.5; }}
+/* g1…g9 */
+.row .place-num {{ opacity: 0.28; font-size: 10px; }}
+.row.active .place-num, .row.cursor .place-num {{ opacity: 0.7; }}
 
 /* ── header: tabs and path bar ── */
 .header {{ background: alpha({fg}, 0.035); border-bottom: 1px solid alpha({fg}, 0.08); padding: 0 8px; min-height: 34px; }}

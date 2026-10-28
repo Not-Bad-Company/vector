@@ -119,6 +119,8 @@ pub struct Win {
     script: Script,
     /// The folder the `cd` handlers last heard of.
     script_dir: RefCell<PathBuf>,
+    /// Folders by how often and lately they were visited: the recent list and `:z`.
+    frecency: RefCell<vector_core::frecency::Frecency>,
     /// A `cd` handler is running.
     in_cd_hook: Cell<bool>,
     /// Where a `cd` handler sent us; arriving there doesn't call the handlers again.
@@ -278,6 +280,11 @@ impl Win {
                         win.refresh_pins();
                         win.notify("unpinned");
                     }
+                    SidebarEvent::Forget(path) => {
+                        win.frecency.borrow_mut().forget(&path);
+                        win.save_frecency();
+                        win.refresh_recent();
+                    }
                     SidebarEvent::Notify(text) => {
                         win.notify(&text);
                         for p in win.all_panes() {
@@ -338,6 +345,7 @@ impl Win {
                 settings: RefCell::new(settings),
                 script: Script::new(),
                 script_dir: RefCell::default(),
+                frecency: RefCell::new(load_frecency()),
                 in_cd_hook: Cell::new(false),
                 hook_target: RefCell::default(),
                 script_keys: Cell::new(0),
@@ -688,6 +696,7 @@ impl Win {
         publish_cwd(&dir);
         if *self.script_dir.borrow() != dir {
             *self.script_dir.borrow_mut() = dir.clone();
+            self.visit(&dir);
             // a handler that moves on (vector.cd) doesn't hear about its own move: no loops
             if self.hook_target.take().as_ref() != Some(&dir) {
                 self.in_cd_hook.set(true);
@@ -1403,6 +1412,14 @@ impl Win {
                 self.paste();
             }
             Action::Restore => self.run_command(Command::Restore),
+            Action::Place(n) => match self.sidebar.place(n as usize) {
+                Some(p) => self.run_command(Command::Cd(p.display().to_string())),
+                None => self.flash(&format!("no place {n} · b adds this folder to places")),
+            },
+            Action::Bookmark => {
+                self.sidebar.toggle_bookmark(&self.pane().dir());
+                self.refresh_recent();
+            }
             Action::Trash if vector_core::trash::is_trash(&pane.dir()) => {
                 self.flash("already in the trash · gr puts it back, D deletes it for good")
             }
@@ -1749,6 +1766,15 @@ impl Win {
             Key::Char('k') | Key::Up => go(i.saturating_sub(1)),
             Key::Char('G') | Key::End => go(n),
             Key::Char('g') | Key::Home => go(0),
+            // move one of the user's own places, the cursor going along
+            Key::Char('K') | Key::Char('J') => {
+                let up = key == Key::Char('K');
+                if let Some((p, _)) = self.sidebar.cursor_row(i)
+                    && self.sidebar.shift_place(&p, up)
+                {
+                    go(if up { i.saturating_sub(1) } else { i + 1 });
+                }
+            }
             Key::Char('l') | Key::Enter | Key::Right => {
                 let target = self.sidebar.set_cursor(Some(i));
                 self.leave_sidebar();
@@ -1771,6 +1797,42 @@ impl Win {
             }
         }
         true
+    }
+
+    /// Counts a visit to `dir` for the recent list and `:z`.
+    fn visit(&self, dir: &Path) {
+        if dir == Path::new("/")
+            || *dir == glib::home_dir()
+            || vector_core::trash::is_trash(dir)
+            || dir.starts_with(glib::user_cache_dir())
+        {
+            return;
+        }
+        self.frecency.borrow_mut().visit(dir, now());
+        self.save_frecency();
+        self.refresh_recent();
+    }
+
+    fn save_frecency(&self) {
+        let text = self.frecency.borrow().to_text();
+        // off the main thread: the state folder could be anywhere
+        gio::spawn_blocking(move || {
+            let p = frecency_path();
+            if let Some(d) = p.parent() {
+                let _ = std::fs::create_dir_all(d);
+            }
+            let _ = std::fs::write(p, text);
+        });
+    }
+
+    /// The five folders used most that aren't places already.
+    fn refresh_recent(&self) {
+        let top = self.frecency.borrow().top(5, now(), |p| {
+            self.sidebar.is_place(p) || vector_core::trash::is_trash(p)
+        });
+        self.sidebar.set_recent(&top);
+        let cur = self.pane().dir();
+        self.sidebar.set_current(&cur);
     }
 
     fn leave_visual(&self) {
@@ -1819,6 +1881,11 @@ impl Win {
                     if let Some(place) = place {
                         win.pane().open_dir(&place);
                         win.pane().focus_view();
+                        return;
+                    }
+                    // then a folder visited before, like :z
+                    if kind.is_none() && !p.contains('/') {
+                        win.run_command(Command::Z(p.clone()));
                         return;
                     }
                     match (kind, target.parent()) {
@@ -1873,6 +1940,31 @@ impl Win {
                 } else {
                     "hiding hidden files"
                 });
+            }
+            Command::Z(q) => {
+                let f = self.frecency.borrow().clone();
+                let weak = self.weak_self.borrow().clone();
+                glib::spawn_future_local(async move {
+                    let query = q.clone();
+                    let found = gio::spawn_blocking(move || f.find(&query, now(), |p| p.is_dir()))
+                        .await
+                        .ok()
+                        .flatten();
+                    let Some(win) = weak.upgrade() else { return };
+                    match found {
+                        Some(d) => {
+                            win.pane().open_dir(&d);
+                            win.pane().focus_view();
+                        }
+                        None => win.flash_error(&format!(
+                            "no folder visited before matches \"{q}\" · //{q} searches below this folder"
+                        )),
+                    }
+                });
+            }
+            Command::PlacesReset => {
+                self.sidebar.reset_hidden();
+                self.refresh_recent();
             }
             Command::Number(t) => {
                 let on = match t {
@@ -4090,4 +4182,26 @@ fn slant(right: bool, classes: &[&str]) -> gtk::DrawingArea {
         let _ = cr.fill();
     });
     area
+}
+
+fn frecency_path() -> PathBuf {
+    // $XDG_STATE_HOME, by the XDG base directory spec
+    std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| glib::home_dir().join(".local/state"))
+        .join(vector_core::APP_NAME)
+        .join("frecency")
+}
+
+fn load_frecency() -> vector_core::frecency::Frecency {
+    vector_core::frecency::Frecency::parse(
+        &std::fs::read_to_string(frecency_path()).unwrap_or_default(),
+    )
+}
+
+fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
 }

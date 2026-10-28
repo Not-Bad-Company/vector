@@ -106,6 +106,29 @@ pub fn rename(text: &str, path: &std::path::Path, label: &str) -> String {
         .collect()
 }
 
+/// Moves the bookmark of `path` one place up or down among the bookmarks vector shows; other
+/// lines stay where they are.
+pub fn shift(text: &str, path: &std::path::Path, up: bool) -> String {
+    let mut lines: Vec<&str> = text.lines().collect();
+    let shown = |l: &str| line_path(l).is_some();
+    let Some(i) = lines
+        .iter()
+        .position(|l| line_path(l).as_deref() == Some(path))
+    else {
+        return text.to_string();
+    };
+    let other = if up {
+        (0..i).rev().find(|&j| shown(lines[j]))
+    } else {
+        (i + 1..lines.len()).find(|&j| shown(lines[j]))
+    };
+    let Some(j) = other else {
+        return text.to_string();
+    };
+    lines.swap(i, j);
+    lines.iter().map(|l| format!("{l}\n")).collect()
+}
+
 /// Returns the GTK bookmarks file under the user's XDG config directory.
 pub fn default_path() -> PathBuf {
     glib::user_config_dir().join("gtk-3.0").join("bookmarks")
@@ -184,6 +207,18 @@ mod tests {
         assert!(
             renamed.contains("file:///tmp/a%20b Renamed\n")
                 && renamed.starts_with("sftp://host/x Server\n")
+        );
+        let down = shift(&renamed, std::path::Path::new("/tmp/a b"), false);
+        assert!(down.ends_with("file:///tmp/a%20b Renamed\n"));
+        assert_eq!(shift(&down, std::path::Path::new("/tmp/a b"), false), down);
+        assert_eq!(
+            shift(&down, std::path::Path::new("/tmp/a b"), true),
+            renamed
+        );
+        // the sftp line isn't shown, so the first shown bookmark can't move above it
+        assert_eq!(
+            shift(&renamed, std::path::Path::new("/tmp/a b"), true),
+            renamed
         );
         let removed = remove(&renamed, std::path::Path::new("/tmp/a b"));
         assert!(!removed.contains("a%20b") && removed.contains("sftp://"));

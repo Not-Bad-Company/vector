@@ -122,6 +122,10 @@ fn named_key(name: &str) -> Option<Key> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
+    /// `g1`…`g9`: go to the place with that number in the sidebar.
+    Place(u8),
+    /// `b`: add the current folder to the sidebar's places (again: take it off).
+    Bookmark,
     Down,
     Up,
     PageDown,
@@ -214,6 +218,16 @@ pub const BINDINGS: &[(&str, Action)] = &[
     ("<C-u>", Action::PageUp),
     ("<PageUp>", Action::PageUp),
     ("gg", Action::Top),
+    ("g1", Action::Place(1)),
+    ("g2", Action::Place(2)),
+    ("g3", Action::Place(3)),
+    ("g4", Action::Place(4)),
+    ("g5", Action::Place(5)),
+    ("g6", Action::Place(6)),
+    ("g7", Action::Place(7)),
+    ("g8", Action::Place(8)),
+    ("g9", Action::Place(9)),
+    ("b", Action::Bookmark),
     ("<Home>", Action::Top),
     ("G", Action::Bottom),
     ("<End>", Action::Bottom),
@@ -437,6 +451,8 @@ mod tests {
     fn single_keys_and_sequences() {
         assert_eq!(run("j"), [act(Action::Down, 1)]);
         assert_eq!(run("gg"), [Feed::Pending, act(Action::Top, 1)]);
+        assert_eq!(run("g3"), [Feed::Pending, act(Action::Place(3), 1)]);
+        assert_eq!(run("b"), [act(Action::Bookmark, 1)]);
         assert_eq!(run("y"), [act(Action::Yank, 1)]);
         assert_eq!(run("x"), [act(Action::Cut, 1)]);
         assert_eq!(run("d"), [act(Action::Trash, 1)]);

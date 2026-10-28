@@ -59,7 +59,7 @@ pub const FIND: &[Topic] = &[
             ),
             (
                 "SIDEBAR  ctrl+h",
-                "j k move through places and bookmarks, l opens, ctrl+l goes back",
+                "j k move through the places, l opens, J K move one of your own places, ctrl+l goes back",
             ),
             (
                 "FIND  GREP",
@@ -76,13 +76,20 @@ pub const FIND: &[Topic] = &[
             ),
             (
                 "left",
-                "places, drives and bookmarks; m and M pin things here",
+                "places (numbered: g1…g9), recent folders, drives, pins; b adds this folder to places, right click hides, renames or reorders",
             ),
             (
                 "right",
                 "the preview (i): pictures, video, PDF, text, folder contents, details",
             ),
-            ("bottom", "the mode, messages, item counts and free space"),
+            (
+                "bottom",
+                "the mode, the git branch, messages, item counts, free space, the sort, the position",
+            ),
+            (
+                "numbers",
+                "left of each row: how far it is from the cursor (5j gets there); :number off hides them",
+            ),
         ],
     },
     Topic {
@@ -100,6 +107,11 @@ pub const FIND: &[Topic] = &[
                 "parent folder (in the grid: h and ← move left)",
             ),
             ("H L", "back, forward through the folders you visited"),
+            ("g1 … g9", "go to place 1 to 9 (the numbers in the sidebar)"),
+            (
+                "b",
+                "add this folder to the places in the sidebar (again: take it off)",
+            ),
             ("ctrl+d ctrl+u", "half a page down, up"),
             ("ctrl+h ctrl+←", "into the sidebar"),
             (
@@ -117,7 +129,15 @@ pub const FIND: &[Topic] = &[
             ),
             (
                 ":cd trash  :cd downloads",
-                "a bare name that isn't here opens the place, drive or bookmark of that name",
+                "a bare name that isn't here opens the place or drive of that name, else the best :z match",
+            ),
+            (
+                ":z words",
+                "the folder you use most whose path has those words, from anywhere (:z vec docs)",
+            ),
+            (
+                ":places reset",
+                "bring back the standard places you hid (right click › hide from places)",
             ),
         ],
     },
