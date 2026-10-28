@@ -63,7 +63,8 @@ button.link label {{ text-decoration: none; }}
 button.x {{ opacity: 0; padding: 0 5px; }}
 .row:hover button.x {{ opacity: 0.55; }}
 .row:hover button.x:hover {{ opacity: 1; }}
-button.link.danger:hover {{ color: {red}; }}
+button.link.danger {{ color: {red}; opacity: 0.85; }}
+button.link.danger:hover {{ color: {red}; opacity: 1; }}
 .tab {{ border-bottom: 2px solid transparent; transition: background 120ms ease; }}
 /* one hover surface for the whole tab, not one per button */
 .tab:hover {{ background: alpha({fg}, 0.06); }}

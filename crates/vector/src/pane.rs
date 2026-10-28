@@ -1463,6 +1463,7 @@ fn tile_factory(pane: Weak<Pane>) -> gtk::SignalListItemFactory {
         };
         let tile = gtk::Box::new(gtk::Orientation::Vertical, 6);
         tile.add_css_class("tile");
+        tile.set_valign(gtk::Align::Start);
         tile.set_size_request(100, -1);
         let pic_stack = gtk::Stack::new();
         pic_stack.set_size_request(96, 72);
@@ -1471,8 +1472,14 @@ fn tile_factory(pane: Weak<Pane>) -> gtk::SignalListItemFactory {
         let picture = gtk::Picture::new();
         picture.set_content_fit(gtk::ContentFit::Contain);
         picture.set_can_shrink(true);
+        // the thumbnail fills a fixed box, so every tile is as tall and names line up
+        let frame = gtk::Overlay::new();
+        let fixed = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        fixed.set_size_request(96, 72);
+        frame.set_child(Some(&fixed));
+        frame.add_overlay(&picture);
         pic_stack.add_named(&icon, Some("icon"));
-        pic_stack.add_named(&picture, Some("picture"));
+        pic_stack.add_named(&frame, Some("picture"));
         let name = label(&["name"]);
         name.set_xalign(0.5);
         name.set_justify(gtk::Justification::Center);
@@ -1508,6 +1515,7 @@ fn tile_factory(pane: Weak<Pane>) -> gtk::SignalListItemFactory {
             pic_stack.child_by_name("icon").and_downcast::<gtk::Label>(),
             pic_stack
                 .child_by_name("picture")
+                .and_then(|frame| frame.last_child())
                 .and_downcast::<gtk::Picture>(),
         ) else {
             return;

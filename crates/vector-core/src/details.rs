@@ -162,6 +162,12 @@ pub fn ffprobe(out: &str) -> Vec<Row> {
         rows.push(row("bit rate", format!("{:.0} kb/s", b / 1000.0)));
     }
     if let Some(f) = get(&format, "format_long_name") {
+        // ffprobe names the one demuxer for .mov and .mp4 after QuickTime
+        let f = if f == "QuickTime / MOV" {
+            "MPEG-4 / QuickTime".to_string()
+        } else {
+            f
+        };
         rows.push(row("container", f));
     }
     rows
