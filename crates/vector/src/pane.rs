@@ -1011,19 +1011,6 @@ impl Pane {
         self.header.append(&icon);
         self.header
             .append(&col("name", SortKey::Name, 16, 0.0, true));
-        // the other date to sort by; the date column shows whichever is chosen
-        let trash = vector_core::trash::is_trash(&self.dir());
-        let added_name = if trash { "trashed" } else { "added" };
-        if !self.compact.get() {
-            let other = if sort.key == SortKey::Added {
-                col("modified", SortKey::Modified, 0, 1.0, false)
-            } else {
-                col(added_name, SortKey::Added, 0, 1.0, false)
-            };
-            other.add_css_class("faint-col");
-            other.set_margin_end(12);
-            self.header.append(&other);
-        }
         let badge = gtk::Label::new(None);
         badge.add_css_class("badge");
         self.header.append(&badge);
@@ -1035,11 +1022,31 @@ impl Pane {
         dot.set_opacity(0.0);
         dot.set_visible(!self.compact.get());
         self.header.append(&dot);
-        let date = if sort.key == SortKey::Added {
-            col(added_name, SortKey::Added, 16, 1.0, false)
+        // the date column's two dates, side by side in its title: the highlighted one is what
+        // the column shows (and sorts by, when clicked)
+        let trash = vector_core::trash::is_trash(&self.dir());
+        let date = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        date.set_halign(gtk::Align::End);
+        date.set_size_request(-1, -1);
+        let modified = col("modified", SortKey::Modified, 0, 1.0, false);
+        let added = col(
+            if trash { "trashed" } else { "added" },
+            SortKey::Added,
+            0,
+            1.0,
+            false,
+        );
+        // the one the column isn't showing is faint
+        if sort.key == SortKey::Added {
+            modified.set_opacity(0.35);
         } else {
-            col("modified", SortKey::Modified, 16, 1.0, false)
-        };
+            added.set_opacity(0.35);
+        }
+        let between = gtk::Label::new(Some(" · "));
+        between.add_css_class("sep-dot");
+        date.append(&modified);
+        date.append(&between);
+        date.append(&added);
         date.set_visible(!self.compact.get());
         self.header.append(&date);
     }
@@ -1480,7 +1487,8 @@ fn row_factory(pane: Weak<Pane>) -> gtk::SignalListItemFactory {
         size.set_width_chars(9);
         size.set_xalign(1.0);
         let date = label(&["meta"]);
-        date.set_width_chars(16);
+        // as wide as its title ("modified · added ↓")
+        date.set_width_chars(19);
         date.set_ellipsize(gtk::pango::EllipsizeMode::End);
         date.set_xalign(1.0);
         let dot = label(&["sep-dot"]);

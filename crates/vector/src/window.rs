@@ -1801,8 +1801,16 @@ impl Win {
                     reverse,
                     ..SortSpec::default()
                 };
+                let date_was_added =
+                    pane.model.borrow().options().sort.key == vector_core::sort::SortKey::Added;
                 pane.model.borrow_mut().set_sort(spec);
-                pane.refresh();
+                // the date column switches between modified and added: rows already drawn
+                // must be drawn again, not just moved
+                if date_was_added != (key == vector_core::sort::SortKey::Added) {
+                    pane.rebind();
+                } else {
+                    pane.refresh();
+                }
                 pane.sort_changed();
                 self.save_settings();
             }

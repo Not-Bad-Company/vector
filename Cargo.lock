@@ -2550,7 +2550,7 @@ checksum = "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8"
 
 [[package]]
 name = "vector-core"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "async-channel",
  "bzip2",
@@ -2576,7 +2576,7 @@ dependencies = [
 
 [[package]]
 name = "vector-find"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "async-channel",
  "gio",
@@ -2589,7 +2589,7 @@ dependencies = [
 
 [[package]]
 name = "vector-view"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "async-channel",
  "gio",
