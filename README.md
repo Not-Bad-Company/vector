@@ -342,7 +342,9 @@ color3 = "#ebcb8b"   # warnings
 ### Lua
 
 `~/.config/vector/init.lua` runs at start, followed by every `~/.config/vector/plugins/*.lua` in
-name order. Errors show up in the window with the file and line.
+name order. Errors show up in the window with the file and line; a broken file or handler doesn't
+stop the others. Paths may start with `~` and contain `..`. A folder change made by a `cd`
+handler (with `vector.cd`) doesn't call the handlers again, so they can't loop.
 
 ```lua
 -- keys (vim notation) run a command line or a function; they win over built-in keys
@@ -368,14 +370,14 @@ end)
 |---|---|
 | `vector.map(keys, cmd_or_fn)` | bind keys |
 | `vector.command(name, fn(args))` | add `:name` |
-| `vector.on("cd", fn(dir))` | run after every folder change |
+| `vector.on("cd", fn(dir))` | run whenever the folder shown changes, also by switching tabs or panes |
 | `vector.cwd()` | the current folder |
 | `vector.cursor()` | the item under the cursor, or `nil` |
 | `vector.selection()` | the selected items, else the item under the cursor |
 | `vector.cd(path)`, `vector.open(path)` | go to a folder, open a file |
 | `vector.cmd(line)` | run a built-in command line, such as `"sort size"` |
 | `vector.notify(text)`, `print(...)` | show a message |
-| `vector.sh(cmd [, fn(out, code)])` | run `sh -c cmd` in the current folder with the selection as `$1…`; never blocks the window |
+| `vector.sh(cmd [, fn(out, code)])` | run `sh -c cmd` in the current folder with the selection as `$1…`; never blocks the window. `out` is stdout and stderr together, `code` is -1 when the command was killed. Without a callback, a failure shows its output |
 
 <!-- ROADMAP -->
 ## Roadmap

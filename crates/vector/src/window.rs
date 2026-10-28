@@ -116,6 +116,12 @@ pub struct Win {
     script: Script,
     /// The folder the `cd` handlers last heard of.
     script_dir: RefCell<PathBuf>,
+    /// A `cd` handler is running.
+    in_cd_hook: Cell<bool>,
+    /// Where a `cd` handler sent us; arriving there doesn't call the handlers again.
+    hook_target: RefCell<Option<PathBuf>>,
+    /// How many of the scripts' mappings are in the keymap.
+    script_keys: Cell<usize>,
     weak_self: RefCell<std::rc::Weak<Win>>,
 }
 
@@ -311,6 +317,9 @@ impl Win {
                 settings: RefCell::new(settings),
                 script: Script::new(),
                 script_dir: RefCell::default(),
+                in_cd_hook: Cell::new(false),
+                hook_target: RefCell::default(),
+                script_keys: Cell::new(0),
                 weak_self: RefCell::new(weak.clone()),
             }
         });
@@ -658,7 +667,12 @@ impl Win {
         publish_cwd(&dir);
         if *self.script_dir.borrow() != dir {
             *self.script_dir.borrow_mut() = dir.clone();
-            self.with_script(|s, h| s.changed_dir(h));
+            // a handler that moves on (vector.cd) doesn't hear about its own move: no loops
+            if self.hook_target.take().as_ref() != Some(&dir) {
+                self.in_cd_hook.set(true);
+                self.with_script(|s, h| s.changed_dir(h));
+                self.in_cd_hook.set(false);
+            }
         }
         #[cfg(feature = "terminal")]
         self.term.follow(&dir);
@@ -1449,19 +1463,27 @@ impl Win {
 
     fn load_scripts(&self) {
         let dir = glib::user_config_dir().join(vector_core::APP_NAME);
+        self.script.set_host(self.host());
         let errors = self.script.load_dir(&dir);
+        // the first folder was shown before the `cd` handlers existed
+        self.in_cd_hook.set(true);
+        self.with_script(|s, h| s.changed_dir(h));
+        self.in_cd_hook.set(false);
+        if !errors.is_empty() {
+            self.notify_error(&errors.join("\n"));
+        }
+    }
+
+    /// Puts mappings the scripts added (at load or later) into the keymap.
+    fn bind_script_keys(&self) {
+        let maps = self.script.mappings();
         let mut keymap = self.keymap.borrow_mut();
-        for (i, keys) in self.script.mappings().iter().enumerate() {
+        for (i, keys) in maps.iter().enumerate().skip(self.script_keys.get()) {
             if let Ok(i) = u16::try_from(i) {
                 keymap.bind(keys, Action::User(i));
             }
         }
-        drop(keymap);
-        if let Some(e) = errors.first() {
-            self.notify_error(e);
-        }
-        // the first folder was shown before the `cd` handlers existed
-        self.with_script(|s, h| s.changed_dir(h));
+        self.script_keys.set(maps.len());
     }
 
     /// What scripts see: the folder, the cursor and the selection.
@@ -1483,9 +1505,15 @@ impl Win {
     }
 
     fn apply_requests(&self) {
+        self.bind_script_keys();
         for r in self.script.take_requests() {
             match r {
-                Request::Cd(p) => self.run_command(Command::Cd(p.display().to_string())),
+                Request::Cd(p) => {
+                    if self.in_cd_hook.get() {
+                        *self.hook_target.borrow_mut() = Some(p.clone());
+                    }
+                    self.run_command(Command::Cd(p.display().to_string()))
+                }
                 Request::Open(p) => self.open_file(&p),
                 Request::Command(line) => match command::parse(&line) {
                     Ok(c) => self.run_command(c),
@@ -1515,12 +1543,12 @@ impl Win {
         };
         let weak = self.weak_self.borrow().clone();
         glib::spawn_future_local(async move {
-            let out = proc.communicate_utf8_future(None).await;
+            let out = proc.communicate_future(None).await;
             let Some(win) = weak.upgrade() else { return };
             let out = out
                 .ok()
                 .and_then(|(o, _)| o)
-                .map(|o| o.trim_end().to_string())
+                .map(|o| String::from_utf8_lossy(&o).trim_end().to_string())
                 .unwrap_or_default();
             let code = if proc.has_exited() {
                 proc.exit_status()

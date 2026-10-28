@@ -185,6 +185,11 @@ impl Script {
         f.call::<()>((out, code)).map_err(message)
     }
 
+    /// What `vector.cwd()` and friends return while files load.
+    pub fn set_host(&self, host: Host) {
+        self.state.borrow_mut().host = host;
+    }
+
     /// What the scripts asked for since the last call.
     pub fn take_requests(&self) -> Vec<Request> {
         std::mem::take(&mut self.state.borrow_mut().requests)
@@ -203,10 +208,16 @@ impl Script {
 
     fn call(&self, host: Host, calls: Vec<(Function, Value)>) -> Result<(), String> {
         self.state.borrow_mut().host = host;
+        // every handler runs even when one fails; the first error is reported
+        let mut first = Ok(());
         for (f, arg) in calls {
-            f.call::<()>(arg).map_err(message)?;
+            if let Err(e) = f.call::<()>(arg)
+                && first.is_ok()
+            {
+                first = Err(message(e));
+            }
         }
-        Ok(())
+        first
     }
 
     fn path_value(&self, p: &Path) -> Result<Value, String> {
@@ -221,6 +232,19 @@ impl Default for Script {
     fn default() -> Self {
         Script::new()
     }
+}
+
+/// An error raised by a `vector.*` function, with the file and line of the script that called it.
+fn fail(lua: &Lua, msg: &str) -> mlua::Error {
+    let at = lua.inspect_stack(1, |d| {
+        let src = d
+            .source()
+            .short_src
+            .map(|s| s.into_owned())
+            .unwrap_or_default();
+        format!("{src}:{}: ", d.current_line().unwrap_or(0))
+    });
+    mlua::Error::runtime(format!("{}{msg}", at.unwrap_or_default()))
 }
 
 /// The first line of a Lua error, which names the file and line.
@@ -260,7 +284,7 @@ fn install(lua: &Lua, state: &Rc<RefCell<State>>) -> mlua::Result<()> {
                     .chars()
                     .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
             {
-                return Err(mlua::Error::runtime(format!("bad command name: {name:?}")));
+                return Err(fail(lua, &format!("bad command name: {name:?}")));
             }
             let key = lua.create_registry_value(f)?;
             st.borrow_mut().commands.push((name, key));
@@ -273,7 +297,7 @@ fn install(lua: &Lua, state: &Rc<RefCell<State>>) -> mlua::Result<()> {
         lua.create_function(move |lua, (event, f): (String, Function)| {
             match event.as_str() {
                 "cd" => st.borrow_mut().on_cd.push(lua.create_registry_value(f)?),
-                _ => return Err(mlua::Error::runtime(format!("unknown event: {event}"))),
+                _ => return Err(fail(lua, &format!("unknown event: {event}"))),
             }
             Ok(())
         })?,
@@ -381,10 +405,13 @@ fn as_function(lua: &Lua, what: Value) -> mlua::Result<Function> {
                 .get::<Function>("cmd")?;
             lua.create_function(move |_, ()| cmd.call::<()>(line.clone()))
         }
-        other => Err(mlua::Error::runtime(format!(
-            "map: expected a function or a command, got {}",
-            other.type_name()
-        ))),
+        other => Err(fail(
+            lua,
+            &format!(
+                "map: expected a function or a command, got {}",
+                other.type_name()
+            ),
+        )),
     }
 }
 
@@ -394,14 +421,26 @@ fn path(s: LuaString) -> PathBuf {
     PathBuf::from(std::ffi::OsStr::from_bytes(&s.as_bytes()))
 }
 
-/// `~/x`, absolute, or relative to `cwd`.
+/// `~/x`, absolute, or relative to `cwd`, with `.` and `..` folded away.
 fn resolve(cwd: &Path, p: &Path) -> PathBuf {
-    if let Ok(rest) = p.strip_prefix("~")
-        && let Some(home) = std::env::var_os("HOME")
-    {
-        return PathBuf::from(home).join(rest);
+    let joined = match p.strip_prefix("~") {
+        Ok(rest) => match std::env::var_os("HOME") {
+            Some(home) => PathBuf::from(home).join(rest),
+            None => cwd.join(p),
+        },
+        Err(_) => cwd.join(p),
+    };
+    let mut out = PathBuf::new();
+    for c in joined.components() {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
     }
-    cwd.join(p)
+    out
 }
 
 #[cfg(test)]
@@ -439,6 +478,11 @@ mod tests {
         let r = s.take_requests();
         assert!(matches!(&r[0], Request::Command(c) if c == "sort size"));
         assert!(matches!(&r[1], Request::Open(p) if p == Path::new("/w/notes.md")));
+        assert_eq!(
+            resolve(Path::new("/a/b"), Path::new("../c/./d")),
+            Path::new("/a/c/d")
+        );
+        assert_eq!(resolve(Path::new("/"), Path::new("..")), Path::new("/"));
         assert!(matches!(&r[2], Request::Notify(t) if t == "n=2/w/a.txt"));
         assert!(s.take_requests().is_empty());
     }
@@ -473,7 +517,7 @@ mod tests {
     fn errors_name_the_file_and_line() {
         let s = Script::new();
         let e = s.load("vector.on('nope', print)", "init.lua").unwrap_err();
-        assert!(e.contains("unknown event: nope"), "{e}");
+        assert!(e.contains("init.lua:1: unknown event: nope"), "{e}");
         let e = s.load("\n\nlocal x = (", "plugins/a.lua").unwrap_err();
         assert!(e.contains("plugins/a.lua:3"), "{e}");
         s.load("vector.map('x', function() error('boom') end)", "b.lua")
@@ -481,6 +525,14 @@ mod tests {
         let e = s.run_mapping(0, Host::default()).unwrap_err();
         assert!(e.contains("b.lua:1") && e.contains("boom"), "{e}");
         assert!(s.load("vector.command('a b', print)", "c.lua").is_err());
+        // a broken handler doesn't stop the ones after it
+        s.load("vector.on('cd', function() error('first') end)", "d.lua")
+            .unwrap();
+        s.load("vector.on('cd', function(d) vector.notify(d) end)", "e.lua")
+            .unwrap();
+        let e = s.changed_dir(host("/q")).unwrap_err();
+        assert!(e.contains("first"), "{e}");
+        assert!(matches!(&s.take_requests()[..], [Request::Notify(t)] if t == "/q"));
     }
 
     #[test]
