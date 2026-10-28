@@ -21,7 +21,7 @@ use vector_core::theme::Theme;
 
 use crate::pane::{Pane, PaneEvent};
 use crate::preview::Preview;
-use crate::sidebar::Sidebar;
+use crate::sidebar::{Sidebar, SidebarEvent};
 
 struct Tab {
     panes: RefCell<Vec<Rc<Pane>>>,
@@ -105,6 +105,8 @@ pub struct Win {
     pick: RefCell<Option<Pick>>,
     /// The rename card is open (statusline shows RENAME).
     renaming: Cell<bool>,
+    /// Keyboard focus is in the sidebar, on this row.
+    side_cursor: Cell<Option<usize>>,
     notice: gtk::Label,
     notice_timer: RefCell<Option<glib::SourceId>>,
     weak_self: RefCell<std::rc::Weak<Win>>,
@@ -217,10 +219,26 @@ impl Win {
 
         let win = Rc::new_cyclic(|weak: &std::rc::Weak<Win>| {
             let w = weak.clone();
-            let sidebar = Sidebar::new(move |path| {
-                if let Some(win) = w.upgrade() {
+            let sidebar = Sidebar::new(move |ev| {
+                let Some(win) = w.upgrade() else { return };
+                match ev {
                     // a pinned file opens its folder with the file selected
-                    win.run_command(Command::Cd(path.display().to_string()));
+                    SidebarEvent::Open(path) => {
+                        win.run_command(Command::Cd(path.display().to_string()))
+                    }
+                    SidebarEvent::OpenTab(path) => win.new_tab(&path),
+                    SidebarEvent::Unpin(path) => {
+                        crate::pinstore::with(|p| p.toggle_global(&path));
+                        crate::pinstore::save();
+                        win.refresh_pins();
+                        win.notify("unpinned");
+                    }
+                    SidebarEvent::Notify(text) => {
+                        win.notify(&text);
+                        for p in win.all_panes() {
+                            p.rebind();
+                        }
+                    }
                 }
             });
             outer.append(sidebar.widget());
@@ -260,6 +278,7 @@ impl Win {
                 pick_slot,
                 pick: RefCell::new(None),
                 renaming: Cell::new(false),
+                side_cursor: Cell::new(None),
                 notice,
                 notice_timer: RefCell::new(None),
                 settings: RefCell::new(settings),
@@ -507,6 +526,14 @@ impl Win {
         self.sidebar.set_pinned(&crate::pinstore::global());
     }
 
+    fn all_panes(&self) -> Vec<Rc<Pane>> {
+        self.tabs
+            .borrow()
+            .iter()
+            .flat_map(|t| t.panes.borrow().clone())
+            .collect()
+    }
+
     fn on_pane_event(&self, pane: &Rc<Pane>, ev: PaneEvent) {
         // panes report while they are being built, before their tab exists
         if self.tabs.borrow().is_empty()
@@ -559,6 +586,8 @@ impl Win {
                     self.focus_pane(pane);
                 }
             }
+            // a locked folder explains itself in the list; no red line for it
+            PaneEvent::Error(e) if crate::pane::is_permission(&e) => {}
             PaneEvent::Error(e) => self.flash_error(&e),
             PaneEvent::SortBy(key) => {
                 let cur = pane.model.borrow().options().sort;
@@ -677,6 +706,8 @@ impl Win {
         let mode = self.mode.get();
         let picker_title = if self.renaming.get() {
             Some("RENAME")
+        } else if self.side_cursor.get().is_some() {
+            Some("SIDEBAR")
         } else {
             self.picker.borrow().as_ref().map(|p| p.title)
         };
@@ -852,6 +883,9 @@ impl Win {
     pub fn handle_key(&self, key: Key, synthetic: bool) -> bool {
         if self.dialog.borrow().is_some() {
             return self.dialog_key(key, synthetic);
+        }
+        if self.side_cursor.get().is_some() && self.mode.get() == Mode::Normal {
+            return self.sidebar_key(key);
         }
         if self.picker.borrow().is_some()
             && !matches!(self.mode.get(), Mode::Command | Mode::Filter)
@@ -1163,7 +1197,12 @@ impl Win {
             }
             Action::Parent => {
                 self.leave_visual();
-                pane.go_parent();
+                // at the top of the tree, h goes on into the sidebar
+                if pane.dir().parent().is_none() && !pane.is_flat() {
+                    self.enter_sidebar();
+                } else {
+                    pane.go_parent();
+                }
             }
             Action::Back => pane.go_back(),
             Action::Forward => pane.go_forward(),
@@ -1333,6 +1372,55 @@ impl Win {
             }
             Action::Quit => self.window.close(),
         }
+    }
+
+    fn enter_sidebar(&self) {
+        let i = self.sidebar.current_index();
+        self.side_cursor.set(Some(i));
+        self.sidebar.set_cursor(Some(i));
+        self.flash("sidebar · j k move · l opens · esc back");
+        self.update_status();
+    }
+
+    fn leave_sidebar(&self) {
+        self.side_cursor.set(None);
+        self.sidebar.set_cursor(None);
+        self.message.set_text("");
+        self.pane().focus_view();
+        self.update_status();
+    }
+
+    /// Keys while the sidebar has the keyboard cursor.
+    fn sidebar_key(&self, key: Key) -> bool {
+        let n = self.sidebar.len();
+        let Some(i) = self.side_cursor.get() else {
+            return false;
+        };
+        let go = |j: usize| {
+            let j = j.min(n.saturating_sub(1));
+            self.side_cursor.set(Some(j));
+            self.sidebar.set_cursor(Some(j));
+        };
+        match key {
+            Key::Char('j') | Key::Down => go(i + 1),
+            Key::Char('k') | Key::Up => go(i.saturating_sub(1)),
+            Key::Char('G') | Key::End => go(n),
+            Key::Char('g') | Key::Home => go(0),
+            Key::Char('l') | Key::Enter | Key::Right => {
+                let target = self.sidebar.set_cursor(Some(i));
+                self.leave_sidebar();
+                if let Some(p) = target {
+                    self.run_command(Command::Cd(p.display().to_string()));
+                }
+            }
+            Key::Esc | Key::Tab | Key::Char('h') | Key::Left => self.leave_sidebar(),
+            // everything else (":" and friends) works as usual once back in the list
+            _ => {
+                self.leave_sidebar();
+                return self.handle_key(key, false);
+            }
+        }
+        true
     }
 
     fn leave_visual(&self) {

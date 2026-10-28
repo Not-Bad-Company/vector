@@ -43,6 +43,69 @@ pub fn parse(text: &str) -> Vec<Bookmark> {
         .collect()
 }
 
+/// The path a bookmarks line points at (`file://` lines only).
+fn line_path(line: &str) -> Option<PathBuf> {
+    parse(line).into_iter().next().map(|b| b.path)
+}
+
+/// `file://` URI for a path, percent-encoding everything but unreserved bytes and `/`.
+pub fn uri(path: &std::path::Path) -> String {
+    use std::os::unix::ffi::OsStrExt;
+    let mut out = String::from("file://");
+    for &b in path.as_os_str().as_bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~/".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// Adds a bookmark at the end (no-op if the path is already bookmarked). Other lines,
+/// including ones vector doesn't show (sftp://, smb://), stay as they are.
+pub fn add(text: &str, path: &std::path::Path, label: Option<&str>) -> String {
+    if text.lines().any(|l| line_path(l).as_deref() == Some(path)) {
+        return text.to_string();
+    }
+    let mut out = text.to_string();
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(&uri(path));
+    if let Some(l) = label.map(str::trim).filter(|l| !l.is_empty()) {
+        out.push(' ');
+        out.push_str(l);
+    }
+    out.push('\n');
+    out
+}
+
+/// Removes the bookmark of `path`.
+pub fn remove(text: &str, path: &std::path::Path) -> String {
+    text.lines()
+        .filter(|l| line_path(l).as_deref() != Some(path))
+        .map(|l| format!("{l}\n"))
+        .collect()
+}
+
+/// Gives the bookmark of `path` a new label (empty: back to the folder name).
+pub fn rename(text: &str, path: &std::path::Path, label: &str) -> String {
+    text.lines()
+        .map(|l| {
+            if line_path(l).as_deref() == Some(path) {
+                let uri = l.split(' ').next().unwrap_or(l);
+                match label.trim() {
+                    "" => format!("{uri}\n"),
+                    lbl => format!("{uri} {lbl}\n"),
+                }
+            } else {
+                format!("{l}\n")
+            }
+        })
+        .collect()
+}
+
 /// Returns the GTK bookmarks file under the user's XDG config directory.
 pub fn default_path() -> PathBuf {
     glib::user_config_dir().join("gtk-3.0").join("bookmarks")
@@ -105,5 +168,24 @@ mod tests {
         assert_eq!(entries[0].label, "/");
         assert_eq!(entries[1].path, PathBuf::from("/tmp/folder"));
         assert_eq!(entries[1].label, "folder");
+    }
+
+    #[test]
+    fn edits_keep_other_lines() {
+        let text = "sftp://host/x Server\nfile:///tmp/a%20b A\n";
+        let added = add(text, std::path::Path::new("/tmp/new é"), Some("New"));
+        assert_eq!(added, format!("{text}file:///tmp/new%20%C3%A9 New\n"));
+        assert_eq!(
+            parse(&added).last().map(|b| b.label.clone()).as_deref(),
+            Some("New")
+        );
+        assert_eq!(add(&added, std::path::Path::new("/tmp/a b"), None), added);
+        let renamed = rename(&added, std::path::Path::new("/tmp/a b"), "Renamed");
+        assert!(
+            renamed.contains("file:///tmp/a%20b Renamed\n")
+                && renamed.starts_with("sftp://host/x Server\n")
+        );
+        let removed = remove(&renamed, std::path::Path::new("/tmp/a b"));
+        assert!(!removed.contains("a%20b") && removed.contains("sftp://"));
     }
 }

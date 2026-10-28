@@ -237,7 +237,7 @@ fn lookup(file: &str, id: u32) -> Option<String> {
     })
 }
 
-fn user_name(uid: u32) -> String {
+pub fn user_name(uid: u32) -> String {
     lookup("/etc/passwd", uid).unwrap_or_else(|| uid.to_string())
 }
 

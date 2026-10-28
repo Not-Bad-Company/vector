@@ -8,6 +8,7 @@
 mod dbus;
 mod details;
 mod fmt;
+mod iconstore;
 mod pane;
 mod pinstore;
 mod portal;

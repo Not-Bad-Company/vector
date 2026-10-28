@@ -44,6 +44,8 @@ scrolledwindow, viewport {{ background: transparent; }}
 .row:hover {{ background: alpha({fg}, 0.06); }}
 .row.active {{ border-left-color: {acc}; background: alpha({acc}, 0.08); }}
 .row.active:hover {{ background: alpha({acc}, 0.13); }}
+/* keyboard cursor in the sidebar */
+.row.cursor {{ border-left-color: {acc}; background: alpha({acc}, 0.16); }}
 .row .meta {{ opacity: 0.5; }}
 
 /* ── header: tabs and path bar ── */
@@ -62,7 +64,10 @@ button.x {{ opacity: 0; padding: 0 5px; }}
 .row:hover button.x {{ opacity: 0.55; }}
 .row:hover button.x:hover {{ opacity: 1; }}
 button.link.danger:hover {{ color: {red}; }}
-.tab {{ border-bottom: 2px solid transparent; }}
+.tab {{ border-bottom: 2px solid transparent; transition: background 120ms ease; }}
+/* one hover surface for the whole tab, not one per button */
+.tab:hover {{ background: alpha({fg}, 0.06); }}
+.tab > button.link:hover {{ background: none; }}
 .tab > button.link {{ padding: 6px 4px 6px 12px; }}
 .tab > button.x {{ padding: 6px 8px 6px 4px; }}
 .tab.active {{ border-bottom-color: {acc}; }}
@@ -110,6 +115,7 @@ listview > row > .file.cursor {{ box-shadow: inset 2px 0 {acc}; background: alph
 .file .meta {{ opacity: 0.6; }}
 .file.hidden-file .name {{ opacity: 0.6; }}
 .file .badge {{ min-width: 14px; }}
+.file .sep-dot, .colheader .sep-dot {{ opacity: 0.32; }}
 .file.marked .icon {{ color: {acc}; }}
 .file.cut .name, .file.cut .meta {{ opacity: 0.45; }}
 .notice {{

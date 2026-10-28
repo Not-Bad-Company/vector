@@ -10,6 +10,23 @@ use gtk::prelude::*;
 use gtk::{gio, glib};
 use vector_core::bookmarks;
 
+/// What the sidebar asks the window to do.
+pub enum SidebarEvent {
+    Open(PathBuf),
+    OpenTab(PathBuf),
+    Unpin(PathBuf),
+    Notify(String),
+}
+
+/// Which section a row is in, for its right-click menu.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Section {
+    Places,
+    Devices,
+    Pinned,
+    Bookmarks,
+}
+
 pub struct Sidebar {
     widget: gtk::Widget,
     content: gtk::Box,
@@ -23,10 +40,17 @@ pub struct Sidebar {
     sections: RefCell<Vec<(gtk::Label, gtk::Box)>>,
     current: RefCell<PathBuf>,
     on_open: Rc<dyn Fn(PathBuf)>,
+    on_event: Rc<dyn Fn(SidebarEvent)>,
+    /// Free and total bytes of mounted drives, filled in the background, for tooltips.
+    space: RefCell<std::collections::HashMap<PathBuf, (u64, u64)>>,
+    weak: RefCell<std::rc::Weak<Sidebar>>,
 }
 
 impl Sidebar {
-    pub fn new(on_open: impl Fn(PathBuf) + 'static) -> Rc<Sidebar> {
+    pub fn new(on_event: impl Fn(SidebarEvent) + 'static) -> Rc<Sidebar> {
+        let on_event: Rc<dyn Fn(SidebarEvent)> = Rc::new(on_event);
+        let ev = on_event.clone();
+        let on_open = move |p: PathBuf| ev(SidebarEvent::Open(p));
         let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
         content.add_css_class("places");
         content.set_width_request(200);
@@ -51,7 +75,12 @@ impl Sidebar {
             sections: RefCell::new(Vec::new()),
             current: RefCell::new(PathBuf::new()),
             on_open: Rc::new(on_open),
+            on_event,
+            space: RefCell::default(),
+            weak: RefCell::default(),
         });
+        *sidebar.weak.borrow_mut() = Rc::downgrade(&sidebar);
+        sidebar.connect_menu();
         sidebar.populate_places();
         let content = sidebar.content.clone();
         sidebar.add_section(&content, "places", &sidebar.places);
@@ -161,7 +190,8 @@ impl Sidebar {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         row.add_css_class("row");
         row.set_cursor_from_name(Some("pointer"));
-        let icon = gtk::Label::new(Some(glyph));
+        let custom = crate::iconstore::get(&path);
+        let icon = gtk::Label::new(Some(custom.as_deref().unwrap_or(glyph)));
         icon.add_css_class("icon");
         row.append(&icon);
         let label = gtk::Label::new(Some(name));
@@ -185,8 +215,336 @@ impl Sidebar {
         if *self.current.borrow() == path {
             row.add_css_class("active");
         }
+        // hover: the path, the last known folder size, a drive's free space
+        row.set_has_tooltip(true);
+        let weak = self.weak.borrow().clone();
+        let tip_path = path.clone();
+        row.connect_query_tooltip(move |_, _, _, _, tip| {
+            let mut lines = vec![tip_path.display().to_string()];
+            if let Some(n) = crate::pane::known_size(&tip_path) {
+                lines.push(format!("{} in total", crate::fmt::size(n)));
+            }
+            if let Some((free, total)) = weak
+                .upgrade()
+                .and_then(|s| s.space.borrow().get(&tip_path).copied())
+            {
+                lines.push(format!(
+                    "{} free of {}",
+                    crate::fmt::size(free),
+                    crate::fmt::size(total)
+                ));
+            }
+            tip.set_text(Some(&lines.join("\n")));
+            true
+        });
         parent.append(&row);
         self.rows.borrow_mut().push((path, row.upcast()));
+    }
+
+    /// Reads free space of every listed drive in the background (for tooltips).
+    fn load_space(&self) {
+        let paths: Vec<PathBuf> = self.rows.borrow().iter().map(|(p, _)| p.clone()).collect();
+        for p in paths {
+            let weak = self.weak.borrow().clone();
+            glib::spawn_future_local(async move {
+                let f = gio::File::for_path(&p);
+                if let Ok(info) = f
+                    .query_filesystem_info_future(
+                        "filesystem::free,filesystem::size",
+                        glib::Priority::LOW,
+                    )
+                    .await
+                    && let Some(s) = weak.upgrade()
+                {
+                    let free = info.attribute_uint64("filesystem::free");
+                    let total = info.attribute_uint64("filesystem::size");
+                    if total > 0 {
+                        s.space.borrow_mut().insert(p, (free, total));
+                    }
+                }
+            });
+        }
+    }
+
+    fn section_of(&self, row: &gtk::Widget) -> Option<Section> {
+        let parent = row.parent()?;
+        [
+            (&self.places, Section::Places),
+            (&self.devices, Section::Devices),
+            (&self.pinned_rows, Section::Pinned),
+            (&self.bookmark_rows, Section::Bookmarks),
+        ]
+        .into_iter()
+        .find(|(b, _)| parent == *b.upcast_ref::<gtk::Widget>())
+        .map(|(_, s)| s)
+    }
+
+    /// Right click: a menu for the row under the pointer, or "bookmark this folder".
+    fn connect_menu(self: &Rc<Self>) {
+        let actions = gio::SimpleActionGroup::new();
+        let weak = Rc::downgrade(self);
+        let add = |name: &str, f: Box<dyn Fn(&Sidebar, PathBuf)>| {
+            let a = gio::SimpleAction::new(name, Some(glib::VariantTy::STRING));
+            let weak = weak.clone();
+            a.connect_activate(move |_, v| {
+                if let (Some(s), Some(p)) = (weak.upgrade(), v.and_then(|v| v.get::<String>())) {
+                    f(&s, PathBuf::from(p));
+                }
+            });
+            actions.add_action(&a);
+        };
+        add("open", Box::new(|s, p| (s.on_open)(p)));
+        add(
+            "open-tab",
+            Box::new(|s, p| (s.on_event)(SidebarEvent::OpenTab(p))),
+        );
+        add(
+            "unpin",
+            Box::new(|s, p| (s.on_event)(SidebarEvent::Unpin(p))),
+        );
+        add(
+            "bookmark",
+            Box::new(|s, p| s.edit_bookmarks(|t| bookmarks::add(t, &p, None), "bookmarked")),
+        );
+        add(
+            "unbookmark",
+            Box::new(|s, p| s.edit_bookmarks(|t| bookmarks::remove(t, &p), "bookmark removed")),
+        );
+        add("rename", Box::new(|s, p| s.ask_name(p)));
+        add("icon", Box::new(|s, p| s.ask_icon(p)));
+        self.widget.insert_action_group("side", Some(&actions));
+
+        let click = gtk::GestureClick::builder()
+            .button(gtk::gdk::BUTTON_SECONDARY)
+            .build();
+        let weak = Rc::downgrade(self);
+        click.connect_pressed(move |g, _, x, y| {
+            let Some(s) = weak.upgrade() else { return };
+            g.set_state(gtk::EventSequenceState::Claimed);
+            let hit = s.content.pick(x, y, gtk::PickFlags::DEFAULT);
+            let row = hit.and_then(|w| {
+                let mut cur = Some(w);
+                while let Some(c) = cur {
+                    if c.has_css_class("row") {
+                        return Some(c);
+                    }
+                    cur = c.parent();
+                }
+                None
+            });
+            let target = row.as_ref().and_then(|r| {
+                let rows = s.rows.borrow();
+                rows.iter().find(|(_, w)| w == r).map(|(p, _)| p.clone())
+            });
+            let menu = gio::Menu::new();
+            let item = |label: &str, action: &str, p: &Path| {
+                let i = gio::MenuItem::new(Some(label), None);
+                i.set_action_and_target_value(
+                    Some(&format!("side.{action}")),
+                    Some(&p.display().to_string().to_variant()),
+                );
+                menu.append_item(&i);
+            };
+            match (row.as_ref().and_then(|r| s.section_of(r)), target) {
+                (Some(section), Some(p)) => {
+                    item("open in new tab", "open-tab", &p);
+                    match section {
+                        Section::Bookmarks => {
+                            item("rename", "rename", &p);
+                            item("change icon", "icon", &p);
+                            item("remove bookmark", "unbookmark", &p);
+                        }
+                        Section::Pinned => {
+                            item("change icon", "icon", &p);
+                            item("unpin", "unpin", &p);
+                        }
+                        Section::Places | Section::Devices => item("bookmark", "bookmark", &p),
+                    }
+                }
+                _ => {
+                    let cur = s.current.borrow().clone();
+                    item("bookmark this folder", "bookmark", &cur);
+                }
+            }
+            let pop = gtk::PopoverMenu::from_model(Some(&menu));
+            pop.set_has_arrow(false);
+            pop.set_parent(&s.content);
+            pop.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+            pop.connect_closed(|p| {
+                let p = p.clone();
+                glib::idle_add_local_once(move || p.unparent());
+            });
+            pop.popup();
+        });
+        self.content.add_controller(click);
+    }
+
+    /// Rewrites the GTK bookmarks file (the file monitor then refreshes the list).
+    fn edit_bookmarks(&self, f: impl FnOnce(&str) -> String, done: &str) {
+        let path = bookmarks::default_path();
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let new = f(&text);
+        if new == text {
+            return;
+        }
+        if let Some(d) = path.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        match std::fs::write(&path, &new) {
+            Ok(()) => {
+                self.show_bookmarks(&new);
+                (self.on_event)(SidebarEvent::Notify(done.to_string()));
+            }
+            Err(e) => (self.on_event)(SidebarEvent::Notify(format!("bookmarks: {e}"))),
+        }
+    }
+
+    /// Visible rows in screen order (for keyboard navigation).
+    fn visible_rows(&self) -> Vec<(PathBuf, gtk::Widget)> {
+        let mut out = Vec::new();
+        for b in [
+            &self.places,
+            &self.devices,
+            &self.pinned_rows,
+            &self.bookmark_rows,
+        ] {
+            if !b.is_visible() {
+                continue;
+            }
+            let mut c = b.first_child();
+            while let Some(w) = c {
+                if let Some(p) = self
+                    .rows
+                    .borrow()
+                    .iter()
+                    .find(|(_, r)| *r == w)
+                    .map(|(p, _)| p.clone())
+                {
+                    out.push((p, w.clone()));
+                }
+                c = w.next_sibling();
+            }
+        }
+        out
+    }
+
+    pub fn len(&self) -> usize {
+        self.visible_rows().len()
+    }
+
+    /// Shows the keyboard cursor on row `i` (None: hide it). Returns the row's path.
+    pub fn set_cursor(&self, i: Option<usize>) -> Option<PathBuf> {
+        let rows = self.visible_rows();
+        let mut picked = None;
+        for (n, (p, w)) in rows.iter().enumerate() {
+            if Some(n) == i {
+                w.add_css_class("cursor");
+                picked = Some(p.clone());
+            } else {
+                w.remove_css_class("cursor");
+            }
+        }
+        picked
+    }
+
+    /// Index of the row showing the current folder, to start keyboard navigation there.
+    pub fn current_index(&self) -> usize {
+        let cur = self.current.borrow().clone();
+        self.visible_rows()
+            .iter()
+            .position(|(p, _)| *p == cur)
+            .unwrap_or(0)
+    }
+
+    fn row_of(&self, p: &Path) -> Option<gtk::Widget> {
+        self.rows
+            .borrow()
+            .iter()
+            .find(|(r, _)| r == p)
+            .map(|(_, w)| w.clone())
+    }
+
+    /// A small popover with an entry to rename a bookmark.
+    fn ask_name(&self, p: PathBuf) {
+        let Some(row) = self.row_of(&p) else { return };
+        let entry = gtk::Entry::new();
+        let current = row
+            .first_child()
+            .and_then(|i| i.next_sibling())
+            .and_downcast::<gtk::Label>()
+            .map(|l| l.text().to_string());
+        entry.set_text(current.as_deref().unwrap_or(""));
+        let pop = gtk::Popover::new();
+        pop.set_child(Some(&entry));
+        pop.set_has_arrow(false);
+        pop.set_parent(&row);
+        let weak = self.weak.borrow().clone();
+        let pp = pop.clone();
+        entry.connect_activate(move |e| {
+            if let Some(s) = weak.upgrade() {
+                let name = e.text().to_string();
+                s.edit_bookmarks(|t| bookmarks::rename(t, &p, &name), "bookmark renamed");
+            }
+            pp.popdown();
+        });
+        pop.connect_closed(|p| {
+            let p = p.clone();
+            glib::idle_add_local_once(move || p.unparent());
+        });
+        pop.popup();
+        entry.grab_focus();
+    }
+
+    /// A grid of icons to pick from.
+    fn ask_icon(&self, p: PathBuf) {
+        let Some(row) = self.row_of(&p) else { return };
+        let grid = gtk::Grid::new();
+        grid.set_row_spacing(2);
+        grid.set_column_spacing(2);
+        let pop = gtk::Popover::new();
+        pop.set_has_arrow(false);
+        let choices = crate::iconstore::CHOICES
+            .iter()
+            .map(|g| Some(*g))
+            .chain(std::iter::once(None));
+        for (i, glyph) in choices.enumerate() {
+            let b = gtk::Button::with_label(glyph.unwrap_or("default"));
+            b.add_css_class("link");
+            let (weak, pp, path) = (self.weak.borrow().clone(), pop.clone(), p.clone());
+            b.connect_clicked(move |_| {
+                crate::iconstore::set(&path, glyph);
+                if let Some(s) = weak.upgrade() {
+                    s.refresh_icons();
+                }
+                pp.popdown();
+            });
+            let (col, line) = ((i % 8) as i32, (i / 8) as i32);
+            if glyph.is_none() {
+                grid.attach(&b, 0, line + 1, 8, 1);
+            } else {
+                grid.attach(&b, col, line, 1, 1);
+            }
+        }
+        pop.set_child(Some(&grid));
+        pop.set_parent(&row);
+        pop.connect_closed(|p| {
+            let p = p.clone();
+            glib::idle_add_local_once(move || p.unparent());
+        });
+        pop.popup();
+    }
+
+    /// Re-applies custom icons to every row.
+    fn refresh_icons(&self) {
+        for (p, row) in self.rows.borrow().iter() {
+            if let (Some(g), Some(icon)) = (
+                crate::iconstore::get(p),
+                row.first_child().and_downcast::<gtk::Label>(),
+            ) {
+                icon.set_text(&g);
+            }
+        }
+        (self.on_event)(SidebarEvent::Notify("icon changed".into()));
     }
 
     fn rebuild_devices(&self) {
@@ -243,6 +601,7 @@ impl Sidebar {
             }
         }
         self.update_sections();
+        self.load_space();
     }
 
     fn load_bookmarks(self: &Rc<Self>) {

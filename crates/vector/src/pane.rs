@@ -837,7 +837,11 @@ impl Pane {
         let empty = self.model.borrow().is_empty();
         // a slow folder must not look empty, and an unreadable one must say why
         let text = if let Some(e) = self.error.borrow().as_ref() {
-            Some(format!("can't open this folder: {e}"))
+            Some(
+                locked_text(&self.dir())
+                    .filter(|_| is_permission(e))
+                    .unwrap_or_else(|| format!("can't open this folder: {e}")),
+            )
         } else if empty && self.loading.get() {
             Some(match self.progress.get() {
                 Some(n) => format!("scanning… {} files", vector_core::details::group_digits(n)),
@@ -920,6 +924,12 @@ impl Pane {
         self.header.append(&badge);
         self.header
             .append(&col("size", SortKey::Size, 9, 1.0, false));
+        let dot = gtk::Label::new(Some("·"));
+        dot.add_css_class("sep-dot");
+        // keeps the column titles aligned with the rows; invisible in the header
+        dot.set_opacity(0.0);
+        dot.set_visible(!self.compact.get());
+        self.header.append(&dot);
         let date = col("modified", SortKey::Modified, 16, 1.0, false);
         date.set_visible(!self.compact.get());
         self.header.append(&date);
@@ -1128,6 +1138,22 @@ struct Biggest {
 /// Measurements younger than this are trusted without measuring again.
 const SIZE_FRESH_FOR: i64 = 300;
 
+/// Whether a listing error means "not allowed" rather than a broken folder.
+pub fn is_permission(error: &str) -> bool {
+    error.contains("Permission denied") || error.contains("Operation not permitted")
+}
+
+/// The calm explanation for a folder this user may not read.
+fn locked_text(dir: &Path) -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::metadata(dir).ok()?;
+    Some(format!(
+        "\u{F033E}  locked · owned by {} ({}) · gx opens a terminal here, where sudo works",
+        crate::details::user_name(m.uid()),
+        vector_core::details::permissions(m.mode()),
+    ))
+}
+
 thread_local! {
     /// Folder sizes from this and earlier runs (`~/.cache/vector/sizes`), loaded on first use.
     static INDEX: RefCell<Option<vector_core::du::SizeIndex>> = const { RefCell::new(None) };
@@ -1156,6 +1182,11 @@ fn now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64)
+}
+
+/// Last known size of a folder, if it was ever measured (sidebar tooltips).
+pub fn known_size(p: &Path) -> Option<u64> {
+    with_index(|i| i.get(p)).map(|(n, _)| n)
 }
 
 /// Last known size and its age in seconds.
@@ -1345,7 +1376,9 @@ fn row_factory(pane: Weak<Pane>) -> gtk::SignalListItemFactory {
         date.set_width_chars(16);
         date.set_ellipsize(gtk::pango::EllipsizeMode::End);
         date.set_xalign(1.0);
-        for w in [&icon, &name, &badge, &size, &date] {
+        let dot = label(&["sep-dot"]);
+        dot.set_text("·");
+        for w in [&icon, &name, &badge, &size, &dot, &date] {
             row.append(w);
         }
         item.set_child(Some(&row));
@@ -1365,10 +1398,13 @@ fn row_factory(pane: Weak<Pane>) -> gtk::SignalListItemFactory {
             std::iter::successors(row.first_child(), |w| w.next_sibling())
                 .filter_map(|w| w.downcast::<gtk::Label>().ok())
                 .collect();
-        let [icon, name, badge, size, date] = labels.as_slice() else {
+        let [icon, name, badge, size, dot, date] = labels.as_slice() else {
             return;
         };
-        icon.set_text(vector_core::icons::icon_for(&e.name, e.is_dir(), e.symlink));
+        match crate::iconstore::get(&e.path) {
+            Some(g) => icon.set_text(&g),
+            None => icon.set_text(vector_core::icons::icon_for(&e.name, e.is_dir(), e.symlink)),
+        }
         name.set_text(&e.name);
         let (marked, cut) = {
             let m = pane.marks.borrow();
@@ -1413,6 +1449,7 @@ fn row_factory(pane: Weak<Pane>) -> gtk::SignalListItemFactory {
         size.set_text(&s);
         date.set_text(&fmt::date(e.modified));
         date.set_visible(!pane.compact.get());
+        dot.set_visible(!pane.compact.get() && !s.is_empty() && e.modified > 0);
     });
     f
 }
