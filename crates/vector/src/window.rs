@@ -15,6 +15,7 @@ use vector_core::edit;
 use vector_core::keymap::{Action, Feed, Key, Keymap, Mode};
 use vector_core::model::ViewOptions;
 use vector_core::ops::{Conflict, ErrorKind, Op, OpEvent, OpQueue};
+use vector_core::script::{Host, Request, Script};
 use vector_core::search::{self, SearchOptions};
 use vector_core::sort::SortSpec;
 use vector_core::theme::Theme;
@@ -111,6 +112,10 @@ pub struct Win {
     side_cursor: Cell<Option<usize>>,
     notice: gtk::Label,
     notice_timer: RefCell<Option<glib::SourceId>>,
+    /// The user's init.lua and plugins.
+    script: Script,
+    /// The folder the `cd` handlers last heard of.
+    script_dir: RefCell<PathBuf>,
     weak_self: RefCell<std::rc::Weak<Win>>,
 }
 
@@ -304,6 +309,8 @@ impl Win {
                 notice,
                 notice_timer: RefCell::new(None),
                 settings: RefCell::new(settings),
+                script: Script::new(),
+                script_dir: RefCell::default(),
                 weak_self: RefCell::new(weak.clone()),
             }
         });
@@ -325,6 +332,7 @@ impl Win {
         win.connect_actions();
         win.watch_ops();
         win.new_tab(start);
+        win.load_scripts();
         win
     }
 
@@ -648,6 +656,10 @@ impl Win {
         let dir = pane.dir();
         self.sidebar.set_current(&dir);
         publish_cwd(&dir);
+        if *self.script_dir.borrow() != dir {
+            *self.script_dir.borrow_mut() = dir.clone();
+            self.with_script(|s, h| s.changed_dir(h));
+        }
         #[cfg(feature = "terminal")]
         self.term.follow(&dir);
         // a picker keeps the requesting app's title ("Upload a photo")
@@ -976,7 +988,12 @@ impl Win {
                 let text = self.cmd_entry.text().to_string();
                 let was = self.mode.get();
                 self.leave_line();
-                if was == Mode::Command {
+                let line = text.trim();
+                let (name, args) = line.split_once(' ').unwrap_or((line, ""));
+                if was == Mode::Command && self.script.has_command(name) {
+                    let args = args.trim().to_string();
+                    self.with_script(|s, h| s.run_command(name, &args, h));
+                } else if was == Mode::Command {
                     match command::parse(&text) {
                         Ok(c) => self.run_command(c),
                         Err(command::ParseError::Empty) => {}
@@ -1423,8 +1440,102 @@ impl Win {
                 let (x, y) = (w.width() as f64 / 3.0, w.height() as f64 / 4.0);
                 self.show_menu(&w, x, y);
             }
+            Action::User(i) => self.with_script(|s, h| s.run_mapping(usize::from(i), h)),
             Action::Quit => self.window.close(),
         }
+    }
+
+    // ── scripts (init.lua) ──────────────────────────────────────────────────
+
+    fn load_scripts(&self) {
+        let dir = glib::user_config_dir().join(vector_core::APP_NAME);
+        let errors = self.script.load_dir(&dir);
+        let mut keymap = self.keymap.borrow_mut();
+        for (i, keys) in self.script.mappings().iter().enumerate() {
+            if let Ok(i) = u16::try_from(i) {
+                keymap.bind(keys, Action::User(i));
+            }
+        }
+        drop(keymap);
+        if let Some(e) = errors.first() {
+            self.notify_error(e);
+        }
+        // the first folder was shown before the `cd` handlers existed
+        self.with_script(|s, h| s.changed_dir(h));
+    }
+
+    /// What scripts see: the folder, the cursor and the selection.
+    fn host(&self) -> Host {
+        let pane = self.pane();
+        Host {
+            cwd: pane.dir(),
+            cursor: pane.cursor_entry().map(|e| e.path),
+            selection: pane.targets().into_iter().map(|e| e.path).collect(),
+        }
+    }
+
+    /// Calls into the scripts, then does what they asked for.
+    fn with_script(&self, f: impl FnOnce(&Script, Host) -> Result<(), String>) {
+        if let Err(e) = f(&self.script, self.host()) {
+            self.notify_error(&e);
+        }
+        self.apply_requests();
+    }
+
+    fn apply_requests(&self) {
+        for r in self.script.take_requests() {
+            match r {
+                Request::Cd(p) => self.run_command(Command::Cd(p.display().to_string())),
+                Request::Open(p) => self.open_file(&p),
+                Request::Command(line) => match command::parse(&line) {
+                    Ok(c) => self.run_command(c),
+                    Err(command::ParseError::Empty) => {}
+                    Err(e) => self.flash_error(&e.to_string()),
+                },
+                Request::Notify(text) => self.notify(&text),
+                Request::Shell { cmd, callback } => self.script_shell(&cmd, callback),
+            }
+        }
+    }
+
+    /// `vector.sh`: `sh -c cmd` in this folder with the selection as `$1…`, never blocking
+    /// the window. Without a callback a failure shows its output.
+    fn script_shell(&self, cmd: &str, callback: Option<vector_core::script::Callback>) {
+        let host = self.host();
+        let mut argv: Vec<&OsStr> = vec![OsStr::new("sh"), OsStr::new("-c"), OsStr::new(cmd)];
+        argv.push(OsStr::new("sh"));
+        argv.extend(host.selection.iter().map(|p| p.as_os_str()));
+        let launcher = gio::SubprocessLauncher::new(
+            gio::SubprocessFlags::STDOUT_PIPE | gio::SubprocessFlags::STDERR_MERGE,
+        );
+        launcher.set_cwd(&host.cwd);
+        let proc = match launcher.spawn(&argv) {
+            Ok(p) => p,
+            Err(e) => return self.notify_error(&format!("sh: {}", e.message())),
+        };
+        let weak = self.weak_self.borrow().clone();
+        glib::spawn_future_local(async move {
+            let out = proc.communicate_utf8_future(None).await;
+            let Some(win) = weak.upgrade() else { return };
+            let out = out
+                .ok()
+                .and_then(|(o, _)| o)
+                .map(|o| o.trim_end().to_string())
+                .unwrap_or_default();
+            let code = if proc.has_exited() {
+                proc.exit_status()
+            } else {
+                -1
+            };
+            match callback {
+                Some(cb) => win.with_script(|s, h| s.finish_shell(cb, &out, code, h)),
+                None if code != 0 => {
+                    let first = out.lines().next().unwrap_or("").to_string();
+                    win.notify_error(&format!("sh exited with {code}: {first}"));
+                }
+                None => {}
+            }
+        });
     }
 
     /// F4: open and focus the terminal; again (from inside it): hide it.

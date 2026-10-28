@@ -14,6 +14,7 @@ pub mod listing;
 pub mod model;
 pub mod ops;
 pub mod pins;
+pub mod script;
 pub mod search;
 pub mod selection;
 pub mod sort;

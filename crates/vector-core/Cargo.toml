@@ -15,6 +15,7 @@ grep-regex.workspace = true
 grep-matcher.workspace = true
 ignore.workspace = true
 gix.workspace = true
+mlua.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

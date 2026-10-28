@@ -48,7 +48,7 @@ impl TermPanel {
         term.set_hexpand(true);
         term.set_scrollback_lines(10_000);
         term.set_font(Some(&gtk::pango::FontDescription::from_string(
-            "JetBrainsMonoNL Nerd Font 11",
+            "JetBrainsMonoNL Nerd Font,JetBrainsMono Nerd Font,monospace 11",
         )));
         let fg = gdk::RGBA::parse(&theme.foreground).ok();
         // see-through: the window's own background shows, so the panel blends in
