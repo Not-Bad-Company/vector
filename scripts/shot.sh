@@ -7,7 +7,7 @@ bin="$(dirname "$0")/../target/release/vector"
 bin="$(realpath "$bin")"
 rm -f "$out" /tmp/claude-1000/vector-cfg/vector/settings.ini
 q() { printf '%q ' "$@"; }
-hyprctl dispatch exec "[workspace 9 silent;render_unfocused on] env XDG_CONFIG_HOME=/tmp/claude-1000/vector-cfg VECTOR_TIMING=1 $(q "$bin" "$dir" --snapshot "$out" --keys "$keys" --size 1400x860 "$@") 2>/tmp/claude-1000/vector-shots/last.log" >/dev/null
+hyprctl dispatch exec "[workspace 9 silent;render_unfocused on] env XDG_CONFIG_HOME=/tmp/claude-1000/vector-cfg VECTOR_TIMING=1 VECTOR_NO_CLIPBOARD=1 $(q "$bin" "$dir" --snapshot "$out" --keys "$keys" --size 1400x860 "$@") 2>/tmp/claude-1000/vector-shots/last.log" >/dev/null
 for _ in $(seq 1 150); do [ -s "$out" ] && break; sleep 0.1; done
 sleep 0.3
 # it quits by itself after the snapshot; close it if it did not

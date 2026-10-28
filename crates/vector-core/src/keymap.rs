@@ -160,6 +160,10 @@ pub enum Action {
     Menu,
     /// The key cheat sheet.
     Help,
+    /// Open the file under the cursor in the editor (nvim).
+    EditFile,
+    /// Copy the path of the selection, or of the folder, to the clipboard.
+    CopyPath,
     Quit,
 }
 
@@ -197,6 +201,10 @@ pub const BINDINGS: &[(&str, Action)] = &[
     ("y", Action::Yank),
     ("x", Action::Cut),
     ("p", Action::Paste),
+    // the usual desktop keys work too, with the system clipboard
+    ("<C-c>", Action::Yank),
+    ("<C-x>", Action::Cut),
+    ("<C-v>", Action::Paste),
     ("d", Action::Trash),
     ("D", Action::DeletePermanently),
     ("<Del>", Action::Trash),
@@ -230,6 +238,8 @@ pub const BINDINGS: &[(&str, Action)] = &[
     ("gx", Action::Terminal),
     ("gm", Action::Menu),
     ("?", Action::Help),
+    ("e", Action::EditFile),
+    ("Y", Action::CopyPath),
     ("<F1>", Action::Help),
     ("<C-r>", Action::Reload),
     ("<F5>", Action::Reload),

@@ -26,6 +26,8 @@ struct Tab {
     panes: RefCell<Vec<Rc<Pane>>>,
     active: Cell<usize>,
     container: gtk::Box,
+    /// The tab in the tab bar: a label button and a close button.
+    item: gtk::Box,
     button: gtk::Button,
 }
 
@@ -57,8 +59,6 @@ pub struct Win {
     tab_bar: gtk::Box,
     stack: gtk::Stack,
     crumbs: gtk::Box,
-    path_entry: gtk::Entry,
-    path_stack: gtk::Stack,
     preview: Rc<Preview>,
     preview_box: gtk::Box,
     mode_label: gtk::Label,
@@ -85,6 +85,8 @@ pub struct Win {
     settings: RefCell<crate::settings::Settings>,
     /// Set while the line's text is changed by code, so `changed` doesn't restart completion.
     setting_line: Cell<bool>,
+    notice: gtk::Label,
+    notice_timer: RefCell<Option<glib::SourceId>>,
     weak_self: RefCell<std::rc::Weak<Win>>,
 }
 
@@ -102,15 +104,12 @@ impl Win {
         tab_bar.add_css_class("tabs");
         tab_bar.set_visible(false);
         let crumbs = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        let path_entry = gtk::Entry::new();
-        path_entry.set_hexpand(true);
-        let path_stack = gtk::Stack::new();
-        path_stack.add_named(&crumbs, Some("crumbs"));
-        path_stack.add_named(&path_entry, Some("entry"));
-        path_stack.set_hexpand(true);
+        crumbs.set_hexpand(true);
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         header.add_css_class("header");
-        header.append(&path_stack);
+        header.append(&crumbs);
+        header.set_tooltip_text(Some("click or ctrl+l to type a path"));
+        header.set_cursor_from_name(Some("text"));
 
         let stack = gtk::Stack::new();
         stack.set_hexpand(true);
@@ -175,6 +174,16 @@ impl Win {
         overlay_layer.set_valign(gtk::Align::Center);
         overlay_layer.set_visible(false);
         overlay.add_overlay(&overlay_layer);
+        let notice = gtk::Label::new(None);
+        notice.add_css_class("notice");
+        notice.set_halign(gtk::Align::Center);
+        notice.set_valign(gtk::Align::End);
+        notice.set_margin_bottom(44);
+        notice.set_visible(false);
+        notice.set_can_target(false);
+        notice.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+        notice.set_max_width_chars(90);
+        overlay.add_overlay(&notice);
         window.set_child(Some(&overlay));
 
         let win = Rc::new_cyclic(|weak: &std::rc::Weak<Win>| {
@@ -195,8 +204,6 @@ impl Win {
                 tab_bar,
                 stack,
                 crumbs,
-                path_entry,
-                path_stack,
                 preview,
                 preview_box,
                 mode_label,
@@ -221,6 +228,8 @@ impl Win {
                 edit_poll: RefCell::new(None),
                 search_cancel: RefCell::new(None),
                 setting_line: Cell::new(false),
+                notice,
+                notice_timer: RefCell::new(None),
                 settings: RefCell::new(settings),
                 weak_self: RefCell::new(weak.clone()),
             }
@@ -296,24 +305,53 @@ impl Win {
         pane.widget().set_hexpand(true);
         let button = gtk::Button::new();
         button.add_css_class("link");
-        button.add_css_class("tab");
+        let close = gtk::Button::with_label("\u{F0156}");
+        close.add_css_class("link");
+        close.add_css_class("x");
+        close.set_tooltip_text(Some("close tab (ctrl+w, :q)"));
+        let item = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        item.add_css_class("tab");
+        item.append(&button);
+        item.append(&close);
         let tab = Rc::new(Tab {
             panes: RefCell::new(vec![pane]),
             active: Cell::new(0),
             container,
+            item,
             button,
         });
-        let weak = self.weak_self.borrow().clone();
-        let t = Rc::downgrade(&tab);
-        tab.button.connect_clicked(move |_| {
-            if let (Some(win), Some(t)) = (weak.upgrade(), t.upgrade()) {
-                let i = win.tabs.borrow().iter().position(|x| Rc::ptr_eq(x, &t));
-                if let Some(i) = i {
-                    win.switch_tab(i);
-                }
+        let index_of = {
+            let weak = self.weak_self.borrow().clone();
+            let t = Rc::downgrade(&tab);
+            move || {
+                let (win, t) = (weak.upgrade()?, t.upgrade()?);
+                let i = win.tabs.borrow().iter().position(|x| Rc::ptr_eq(x, &t))?;
+                Some((win, i))
+            }
+        };
+        let find = index_of.clone();
+        close.connect_clicked(move |_| {
+            if let Some((win, i)) = find() {
+                win.close_tab_at(i);
             }
         });
-        self.tab_bar.append(&tab.button);
+        // middle click closes, like in browsers
+        let middle = gtk::GestureClick::builder()
+            .button(gdk::BUTTON_MIDDLE)
+            .build();
+        let find = index_of.clone();
+        middle.connect_released(move |_, _, _, _| {
+            if let Some((win, i)) = find() {
+                win.close_tab_at(i);
+            }
+        });
+        tab.item.add_controller(middle);
+        tab.button.connect_clicked(move |_| {
+            if let Some((win, i)) = index_of() {
+                win.switch_tab(i);
+            }
+        });
+        self.tab_bar.append(&tab.item);
         self.stack.add_child(&tab.container);
         self.tabs.borrow_mut().push(tab);
         let n = self.tabs.borrow().len();
@@ -334,15 +372,46 @@ impl Win {
     }
 
     fn close_tab(&self) {
+        self.close_tab_at(self.current.get());
+    }
+
+    fn close_tab_at(&self, i: usize) {
         if self.tabs.borrow().len() <= 1 {
             self.window.close();
             return;
         }
-        let i = self.current.get();
+        if i >= self.tabs.borrow().len() {
+            return;
+        }
         let tab = self.tabs.borrow_mut().remove(i);
         self.stack.remove(&tab.container);
-        self.tab_bar.remove(&tab.button);
-        self.switch_tab(i.min(self.tabs.borrow().len() - 1));
+        self.tab_bar.remove(&tab.item);
+        let cur = self.current.get();
+        let next = if cur > i || cur >= self.tabs.borrow().len() {
+            cur.saturating_sub(1)
+        } else {
+            cur
+        };
+        self.switch_tab(next);
+    }
+
+    /// `:q`, like nvim: closes the split pane, else the tab, else the window.
+    fn quit_one(&self) {
+        let tab = self.tab();
+        if tab.panes.borrow().len() > 1 {
+            let i = tab.active.get();
+            let gone = tab.panes.borrow_mut().remove(i);
+            tab.container.remove(gone.widget());
+            tab.active.set(0);
+            if let Some(p) = tab.panes.borrow().first() {
+                p.widget().remove_css_class("pane-split");
+            }
+            self.update_panes_focus();
+            self.pane().focus_view();
+            self.update_chrome();
+        } else {
+            self.close_tab();
+        }
     }
 
     fn toggle_split(&self) {
@@ -468,6 +537,7 @@ impl Win {
         let pane = self.pane();
         let dir = pane.dir();
         self.sidebar.set_current(&dir);
+        publish_cwd(&dir);
         self.window.set_title(Some(&format!(
             "{} — {}",
             display_path(&dir),
@@ -529,8 +599,10 @@ impl Win {
             t.button.set_label(&format!("{} {name}", i + 1));
             if i == self.current.get() {
                 t.button.add_css_class("primary");
+                t.item.add_css_class("active");
             } else {
                 t.button.remove_css_class("primary");
+                t.item.remove_css_class("active");
             }
         }
         drop(tabs);
@@ -672,27 +744,6 @@ impl Win {
         if self.dialog.borrow().is_some() {
             return self.dialog_key(key, synthetic);
         }
-        if self.path_stack.visible_child_name().as_deref() == Some("entry") {
-            match key {
-                Key::Esc => {
-                    self.path_stack.set_visible_child_name("crumbs");
-                    self.pane().focus_view();
-                    return true;
-                }
-                Key::Enter => {
-                    let text = self.path_entry.text().to_string();
-                    self.path_stack.set_visible_child_name("crumbs");
-                    self.run_command(Command::Cd(text));
-                    return true;
-                }
-                Key::Char(c) if synthetic => {
-                    self.path_entry
-                        .set_text(&format!("{}{c}", self.path_entry.text()));
-                    return true;
-                }
-                _ => return false,
-            }
-        }
         if self.picker.borrow().is_some()
             && !matches!(self.mode.get(), Mode::Command | Mode::Filter)
         {
@@ -790,6 +841,17 @@ impl Win {
     }
 
     fn connect_entries(&self) {
+        // clicking the path bar (not a crumb) types a path
+        let click = gtk::GestureClick::new();
+        let weak = self.weak_self.borrow().clone();
+        click.connect_released(move |g, _, _, _| {
+            if let Some(win) = weak.upgrade() {
+                g.set_state(gtk::EventSequenceState::Claimed);
+                win.type_path();
+            }
+        });
+        self.crumbs.add_controller(click);
+
         let weak = self.weak_self.borrow().clone();
         self.cmd_entry.connect_changed(move |e| {
             let Some(win) = weak.upgrade() else { return };
@@ -1002,12 +1064,14 @@ impl Win {
                     return;
                 }
                 let cut = action == Action::Cut;
-                self.flash(&format!(
-                    "{} {}",
-                    if cut { "cut" } else { "yanked" },
+                self.notify(&format!(
+                    "{} {} · p or ctrl+v pastes",
+                    if cut { "cut" } else { "copied" },
                     count_label(&paths)
                 ));
+                self.set_file_clipboard(&paths, cut);
                 *self.register.borrow_mut() = Some(Register { paths, cut });
+                self.update_marks();
                 self.leave_visual();
                 pane.selection.borrow_mut().clear();
                 pane.push_selection(false);
@@ -1103,15 +1167,16 @@ impl Win {
                 self.update_status();
             }
             Action::FolderSize => self.folder_sizes(),
-            Action::Edit => self.run_command(Command::Edit),
+            Action::Edit => self.run_command(Command::Edit(None)),
+            Action::EditFile => match pane.cursor_entry() {
+                Some(e) if !e.is_dir() => self.open_in_editor(&e.path),
+                Some(_) => self.flash("e edits files; ge edits the names in this folder"),
+                None => {}
+            },
+            Action::CopyPath => self.copy_path(true),
             Action::Terminal => self.run_command(Command::Term),
             Action::Reload => pane.reload(),
-            Action::PathEdit => {
-                self.path_entry.set_text(&display_path(&pane.dir()));
-                self.path_stack.set_visible_child_name("entry");
-                self.path_entry.grab_focus();
-                self.path_entry.set_position(-1);
-            }
+            Action::PathEdit => self.type_path(),
             Action::Help => self.show_help(),
             Action::Menu => {
                 let w = pane.widget().clone().upcast::<gtk::Widget>();
@@ -1149,16 +1214,27 @@ impl Win {
                 let t = target.clone();
                 let weak = self.weak_self.borrow().clone();
                 glib::spawn_future_local(async move {
-                    let is_dir = gio::spawn_blocking(move || t.is_dir())
-                        .await
-                        .unwrap_or(false);
+                    let kind =
+                        gio::spawn_blocking(move || std::fs::metadata(&t).map(|m| m.is_dir()).ok())
+                            .await
+                            .ok()
+                            .flatten();
                     let Some(win) = weak.upgrade() else { return };
-                    if is_dir {
-                        win.pane().open_dir(&target);
-                        win.pane().focus_view();
-                    } else {
-                        win.flash_error(&format!("no folder {}", display_path(&target)));
+                    match (kind, target.parent()) {
+                        (Some(true), _) => {
+                            win.pane().open_dir(&target);
+                        }
+                        // a file: open its folder with the file selected
+                        (Some(false), Some(parent)) => {
+                            win.pane().open_dir(parent);
+                            win.pane().select_paths(std::slice::from_ref(&target));
+                        }
+                        _ => win.flash_error(&format!(
+                            "no such folder or file: {}",
+                            display_path(&target)
+                        )),
                     }
+                    win.pane().focus_view();
                 });
             }
             Command::Sort { key, reverse } => {
@@ -1193,8 +1269,13 @@ impl Win {
                 self.open_file(&p);
             }
             Command::Term => self.open_terminal(&dir),
-            Command::Edit => self.start_edit(),
-            Command::Quit => self.window.close(),
+            Command::Edit(None) => self.start_edit(),
+            Command::Edit(Some(name)) => {
+                let p = resolve(&dir, &name);
+                self.open_in_editor(&p);
+            }
+            Command::Quit => self.quit_one(),
+            Command::QuitAll => self.window.close(),
             Command::Find(q) => self.search(q, false),
             Command::Filter(f) => self.set_filter(&f),
             Command::Flat => {
@@ -1233,6 +1314,69 @@ impl Win {
         );
     }
 
+    /// `:cd ` in the command line with the current path filled in and selected, so typing or
+    /// pasting replaces it and Tab completes.
+    fn type_path(&self) {
+        let path = format!(
+            "{}/",
+            display_path(&self.pane().dir()).trim_end_matches('/')
+        );
+        self.enter_line(Mode::Command);
+        self.setting_line.set(true);
+        self.cmd_entry.set_text(&format!("cd {path}"));
+        self.setting_line.set(false);
+        self.cmd_entry.select_region(3, -1);
+    }
+
+    /// Copies paths to the clipboard: the selected items, else (with `folder`) the current
+    /// folder, else the item under the cursor.
+    fn copy_path(&self, folder: bool) {
+        let pane = self.pane();
+        let selected = pane.selection.borrow().has_selection();
+        let text = if selected || !folder {
+            let paths: Vec<String> = pane
+                .targets()
+                .iter()
+                .map(|e| e.path.display().to_string())
+                .collect();
+            if paths.is_empty() {
+                pane.dir().display().to_string()
+            } else {
+                paths.join("\n")
+            }
+        } else {
+            pane.dir().display().to_string()
+        };
+        self.window.clipboard().set_text(&text);
+        let n = text.lines().count();
+        self.notify(&if n == 1 {
+            format!("copied {text}")
+        } else {
+            format!("copied {n} paths")
+        });
+    }
+
+    /// Opens `path` in $VISUAL / $EDITOR (nvim by default) in a new terminal; like vim, a path
+    /// that doesn't exist yet is created when the editor saves it.
+    fn open_in_editor(&self, path: &Path) {
+        let launcher = gio::SubprocessLauncher::new(gio::SubprocessFlags::NONE);
+        if let Some(parent) = path.parent() {
+            launcher.set_cwd(parent);
+        }
+        let script = r#"exec ${VISUAL:-${EDITOR:-nvim}} "$1""#;
+        let argv = [
+            std::ffi::OsStr::new("xdg-terminal-exec"),
+            std::ffi::OsStr::new("sh"),
+            std::ffi::OsStr::new("-c"),
+            std::ffi::OsStr::new(script),
+            std::ffi::OsStr::new("sh"),
+            path.as_os_str(),
+        ];
+        if let Err(e) = launcher.spawn(&argv) {
+            self.flash_error(&format!("editor: {}", e.message()));
+        }
+    }
+
     fn open_terminal(&self, dir: &Path) {
         let launcher = gio::SubprocessLauncher::new(gio::SubprocessFlags::NONE);
         launcher.set_cwd(dir);
@@ -1243,22 +1387,141 @@ impl Win {
 
     // ── paste, transfers, deletes ───────────────────────────────────────────
 
+    /// Pastes vector's own yank/cut, or files copied in another app (Nautilus, a browser…)
+    /// from the system clipboard.
     fn paste(&self) {
-        let Some((paths, cut)) = self
-            .register
-            .borrow()
-            .as_ref()
-            .map(|r| (r.paths.clone(), r.cut))
-        else {
-            self.flash("nothing yanked");
-            return;
-        };
         let dest = self.pane().dir();
-        if cut {
-            // a cut pastes once
-            *self.register.borrow_mut() = None;
+        let clipboard = self.window.clipboard();
+        if clipboard.is_local()
+            || !clipboard
+                .formats()
+                .contains_type(gdk::FileList::static_type())
+        {
+            let Some((paths, cut)) = self
+                .register
+                .borrow()
+                .as_ref()
+                .map(|r| (r.paths.clone(), r.cut))
+            else {
+                self.notify("nothing to paste");
+                return;
+            };
+            if cut {
+                // a cut pastes once
+                *self.register.borrow_mut() = None;
+                clipboard.set_content(None::<&gdk::ContentProvider>).ok();
+                self.update_marks();
+            }
+            self.transfer(paths, dest, cut);
+            return;
         }
-        self.transfer(paths, dest, cut);
+        let weak = self.weak_self.borrow().clone();
+        glib::spawn_future_local(async move {
+            // Nautilus marks a cut with x-special/gnome-copied-files ("cut\nfile://…")
+            let mut cut = false;
+            if clipboard
+                .formats()
+                .contain_mime_type("x-special/gnome-copied-files")
+                && let Ok((stream, _)) = clipboard
+                    .read_future(&["x-special/gnome-copied-files"], glib::Priority::DEFAULT)
+                    .await
+                && let Ok(bytes) = stream.read_bytes_future(4, glib::Priority::DEFAULT).await
+            {
+                cut = bytes.as_ref() == b"cut\n" || bytes.as_ref().starts_with(b"cut");
+            }
+            let files = clipboard
+                .read_value_future(gdk::FileList::static_type(), glib::Priority::DEFAULT)
+                .await;
+            let Some(win) = weak.upgrade() else { return };
+            let paths: Vec<PathBuf> = files
+                .ok()
+                .and_then(|v| v.get::<gdk::FileList>().ok())
+                .map(|l| l.files().iter().filter_map(|f| f.path()).collect())
+                .unwrap_or_default();
+            if paths.is_empty() {
+                win.notify("nothing to paste");
+                return;
+            }
+            win.transfer(paths, dest, cut);
+        });
+    }
+
+    /// Puts files on the system clipboard the way GNOME apps expect: as a file list (text/uri-list)
+    /// and x-special/gnome-copied-files (which says copy or cut), plus plain paths for terminals.
+    fn set_file_clipboard(&self, paths: &[PathBuf], cut: bool) {
+        // test runs (scripts/shot.sh) must not overwrite the user's clipboard
+        if std::env::var_os("VECTOR_NO_CLIPBOARD").is_some() {
+            return;
+        }
+        let files: Vec<gio::File> = paths.iter().map(gio::File::for_path).collect();
+        let uris: Vec<String> = files.iter().map(|f| f.uri().to_string()).collect();
+        let gnome = format!("{}\n{}", if cut { "cut" } else { "copy" }, uris.join("\n"));
+        let plain: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
+        let providers = [
+            gdk::ContentProvider::for_value(&gdk::FileList::from_array(&files).to_value()),
+            gdk::ContentProvider::for_bytes(
+                "x-special/gnome-copied-files",
+                &glib::Bytes::from_owned(gnome.into_bytes()),
+            ),
+            gdk::ContentProvider::for_bytes(
+                "text/plain;charset=utf-8",
+                &glib::Bytes::from_owned(plain.join("\n").into_bytes()),
+            ),
+        ];
+        if self
+            .window
+            .clipboard()
+            .set_content(Some(&gdk::ContentProvider::new_union(&providers)))
+            .is_err()
+        {
+            self.flash_error("couldn't set the clipboard");
+        }
+    }
+
+    /// Shows which files are yanked or cut in every pane.
+    fn update_marks(&self) {
+        let (paths, cut) = match self.register.borrow().as_ref() {
+            Some(r) => (r.paths.iter().cloned().collect(), r.cut),
+            None => (std::collections::HashSet::new(), false),
+        };
+        for tab in self.tabs.borrow().iter() {
+            for p in tab.panes.borrow().iter() {
+                p.set_marks(paths.clone(), cut);
+            }
+        }
+    }
+
+    /// A short notice above the statusline for things that just happened.
+    fn notify(&self, text: &str) {
+        self.show_notice(text, false);
+    }
+
+    fn notify_error(&self, text: &str) {
+        self.show_notice(text, true);
+    }
+
+    fn show_notice(&self, text: &str, crit: bool) {
+        self.notice.set_text(text);
+        if crit {
+            self.notice.add_css_class("crit");
+        } else {
+            self.notice.remove_css_class("crit");
+        }
+        self.notice.set_visible(true);
+        if let Some(id) = self.notice_timer.borrow_mut().take() {
+            id.remove();
+        }
+        let weak = self.weak_self.borrow().clone();
+        let id = glib::timeout_add_local_once(
+            Duration::from_millis(if crit { 5000 } else { 2500 }),
+            move || {
+                if let Some(win) = weak.upgrade() {
+                    win.notice_timer.borrow_mut().take();
+                    win.notice.set_visible(false);
+                }
+            },
+        );
+        *self.notice_timer.borrow_mut() = Some(id);
     }
 
     /// Copies or moves `paths` into `dest`, asking first when names are taken.
@@ -1451,12 +1714,12 @@ impl Win {
                             .map(|e| e.to_string())
                             .collect();
                         if report.cancelled {
-                            win.flash(&format!("{} cancelled", report.label));
+                            win.notify(&format!("{} cancelled", report.label));
                         } else if !others.is_empty() {
-                            win.flash_error(&format!("{}: {}", report.label, others.join("; ")));
+                            win.notify_error(&format!("{}: {}", report.label, others.join("; ")));
                         } else {
                             let undo = if report.undoable { " · u to undo" } else { "" };
-                            win.flash(&format!("{}{undo}", report.label));
+                            win.notify(&format!("{}{undo}", report.label));
                         }
                         if !unsupported.is_empty() {
                             win.confirm_delete(
@@ -1822,10 +2085,12 @@ impl Win {
             (
                 "files",
                 &[
-                    ("y x p", "copy, cut, paste"),
+                    ("y x p", "copy, cut, paste (ctrl+c/x/v too)"),
                     ("d", "move to trash"),
                     ("D", "delete permanently"),
                     ("r", "rename"),
+                    ("e", "edit file in nvim"),
+                    ("Y", "copy folder path"),
                     ("u .", "undo, repeat"),
                     ("v space", "select range, toggle one"),
                 ],
@@ -1840,6 +2105,7 @@ impl Win {
                     ("ctrl+h", "hidden files"),
                     ("s tab", "split, other pane"),
                     ("ctrl+t gt ctrl+w", "new tab, next tab, close tab"),
+                    (":q :qa", "close pane or tab, close window"),
                 ],
             ),
             (
@@ -1851,7 +2117,8 @@ impl Win {
                     ("gs", "folder size"),
                     ("gm", "menu"),
                     ("gx", "terminal here"),
-                    ("ctrl+l", "type a path"),
+                    ("ctrl+l", "type or paste a path"),
+                    (":e name", "open or create a file in nvim"),
                 ],
             ),
         ];
@@ -2030,20 +2297,9 @@ impl Win {
         let a = gio::SimpleAction::new("copy-path", None);
         let weak = self.weak_self.borrow().clone();
         a.connect_activate(move |_, _| {
-            let Some(win) = weak.upgrade() else { return };
-            let paths: Vec<String> = win
-                .pane()
-                .targets()
-                .iter()
-                .map(|e| e.path.display().to_string())
-                .collect();
-            let text = if paths.is_empty() {
-                win.pane().dir().display().to_string()
-            } else {
-                paths.join("\n")
-            };
-            win.window.clipboard().set_text(&text);
-            win.flash("path copied");
+            if let Some(win) = weak.upgrade() {
+                win.copy_path(false);
+            }
         });
         self.window.add_action(&a);
         for (name, cmd) in [("new-folder", "mkdir "), ("new-file", "new ")] {
@@ -2269,6 +2525,28 @@ fn count_label(paths: &[PathBuf]) -> String {
         [one] => file_name(one),
         _ => format!("{} items", paths.len()),
     }
+}
+
+/// `$XDG_RUNTIME_DIR/vector/<pid>`: the folder this window shows, for scripts like
+/// terminal-cwd (open a terminal where vector is).
+fn cwd_file() -> PathBuf {
+    glib::user_runtime_dir()
+        .join(vector_core::APP_NAME)
+        .join(std::process::id().to_string())
+}
+
+/// Removes this process's folder file (on exit).
+pub fn forget_cwd() {
+    let _ = std::fs::remove_file(cwd_file());
+}
+
+fn publish_cwd(dir: &Path) {
+    let f = cwd_file();
+    if let Some(parent) = f.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    // tmpfs, a few bytes: cheap enough to do on navigation
+    let _ = std::fs::write(&f, dir.as_os_str().as_encoded_bytes());
 }
 
 /// `~/x` for paths under home.

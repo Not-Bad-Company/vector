@@ -61,8 +61,12 @@ button.x {{ opacity: 0; padding: 0 5px; }}
 .row:hover button.x {{ opacity: 0.55; }}
 .row:hover button.x:hover {{ opacity: 1; }}
 button.link.danger:hover {{ color: {red}; }}
-button.tab {{ padding: 6px 12px; border-bottom: 2px solid transparent; }}
-button.tab.primary {{ border-bottom-color: {acc}; }}
+.tab {{ border-bottom: 2px solid transparent; }}
+.tab > button.link {{ padding: 6px 4px 6px 12px; }}
+.tab > button.x {{ padding: 6px 8px 6px 4px; }}
+.tab.active {{ border-bottom-color: {acc}; }}
+.tab:hover button.x {{ opacity: 0.55; }}
+.tab:hover button.x:hover {{ opacity: 1; }}
 .crumb-sep {{ opacity: 0.32; }}
 
 entry {{
@@ -98,6 +102,16 @@ listview > row:selected:hover {{ background: alpha({acc}, 0.13); }}
 .file .meta {{ opacity: 0.5; }}
 .file.hidden-file .name {{ opacity: 0.6; }}
 .file .badge {{ min-width: 14px; }}
+.file.marked .icon {{ color: {acc}; }}
+.file.cut .name, .file.cut .meta {{ opacity: 0.45; }}
+.notice {{
+  background: {bg};
+  border: 1px solid alpha({fg}, 0.18);
+  border-left: 2px solid {acc};
+  box-shadow: 0 10px 28px alpha(black, 0.35);
+  padding: 8px 16px;
+}}
+.notice.crit {{ border-left-color: {red}; color: {red}; }}
 gridview > child {{
   padding: 10px 6px 8px 6px;
   border-left: 2px solid transparent;
@@ -112,6 +126,7 @@ gridview > child:selected {{ border-left-color: {acc}; background: alpha({acc}, 
 
 /* ── preview ── */
 .preview {{ border-left: 1px solid alpha({fg}, 0.08); padding: 14px 16px; }}
+.details {{ margin-top: 14px; }}
 .preview picture {{ border: 1px solid alpha({fg}, 0.12); }}
 .preview textview, .preview textview text {{ background: transparent; color: {fg}; font-family: '{FONT}'; font-size: 11px; }}
 .preview textview border, .preview gutter, .preview gutter > * {{ background: transparent; }}

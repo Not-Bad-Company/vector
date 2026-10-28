@@ -62,6 +62,8 @@ pub struct Pane {
     syncing: Cell<bool>,
     refresh_queued: Cell<bool>,
     flat: Cell<bool>,
+    /// Yanked or cut paths (shown marked), and whether it is a cut.
+    marks: RefCell<(std::collections::HashSet<PathBuf>, bool)>,
     pub loading: Cell<bool>,
     /// Name to put the cursor on once it shows up (after going to the parent folder).
     want_cursor: RefCell<Option<String>>,
@@ -122,6 +124,7 @@ impl Pane {
             syncing: Cell::new(false),
             refresh_queued: Cell::new(false),
             flat: Cell::new(false),
+            marks: RefCell::default(),
             loading: Cell::new(false),
             want_cursor: RefCell::new(None),
             on_event: Box::new(on_event),
@@ -248,6 +251,11 @@ impl Pane {
         } else {
             self.list.grab_focus();
         }
+    }
+
+    pub fn set_marks(&self, paths: std::collections::HashSet<PathBuf>, cut: bool) {
+        *self.marks.borrow_mut() = (paths, cut);
+        self.rebind();
     }
 
     pub fn set_compact(&self, compact: bool) {
@@ -923,6 +931,17 @@ fn row_factory(pane: Weak<Pane>) -> gtk::SignalListItemFactory {
         };
         icon.set_text(vector_core::icons::icon_for(&e.name, e.is_dir(), e.symlink));
         name.set_text(&e.name);
+        let (marked, cut) = {
+            let m = pane.marks.borrow();
+            (m.0.contains(&e.path), m.1)
+        };
+        for (class, on) in [("marked", marked), ("cut", marked && cut)] {
+            if on {
+                row.add_css_class(class);
+            } else {
+                row.remove_css_class(class);
+            }
+        }
         if pane.model.borrow().is_hidden(&e) {
             row.add_css_class("hidden-file");
         } else {

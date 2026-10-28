@@ -16,8 +16,8 @@ pub struct Preview {
     header: gtk::Box,
     icon: gtk::Label,
     title: gtk::Label,
-    meta: gtk::Label,
     body: gtk::Box,
+    details: gtk::Grid,
     generation: Cell<u64>,
     theme: vector_core::theme::Theme,
 }
@@ -28,6 +28,7 @@ impl Preview {
         root.set_widget_name("preview");
         root.add_css_class("preview");
         root.set_size_request(360, -1);
+        root.set_vexpand(true);
         root.set_hexpand(false);
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let icon = gtk::Label::new(None);
@@ -40,20 +41,20 @@ impl Preview {
         header.append(&icon);
         header.append(&title);
         root.append(&header);
-        let meta = gtk::Label::new(None);
-        meta.set_xalign(0.0);
-        meta.add_css_class("dim");
-        root.append(&meta);
         let body = gtk::Box::new(gtk::Orientation::Vertical, 4);
-        body.set_vexpand(true);
         root.append(&body);
+        let details = gtk::Grid::new();
+        details.add_css_class("details");
+        details.set_column_spacing(16);
+        details.set_row_spacing(4);
+        root.append(&details);
         Rc::new(Preview {
             root,
             header,
             icon,
             title,
-            meta,
             body,
+            details,
             generation: Cell::new(0),
             theme: theme.clone(),
         })
@@ -67,36 +68,22 @@ impl Preview {
         self.generation.set(self.generation.get().wrapping_add(1));
         let generation = self.generation.get();
         clear(&self.body);
+        self.body.set_vexpand(false);
+        while let Some(c) = self.details.first_child() {
+            self.details.remove(&c);
+        }
         let Some(entry) = entry.cloned() else {
             self.header.set_visible(false);
-            self.meta.set_text("");
             return;
         };
         self.header.set_visible(true);
+        self.load_details(&entry, generation);
         self.icon.set_text(vector_core::icons::icon_for(
             &entry.name,
             entry.is_dir(),
             entry.symlink,
         ));
         self.title.set_text(&entry.name);
-        let first = if entry.is_dir() {
-            "folder".to_string()
-        } else {
-            crate::fmt::size(entry.size)
-        };
-        let parts = [
-            first,
-            entry.content_type.clone(),
-            crate::fmt::date(entry.modified),
-        ];
-        self.meta.set_text(
-            &parts
-                .iter()
-                .filter(|s| !s.is_empty() && s.as_str() != "inode/directory")
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(" · "),
-        );
         if entry.broken || entry.kind == Kind::Special {
             self.no_preview(&entry);
             return;
@@ -232,6 +219,7 @@ impl Preview {
         scroll.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
         scroll.set_child(Some(&view));
         scroll.set_vexpand(true);
+        self.body.set_vexpand(true);
         self.body.append(&scroll);
     }
 
@@ -258,9 +246,16 @@ impl Preview {
             };
             if this.generation.get() == generation {
                 if let Ok(Ok(mut entries)) = result {
-                    let count = entries.len();
-                    this.meta.set_text(&format!("{count} items"));
                     entries.truncate(200);
+                    // a long folder scrolls inside the preview; the details stay visible
+                    let list = gtk::Box::new(gtk::Orientation::Vertical, 4);
+                    let scroll = gtk::ScrolledWindow::builder()
+                        .child(&list)
+                        .hscrollbar_policy(gtk::PolicyType::Never)
+                        .vexpand(true)
+                        .build();
+                    this.body.set_vexpand(true);
+                    this.body.append(&scroll);
                     for child in entries {
                         let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
                         let glyph = gtk::Label::new(Some(vector_core::icons::icon_for(
@@ -276,11 +271,45 @@ impl Preview {
                         }
                         row.append(&glyph);
                         row.append(&name);
-                        this.body.append(&row);
+                        list.append(&row);
                     }
                 } else {
                     this.no_preview(&entry);
                 }
+            }
+        });
+    }
+}
+
+impl Preview {
+    /// Gathers the details table on a worker thread (stat, image header, ffprobe, pdfinfo,
+    /// text statistics) and shows it under the preview.
+    fn load_details(self: &Rc<Self>, entry: &Entry, generation: u64) {
+        let weak = Rc::downgrade(self);
+        let e = entry.clone();
+        glib::MainContext::default().spawn_local(async move {
+            let Ok(rows) = gio::spawn_blocking(move || crate::details::gather(&e)).await else {
+                return;
+            };
+            let Some(this) = weak.upgrade() else { return };
+            if this.generation.get() != generation {
+                return;
+            }
+            for (i, (k, v)) in rows.iter().enumerate() {
+                let kl = gtk::Label::new(Some(k));
+                kl.add_css_class("dim");
+                kl.set_xalign(0.0);
+                kl.set_valign(gtk::Align::Start);
+                let vl = gtk::Label::new(Some(v));
+                vl.set_xalign(0.0);
+                // no wrapping: a wrapped label asks for a huge height at its minimum width,
+                // which made the whole window taller than the screen
+                vl.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+                vl.set_width_chars(8);
+                vl.set_tooltip_text(Some(v));
+                vl.set_hexpand(true);
+                this.details.attach(&kl, 0, i as i32, 1, 1);
+                this.details.attach(&vl, 1, i as i32, 1, 1);
             }
         });
     }

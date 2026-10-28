@@ -26,12 +26,16 @@ pub enum Command {
     Hidden(Toggle),
     Open(Option<String>),
     Term,
-    Edit,
+    /// `:e`: rename/delete/create in nvim as a buffer (oil style); `:e name`: open or create
+    /// that file in the editor, like vim.
+    Edit(Option<String>),
     /// `:filter [expr]`: set the `/` filter (no arg clears it).
     Filter(String),
     /// `:flat`: toggle listing the whole tree under this folder.
     Flat,
     Quit,
+    /// `:qa`: close the window.
+    QuitAll,
 }
 
 /// Why a command line did not parse; `Display` gives the message for the status line.
@@ -58,8 +62,8 @@ impl std::fmt::Display for ParseError {
 
 /// Command names, in the order completion offers them.
 pub const COMMANDS: &[&str] = &[
-    "new", "mkdir", "find", "grep", "cd", "sort", "hidden", "open", "term", "edit", "filter",
-    "flat", "quit",
+    "new", "mkdir", "find", "grep", "cd", "sort", "hidden", "open", "term", "edit", "touch",
+    "filter", "flat", "quit", "quitall",
 ];
 
 /// Parses what follows the `:` (a leading `:` is skipped too).
@@ -85,7 +89,7 @@ pub fn parse(line: &str) -> Result<Command, ParseError> {
     }
     let arg = unquote(rest);
     match command {
-        "new" => required(arg, "new").map(Command::New),
+        "new" | "touch" => required(arg, "new").map(Command::New),
         "mkdir" => required(arg, "mkdir").map(Command::Mkdir),
         "find" => required(arg, "find").map(Command::Find),
         "grep" => required(arg, "grep").map(Command::Grep),
@@ -138,10 +142,11 @@ pub fn parse(line: &str) -> Result<Command, ParseError> {
             Some(arg.into())
         })),
         "term" if arg.is_empty() => Ok(Command::Term),
-        "edit" if arg.is_empty() => Ok(Command::Edit),
+        "edit" => Ok(Command::Edit((!arg.is_empty()).then(|| arg.to_owned()))),
         "filter" => Ok(Command::Filter(arg.to_owned())),
         "flat" if arg.is_empty() => Ok(Command::Flat),
         "quit" if arg.is_empty() => Ok(Command::Quit),
+        "quitall" if arg.is_empty() => Ok(Command::QuitAll),
         other => Err(ParseError::BadArg {
             command: other,
             arg: arg.into(),
@@ -153,6 +158,9 @@ pub fn parse(line: &str) -> Result<Command, ParseError> {
 pub fn resolve(name: &str) -> Result<&'static str, ParseError> {
     if name == "q" {
         return Ok("quit");
+    }
+    if matches!(name, "qa" | "qall" | "quita" | "quital" | "quitall") {
+        return Ok("quitall");
     }
     if let Some(exact) = COMMANDS.iter().copied().find(|c| *c == name) {
         return Ok(exact);
@@ -261,7 +269,7 @@ pub fn complete(line: &str, ctx: &CompletionCtx<'_>) -> Completion {
         "sort" => prefixed(&["name", "size", "mtime", "type"], arg),
         "hidden" => prefixed(&["on", "off"], arg),
         "cd" => path_candidates(arg, ctx, true),
-        "open" | "new" | "mkdir" => path_candidates(arg, ctx, false),
+        "open" | "new" | "touch" | "mkdir" | "edit" => path_candidates(arg, ctx, false),
         _ => Vec::new(),
     };
     Completion {
@@ -340,7 +348,9 @@ mod tests {
             ("grep a", Command::Grep("a".into())),
             ("cd", Command::Cd("~".into())),
             ("term", Command::Term),
-            ("edit", Command::Edit),
+            ("edit", Command::Edit(None)),
+            ("e hallo.py", Command::Edit(Some("hallo.py".into()))),
+            ("touch x.py", Command::New("x.py".into())),
             ("q", Command::Quit),
             ("op", Command::Open(None)),
         ] {
@@ -496,5 +506,13 @@ mod tests {
             vec!["!size>", "!size<"]
         );
         assert!(complete("filter ext:", &ctx).candidates.is_empty());
+    }
+
+    #[test]
+    fn quit_variants() {
+        assert_eq!(parse("q"), Ok(Command::Quit));
+        assert_eq!(parse("quit"), Ok(Command::Quit));
+        assert_eq!(parse("qa"), Ok(Command::QuitAll));
+        assert_eq!(parse("qall"), Ok(Command::QuitAll));
     }
 }

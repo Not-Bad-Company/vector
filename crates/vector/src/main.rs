@@ -5,6 +5,7 @@
 //! `--after MS` (default 800) and after feeding `--keys "<vim notation>"` once the folder has
 //! loaded. `--size WxH` sets the window size.
 
+mod details;
 mod fmt;
 mod pane;
 mod preview;
@@ -118,7 +119,9 @@ fn main() -> glib::ExitCode {
         keep.borrow_mut().push(win);
     });
     // GTK must not see our own options
-    app.run_with_args::<&str>(&[])
+    let code = app.run_with_args::<&str>(&[]);
+    window::forget_cwd();
+    code
 }
 
 /// Prints the longest gap between 5 ms main-loop ticks during the first 4 s: how long the
