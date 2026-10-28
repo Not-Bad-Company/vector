@@ -1,0 +1,13 @@
+[package]
+name = "strata"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "A keyboard-and-mouse file manager for GTK4"
+
+[dependencies]
+strata-core.workspace = true
+glib.workspace = true
+gio.workspace = true
+gtk4.workspace = true
+async-channel.workspace = true

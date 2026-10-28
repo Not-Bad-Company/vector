@@ -1,0 +1,20 @@
+[package]
+name = "strata-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Everything in strata that is not drawing: directory model, operations, keymap, commands"
+
+[dependencies]
+glib.workspace = true
+gio.workspace = true
+async-channel.workspace = true
+nucleo.workspace = true
+grep-searcher.workspace = true
+grep-regex.workspace = true
+grep-matcher.workspace = true
+ignore.workspace = true
+gix.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
