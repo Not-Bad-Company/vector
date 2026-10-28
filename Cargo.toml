@@ -11,6 +11,7 @@ license = "MIT"
 glib = "0.22"
 gio = "0.22"
 gtk4 = { version = "0.11", features = ["v4_20"] }
+sourceview5 = "0.11"
 async-channel = "2"
 nucleo = "0.5"
 grep-searcher = "0.1"

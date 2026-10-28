@@ -10,4 +10,5 @@ strata-core.workspace = true
 glib.workspace = true
 gio.workspace = true
 gtk4.workspace = true
+sourceview5.workspace = true
 async-channel.workspace = true

@@ -1,10 +1,12 @@
 //! strata-core: everything in strata that is not drawing.
 
+pub mod bookmarks;
 pub mod command;
 pub mod edit;
 pub mod entry;
 pub mod git;
 pub mod icons;
+pub mod keymap;
 pub mod listing;
 pub mod model;
 pub mod ops;

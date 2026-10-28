@@ -99,7 +99,7 @@ checksum = "ee548131103ad8f698c6725669647b9c757b3b66992dd6a026037596417bee21"
 dependencies = [
  "glib-sys",
  "libc",
- "system-deps",
+ "system-deps 9.0.1",
 ]
 
 [[package]]
@@ -444,7 +444,7 @@ dependencies = [
  "glib-sys",
  "gobject-sys",
  "libc",
- "system-deps",
+ "system-deps 9.0.1",
 ]
 
 [[package]]
@@ -476,7 +476,7 @@ dependencies = [
  "libc",
  "pango-sys",
  "pkg-config",
- "system-deps",
+ "system-deps 9.0.1",
 ]
 
 [[package]]
@@ -516,7 +516,7 @@ dependencies = [
  "glib-sys",
  "gobject-sys",
  "libc",
- "system-deps",
+ "system-deps 9.0.1",
  "windows-sys",
 ]
 
@@ -1380,7 +1380,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "99b38907e67e40dec9b60f858bcada952598719cb512a13eb13d6cdcd16f8295"
 dependencies = [
  "libc",
- "system-deps",
+ "system-deps 9.0.1",
 ]
 
 [[package]]
@@ -1404,7 +1404,7 @@ checksum = "07595c9ba696bd9819cb6a8df39f08078f3dd679508fe052dd558492c2053834"
 dependencies = [
  "glib-sys",
  "libc",
- "system-deps",
+ "system-deps 9.0.1",
 ]
 
 [[package]]
@@ -1425,7 +1425,7 @@ checksum = "97842c7543828f98aa5583aa54fcda28aa84fa2b0f8c556142177f7bbb638057"
 dependencies = [
  "glib-sys",
  "libc",
- "system-deps",
+ "system-deps 9.0.1",
 ]
 
 [[package]]
@@ -1493,7 +1493,7 @@ dependencies = [
  "graphene-sys",
  "libc",
  "pango-sys",
- "system-deps",
+ "system-deps 9.0.1",
 ]
 
 [[package]]
@@ -1545,7 +1545,7 @@ dependencies = [
  "gsk4-sys",
  "libc",
  "pango-sys",
- "system-deps",
+ "system-deps 9.0.1",
 ]
 
 [[package]]
@@ -1797,7 +1797,7 @@ dependencies = [
  "glib-sys",
  "gobject-sys",
  "libc",
- "system-deps",
+ "system-deps 9.0.1",
 ]
 
 [[package]]
@@ -2062,6 +2062,41 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0d5d4b1981b8bbbb7aed204cae5726d683d5d6ac7e74ec54122ea28f315e7c8"
 
 [[package]]
+name = "sourceview5"
+version = "0.11.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5b64e13e9ae8d8e35529a2d32d80c7ecd60ffb348c1188b5b790676f5d5b50c"
+dependencies = [
+ "futures-channel",
+ "futures-core",
+ "gdk-pixbuf",
+ "gdk4",
+ "gio",
+ "glib",
+ "gtk4",
+ "libc",
+ "pango",
+ "sourceview5-sys",
+]
+
+[[package]]
+name = "sourceview5-sys"
+version = "0.11.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23a6d23d5b5a052b39ad92ff8ab0730cff284378d7f97012368317a5e622452e"
+dependencies = [
+ "gdk-pixbuf-sys",
+ "gdk4-sys",
+ "gio-sys",
+ "glib-sys",
+ "gobject-sys",
+ "gtk4-sys",
+ "libc",
+ "pango-sys",
+ "system-deps 7.0.8",
+]
+
+[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2075,6 +2110,7 @@ dependencies = [
  "gio",
  "glib",
  "gtk4",
+ "sourceview5",
  "strata-core",
 ]
 
@@ -2114,6 +2150,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "system-deps"
+version = "7.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "396a35feb67335377e0251fcbc1092fc85c484bd4e3a7a54319399da127796e7"
+dependencies = [
+ "cfg-expr",
+ "heck",
+ "pkg-config",
+ "toml",
+ "version-compare",
 ]
 
 [[package]]
