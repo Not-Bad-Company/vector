@@ -279,6 +279,7 @@ pub fn list(archive: &Path, inner: &Path) -> io::Result<Vec<Entry>> {
                 kind: if i.dir { Kind::Dir } else { Kind::File },
                 size: if i.dir { 0 } else { i.size },
                 modified: i.modified,
+                added: i.modified,
                 content_type: if i.dir {
                     "inode/directory".into()
                 } else {

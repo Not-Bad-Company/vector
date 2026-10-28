@@ -818,13 +818,18 @@ impl Win {
         let down = s.reverse
             ^ matches!(
                 s.key,
-                vector_core::sort::SortKey::Size | vector_core::sort::SortKey::Modified
+                vector_core::sort::SortKey::Size
+                    | vector_core::sort::SortKey::Modified
+                    | vector_core::sort::SortKey::Added
             );
-        parts.push(format!(
-            "{} {}",
-            s.key.label(),
-            if down { "↓" } else { "↑" }
-        ));
+        let key = if s.key == vector_core::sort::SortKey::Added
+            && vector_core::trash::is_trash(&pane.dir())
+        {
+            "trashed"
+        } else {
+            s.key.label()
+        };
+        parts.push(format!("{key} {}", if down { "↓" } else { "↑" }));
         if let Some(free) = pane.fs_info.get().0 {
             parts.push(format!("{} free", crate::fmt::size(free)));
         }
@@ -873,7 +878,8 @@ impl Win {
             preview: self.preview_box.is_visible(),
             grid: pane.is_grid(),
             show_hidden: o.show_hidden,
-            sort: o.sort,
+            // (the trash's own newest-first order isn't remembered as the general one)
+            sort: pane.remembered_sort(),
             #[cfg(feature = "terminal")]
             terminal: self.term.is_open(),
             #[cfg(not(feature = "terminal"))]

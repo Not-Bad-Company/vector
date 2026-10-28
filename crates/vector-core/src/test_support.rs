@@ -12,6 +12,7 @@ pub fn entry(name: &str, kind: Kind, size: u64, modified: i64) -> Entry {
         kind,
         size,
         modified,
+        added: modified,
         content_type: String::new(),
         hidden: name.starts_with('.'),
         symlink: false,

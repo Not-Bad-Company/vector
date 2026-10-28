@@ -54,6 +54,7 @@ impl Settings {
         s.sort.key = match kf.string(GROUP, "sort").as_deref().unwrap_or("") {
             "size" => SortKey::Size,
             "mtime" => SortKey::Modified,
+            "added" => SortKey::Added,
             "type" => SortKey::Type,
             _ => SortKey::Name,
         };

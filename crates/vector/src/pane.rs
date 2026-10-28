@@ -64,6 +64,10 @@ pub struct Pane {
     measured: RefCell<std::collections::HashSet<String>>,
     /// The folder shown is inside a zip or tar archive (read-only, no sizes, git or watching).
     pub in_archive: Cell<bool>,
+    /// The sort from before the Trash was opened (the Trash shows newest-trashed first).
+    sort_before_trash: Cell<Option<vector_core::sort::SortSpec>>,
+    /// A compact-layout check is waiting for layout to settle.
+    compact_queued: Cell<bool>,
     measure_cancel: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
     /// Free bytes on this folder's file system, and whether it is a network mount.
     pub fs_info: Cell<(Option<u64>, bool)>,
@@ -140,6 +144,8 @@ impl Pane {
             git: RefCell::default(),
             measured: RefCell::default(),
             in_archive: Cell::new(false),
+            sort_before_trash: Cell::new(None),
+            compact_queued: Cell::new(false),
             measure_cancel: RefCell::new(None),
             fs_info: Cell::new((None, false)),
             progress: Cell::new(None),
@@ -164,25 +170,30 @@ impl Pane {
         if let Some(sw) = pane.list.parent().and_downcast::<gtk::ScrolledWindow>() {
             let weak = Rc::downgrade(&pane);
             sw.hadjustment().connect_changed(move |a| {
-                let w = a.page_size();
-                let Some(p) = weak.upgrade().filter(|_| w > 0.0) else {
+                let Some(p) = weak.upgrade().filter(|_| a.page_size() > 0.0) else {
                     return;
                 };
-                // a band around the threshold, so a resize that hovers near it (tiling
-                // animations) doesn't switch back and forth; and never during layout itself
-                let compact = if p.compact.get() {
-                    w < 760.0
-                } else {
-                    w < 700.0
-                };
-                if compact != p.compact.get() {
-                    let weak = Rc::downgrade(&p);
-                    glib::idle_add_local_once(move || {
-                        if let Some(p) = weak.upgrade() {
-                            p.set_compact(compact);
-                        }
-                    });
+                if p.compact_queued.replace(true) {
+                    return;
                 }
+                // decided once layout has settled, from the width at that moment (not the one
+                // that queued it: the first sizes of a new window are tiny); with a band around
+                // the threshold so a resize hovering near it doesn't switch back and forth
+                let (weak, a) = (Rc::downgrade(&p), a.clone());
+                glib::idle_add_local_once(move || {
+                    let Some(p) = weak.upgrade() else { return };
+                    p.compact_queued.set(false);
+                    let w = a.page_size();
+                    if w <= 0.0 {
+                        return;
+                    }
+                    let compact = if p.compact.get() {
+                        w < 760.0
+                    } else {
+                        w < 700.0
+                    };
+                    p.set_compact(compact);
+                });
             });
         }
         pane.connect_signals();
@@ -289,6 +300,13 @@ impl Pane {
 
     pub fn is_grid(&self) -> bool {
         self.grid_mode.get()
+    }
+
+    /// The sort to remember between runs: the one from before the Trash, while it is open.
+    pub fn remembered_sort(&self) -> vector_core::sort::SortSpec {
+        self.sort_before_trash
+            .get()
+            .unwrap_or(self.model.borrow().options().sort)
     }
 
     pub fn set_grid(self: &Rc<Self>, grid: bool) {
@@ -569,10 +587,26 @@ impl Pane {
     /// Lists `dir` from scratch. Nothing here waits on I/O.
     fn load(self: &Rc<Self>, dir: &Path) {
         let opts = self.model.borrow().options().clone();
-        let opts = ViewOptions {
+        let mut opts = ViewOptions {
             filter: String::new(),
             ..opts
         };
+        // the Trash opens with what was trashed last on top; leaving it restores the sort
+        match (
+            vector_core::trash::is_trash(dir),
+            self.sort_before_trash.get(),
+        ) {
+            (true, None) => {
+                self.sort_before_trash.set(Some(opts.sort));
+                opts.sort.key = vector_core::sort::SortKey::Added;
+                opts.sort.reverse = false;
+            }
+            (false, Some(before)) => {
+                self.sort_before_trash.set(None);
+                opts.sort = before;
+            }
+            _ => {}
+        }
         *self.model.borrow_mut() = DirModel::new(dir, opts);
         self.in_archive
             .set(vector_core::archive::split(dir).is_some());
@@ -592,6 +626,8 @@ impl Pane {
         *self.want_cursor.borrow_mut() = None;
         self.store.remove_all();
         self.loading.set(true);
+        // column titles follow the sort and the folder ("trashed" in the Trash)
+        self.build_header();
         self.update_stack();
         self.watcher.replace(None);
         let flat = self.flat.get();
@@ -915,7 +951,7 @@ impl Pane {
         let col = |text: &str, key: SortKey, width: i32, xalign: f32, hexpand: bool| {
             let active = sort.key == key;
             // name and type read a→z, size and date biggest/newest first
-            let natural_down = matches!(key, SortKey::Size | SortKey::Modified);
+            let natural_down = matches!(key, SortKey::Size | SortKey::Modified | SortKey::Added);
             let arrow = if active {
                 if sort.reverse ^ natural_down {
                     " ↓"
@@ -954,6 +990,14 @@ impl Pane {
                 ("name", SortKey::Name),
                 ("size", SortKey::Size),
                 ("modified", SortKey::Modified),
+                (
+                    if vector_core::trash::is_trash(&self.dir()) {
+                        "trashed"
+                    } else {
+                        "added"
+                    },
+                    SortKey::Added,
+                ),
                 ("type", SortKey::Type),
             ] {
                 let l = col(text, key, 0, 0.0, false);
@@ -967,6 +1011,19 @@ impl Pane {
         self.header.append(&icon);
         self.header
             .append(&col("name", SortKey::Name, 16, 0.0, true));
+        // the other date to sort by; the date column shows whichever is chosen
+        let trash = vector_core::trash::is_trash(&self.dir());
+        let added_name = if trash { "trashed" } else { "added" };
+        if !self.compact.get() {
+            let other = if sort.key == SortKey::Added {
+                col("modified", SortKey::Modified, 0, 1.0, false)
+            } else {
+                col(added_name, SortKey::Added, 0, 1.0, false)
+            };
+            other.add_css_class("faint-col");
+            other.set_margin_end(12);
+            self.header.append(&other);
+        }
         let badge = gtk::Label::new(None);
         badge.add_css_class("badge");
         self.header.append(&badge);
@@ -978,7 +1035,11 @@ impl Pane {
         dot.set_opacity(0.0);
         dot.set_visible(!self.compact.get());
         self.header.append(&dot);
-        let date = col("modified", SortKey::Modified, 16, 1.0, false);
+        let date = if sort.key == SortKey::Added {
+            col(added_name, SortKey::Added, 16, 1.0, false)
+        } else {
+            col("modified", SortKey::Modified, 16, 1.0, false)
+        };
         date.set_visible(!self.compact.get());
         self.header.append(&date);
     }
@@ -1492,7 +1553,9 @@ fn row_factory(pane: Weak<Pane>) -> gtk::SignalListItemFactory {
             fmt::size(e.size)
         };
         size.set_text(&s);
-        date.set_text(&fmt::date(e.modified));
+        // the date column shows the date the folder is sorted by
+        let by_added = pane.model.borrow().options().sort.key == vector_core::sort::SortKey::Added;
+        date.set_text(&fmt::date(if by_added { e.added } else { e.modified }));
         date.set_visible(!pane.compact.get());
         dot.set_visible(!pane.compact.get() && !s.is_empty() && e.modified > 0);
     });

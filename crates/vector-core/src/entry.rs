@@ -8,7 +8,7 @@ use gio::prelude::*;
 /// 50 000 file folder is not sniffed file by file.
 pub const ATTRIBUTES: &str = "standard::name,standard::display-name,standard::type,standard::size,\
 standard::is-hidden,standard::is-backup,standard::is-symlink,standard::symlink-target,\
-standard::fast-content-type,time::modified,access::can-execute";
+standard::fast-content-type,time::modified,time::changed,access::can-execute";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Kind {
@@ -28,6 +28,9 @@ pub struct Entry {
     pub size: u64,
     /// Seconds since the Unix epoch, 0 when unknown.
     pub modified: i64,
+    /// When it arrived in its folder: the inode change time, which moving, copying or
+    /// downloading it there sets (as does changing it). In the trash: when it was trashed.
+    pub added: i64,
     pub content_type: String,
     pub hidden: bool,
     pub symlink: bool,
@@ -63,6 +66,8 @@ impl Entry {
         let modified =
             i64::try_from(info.attribute_uint64(gio::FILE_ATTRIBUTE_TIME_MODIFIED)).unwrap_or(0);
         let executable = kind == Kind::File && info.boolean(gio::FILE_ATTRIBUTE_ACCESS_CAN_EXECUTE);
+        let added =
+            i64::try_from(info.attribute_uint64(gio::FILE_ATTRIBUTE_TIME_CHANGED)).unwrap_or(0);
         Entry {
             path: dir.join(&raw),
             // `.hidden` files are applied by the model, which re-reads them when they change;
@@ -80,6 +85,7 @@ impl Entry {
             name,
             kind,
             modified,
+            added: if added > 0 { added } else { modified },
             symlink,
             broken,
             executable,

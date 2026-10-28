@@ -166,6 +166,7 @@ pub fn parse(line: &str) -> Result<Command, ParseError> {
                 "name" => SortKey::Name,
                 "size" => SortKey::Size,
                 "mtime" | "modified" | "date" => SortKey::Modified,
+                "added" | "trashed" | "new" => SortKey::Added,
                 "type" | "ext" => SortKey::Type,
                 _ => {
                     return Err(ParseError::BadArg {

@@ -12,6 +12,20 @@ pub fn is_trash(dir: &Path) -> bool {
     dir == files_dir()
 }
 
+/// When `item` (in the trash) was trashed, as Unix seconds.
+pub fn trashed_at(item: &Path) -> Option<i64> {
+    let (_, when) = origin(item)?;
+    let (date, time) = when.split_once(' ')?;
+    let d: Vec<i32> = date.split('-').filter_map(|p| p.parse().ok()).collect();
+    let t: Vec<f64> = time.split(':').filter_map(|p| p.parse().ok()).collect();
+    let (&[y, mo, da], &[h, mi, s]) = (d.as_slice(), t.as_slice()) else {
+        return None;
+    };
+    glib::DateTime::from_local(y, mo, da, h as i32, mi as i32, s)
+        .ok()
+        .map(|dt| dt.to_unix())
+}
+
 /// Where a trashed item came from and when it was trashed, from its `.trashinfo`.
 pub fn origin(item: &Path) -> Option<(PathBuf, String)> {
     let name = item.file_name()?;

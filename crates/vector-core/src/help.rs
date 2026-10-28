@@ -183,6 +183,14 @@ pub const FIND: &[Topic] = &[
                 "click a column  :sort name|size|mtime|type",
                 "sort; click again or add rev to reverse",
             ),
+            (
+                "added  :sort added",
+                "newest arrivals first: when a file was moved, copied or downloaded into the folder",
+            ),
+            (
+                "Trash",
+                "opens with what you trashed last on top (the date column says trashed)",
+            ),
             (":flat", "every file below this folder in one list"),
             (
                 ":biggest [n] [here|/|all]",

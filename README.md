@@ -353,7 +353,7 @@ are on the keyboard. Press `?` in Vector Find for the same list.
 | `:grep pattern` | search file contents below this folder |
 | `:flat` | every file below this folder in one list |
 | `:biggest [n] [here\|/\|all]` | the biggest files here, on the system disk, or on every drive |
-| `:sort name\|size\|mtime\|type [rev]` | sort (`:sort!` or `rev` reverses) |
+| `:sort name\|size\|mtime\|added\|type [rev]` | sort (`:sort!` or `rev` reverses); `added` puts what arrived in the folder last (moved, copied, downloaded) on top; the Trash opens sorted by when things were trashed |
 | `:filter expr` | set the filter |
 | `:hidden [on\|off]` | hidden files |
 | `:view [list\|grid]` | list or grid view (no argument switches) |

@@ -11,6 +11,8 @@ pub enum SortKey {
     Name,
     Size,
     Modified,
+    /// When it arrived in the folder (or was trashed, in the trash).
+    Added,
     Type,
 }
 
@@ -20,6 +22,7 @@ impl SortKey {
             SortKey::Name => "name",
             SortKey::Size => "size",
             SortKey::Modified => "mtime",
+            SortKey::Added => "added",
             SortKey::Type => "type",
         }
     }
@@ -60,6 +63,7 @@ pub fn compare(a: &Entry, b: &Entry, spec: &SortSpec) -> Ordering {
         SortKey::Name => Ordering::Equal,
         SortKey::Size => b.size.cmp(&a.size),
         SortKey::Modified => b.modified.cmp(&a.modified),
+        SortKey::Added => b.added.cmp(&a.added),
         SortKey::Type => cmp_ignore_case(a.extension(), b.extension()),
     };
     let ord = by_key.then_with(|| natural_cmp(&a.name, &b.name));
@@ -117,6 +121,32 @@ fn split_run(s: &str) -> (&str, &str) {
         .map(|(i, _)| i)
         .unwrap_or(s.len());
     s.split_at(end)
+}
+
+#[cfg(test)]
+mod added_tests {
+    use super::*;
+    use crate::entry::Kind;
+    use crate::test_support::entry;
+
+    #[test]
+    fn added_puts_what_arrived_last_first() {
+        let mut old = entry("old.txt", Kind::File, 1, 100);
+        old.added = 100;
+        // modified long ago, but moved in just now
+        let mut moved = entry("moved.txt", Kind::File, 1, 50);
+        moved.added = 900;
+        let spec = SortSpec {
+            key: SortKey::Added,
+            ..SortSpec::default()
+        };
+        assert_eq!(compare(&moved, &old, &spec), Ordering::Less);
+        let by_mtime = SortSpec {
+            key: SortKey::Modified,
+            ..SortSpec::default()
+        };
+        assert_eq!(compare(&moved, &old, &by_mtime), Ordering::Greater);
+    }
 }
 
 #[cfg(test)]

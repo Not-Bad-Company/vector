@@ -71,7 +71,16 @@ pub fn spawn(dir: &Path) -> Listing {
         .name("vector-list".into())
         .spawn(move || {
             let _ = tx.send_blocking(ListEvent::HiddenNames(read_hidden_file(&path)));
-            let last = match list_blocking(&path, &worker_cancel, |batch| {
+            // in the trash, "added" is when each item was trashed
+            let trash = crate::trash::is_trash(&path);
+            let last = match list_blocking(&path, &worker_cancel, |mut batch| {
+                if trash {
+                    for e in &mut batch {
+                        if let Some(t) = crate::trash::trashed_at(&e.path) {
+                            e.added = t;
+                        }
+                    }
+                }
                 tx.send_blocking(ListEvent::Batch(batch)).is_ok()
             }) {
                 Ok(()) => ListEvent::Done,
