@@ -316,7 +316,7 @@ impl Card {
         let block = ui::text(&shown, &["htitle"]);
         block.set_valign(gtk::Align::Fill);
         head.append(&block);
-        head.append(&crate::bar::slant(false, crate::bar::Kind::Block, crate::bar::Kind::Plain, &t));
+        head.append(&crate::bar::slant(false, crate::bar::Kind::Block, crate::bar::Kind::Plain, &t, Default::default()));
         let d = ui::label("", &["hdetail"]);
         d.set_margin_start(6);
         d.set_hexpand(true);

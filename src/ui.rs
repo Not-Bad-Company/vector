@@ -84,7 +84,7 @@ pub fn head(title: &str, detail: &str) -> (gtk::Box, gtk::Label) {
     t.set_valign(gtk::Align::Fill);
     b.append(&t);
     let theme = crate::panel::current_theme();
-    b.append(&crate::bar::slant(false, crate::bar::Kind::Block, crate::bar::Kind::Plain, &theme).tap(|s| s.set_mode_accent()));
+    b.append(&crate::bar::slant(false, crate::bar::Kind::Block, crate::bar::Kind::Plain, &theme, Default::default()).tap(|s| s.set_mode_accent()));
     let d = label(detail, &["hdetail"]);
     ellipsize(&d, 44);
     d.set_hexpand(true);

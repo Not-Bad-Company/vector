@@ -2,6 +2,7 @@
 //! solid blocks in the mode colour, tinted segments next to them, plain
 //! items in between, joined by slanted edges.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use gtk::prelude::*;
@@ -35,10 +36,27 @@ pub fn kind_color(t: &Theme, k: Kind) -> Option<gdk::RGBA> {
     }
 }
 
+/// The block item beside a slant, for its hover and open tint. Filled in by `attach`.
+pub type Neighbour = Rc<RefCell<Option<gtk::glib::WeakRef<gtk::Widget>>>>;
+
+/// Outline of one half of a slant: the triangle (`tri`) or the rest, in a `w` x `h` box.
+fn half(cr: &gtk::cairo::Context, w: f64, h: f64, right: bool, tri: bool) {
+    let pts = match (right, tri) {
+        (true, true) => [(w, 0.0), (w, h), (0.0, h)],
+        (true, false) => [(0.0, 0.0), (w, 0.0), (0.0, h)],
+        (false, true) => [(0.0, 0.0), (w, 0.0), (0.0, h)],
+        (false, false) => [(w, 0.0), (w, h), (0.0, h)],
+    };
+    cr.move_to(pts[0].0, pts[0].1);
+    cr.line_to(pts[1].0, pts[1].1);
+    cr.line_to(pts[2].0, pts[2].1);
+    cr.close_path();
+}
+
 /// A slanted edge between two zones. `right`: the edge of a right-side
 /// zone (`/`), else of a left-side one (`\`). Both halves are painted here,
-/// so translucent segments don't stack up.
-pub fn slant(right: bool, before: Kind, after: Kind, t: &Rc<Theme>) -> gtk::DrawingArea {
+/// so translucent segments don't stack up. `nb` is the block item beside it, if any.
+pub fn slant(right: bool, before: Kind, after: Kind, t: &Rc<Theme>, nb: Neighbour) -> gtk::DrawingArea {
     let d = gtk::DrawingArea::new();
     d.add_css_class("slant");
     d.set_content_width(10);
@@ -50,38 +68,50 @@ pub fn slant(right: bool, before: Kind, after: Kind, t: &Rc<Theme>) -> gtk::Draw
         let (tri, rest) = if right { (after, before) } else { (before, after) };
         let accent = area.has_css_class("accent-slant");
         let color = |k: Kind| if accent && k == Kind::Block { Some(rgba(&t.accent, 1.0)) } else { kind_color(&t, k) };
-        let paint = |cr: &gtk::cairo::Context, k: Kind| match color(k) {
-            Some(c) => {
-                cr.set_source_color(&c);
+        let paint = |cr: &gtk::cairo::Context, k: Kind, is_tri: bool| {
+            half(cr, w, h, right, is_tri);
+            match color(k) {
+                Some(c) => {
+                    cr.set_source_color(&c);
+                    let _ = cr.fill();
+                }
+                None => cr.new_path(),
+            }
+        };
+        paint(cr, rest, false);
+        paint(cr, tri, true);
+        // a hovered or open block item tints its half of the slant too, as the CSS tints the item
+        let item = nb.borrow().as_ref().and_then(|r| r.upgrade());
+        if let Some(item) = item {
+            let open = item.has_css_class("open");
+            let hover = item.state_flags().contains(gtk::StateFlags::PRELIGHT) && item.has_css_class("clickable");
+            let alpha = if open { 0.20 } else if hover { 0.14 } else { 0.0 };
+            if alpha > 0.0 {
+                half(cr, w, h, right, tri == Kind::Block);
+                cr.set_source_color(&rgba(&t.background, alpha));
                 let _ = cr.fill();
             }
-            None => cr.new_path(),
-        };
-        // the "rest" half
-        if right {
-            cr.move_to(0.0, 0.0);
-            cr.line_to(w, 0.0);
-            cr.line_to(0.0, h);
-        } else {
-            cr.move_to(w, 0.0);
-            cr.line_to(w, h);
-            cr.line_to(0.0, h);
         }
-        cr.close_path();
-        paint(cr, rest);
-        if right {
-            cr.move_to(w, 0.0);
-            cr.line_to(w, h);
-            cr.line_to(0.0, h);
-        } else {
-            cr.move_to(0.0, 0.0);
-            cr.line_to(w, 0.0);
-            cr.line_to(0.0, h);
-        }
-        cr.close_path();
-        paint(cr, tri);
     });
     d
+}
+
+/// Links a slant to the block item beside it, so it redraws when that item
+/// gets hovered, opened or closed.
+pub fn attach(s: &gtk::DrawingArea, nb: &Neighbour, item: &gtk::Widget) {
+    *nb.borrow_mut() = Some(item.downgrade());
+    let weak = s.downgrade();
+    let w2 = weak.clone();
+    item.connect_state_flags_changed(move |_, _| {
+        if let Some(s) = weak.upgrade() {
+            s.queue_draw();
+        }
+    });
+    item.connect_notify_local(Some("css-classes"), move |_, _| {
+        if let Some(s) = w2.upgrade() {
+            s.queue_draw();
+        }
+    });
 }
 
 pub fn build(
@@ -140,15 +170,23 @@ pub fn build(
             }
         }
         let mut prev = Kind::Plain;
+        // last item of the previous zone, for a slant that follows a block
+        let mut prev_last: Option<gtk::Widget> = None;
         let n = zones.len();
         for (zi, (k, ms, ns)) in zones.into_iter().enumerate() {
             // edge into this zone (not at the screen edge)
             let at_edge = (i == 0 && zi == 0) || (i == 2 && zi == n);
+            let mut lead = None;
             if prev != k && !at_edge {
                 // left side leans `\`, right side `/`; the centre opens with `/` and closes with `\`
-                let s = slant(right || (i == 1 && prev == Kind::Plain), prev, k, theme);
+                let nb = Neighbour::default();
+                let s = slant(right || (i == 1 && prev == Kind::Plain), prev, k, theme, nb.clone());
+                if let (Kind::Block, Some(w)) = (prev, &prev_last) {
+                    attach(&s, &nb, w);
+                }
                 slants.push(s.clone());
                 b.append(&s);
+                lead = Some((s, nb));
             }
             let z = ui::hbox(0, &["zone"]);
             z.add_css_class(match k {
@@ -157,6 +195,8 @@ pub fn build(
                 Kind::Block => "block",
             });
             let dividers = i == 1 && k == Kind::Plain;
+            let mut first: Option<gtk::Widget> = None;
+            let mut last: Option<gtk::Widget> = None;
             for (j, m) in ms.iter().enumerate() {
                 if dividers && j > 0 {
                     z.append(&ui::text("·", &["divider"]));
@@ -165,13 +205,24 @@ pub fn build(
                 w.set_valign(gtk::Align::Fill);
                 w.add_css_class(&format!("m-{}", ns[j].replace(':', "-")));
                 z.append(&w);
+                first.get_or_insert_with(|| w.clone());
+                last = Some(w);
+            }
+            // a block zone's edge item is the neighbour of the slant leading into it
+            if let (Kind::Block, Some((s, nb)), Some(w)) = (k, &lead, &first) {
+                attach(s, nb, w);
             }
             b.append(&z);
             prev = k;
+            prev_last = last;
         }
         // trailing edge out of the last zone on the left/centre side
         if i < 2 && prev != Kind::Plain {
-            let s = slant(false, prev, Kind::Plain, theme);
+            let nb = Neighbour::default();
+            let s = slant(false, prev, Kind::Plain, theme, nb.clone());
+            if let (Kind::Block, Some(w)) = (prev, &prev_last) {
+                attach(&s, &nb, w);
+            }
             slants.push(s.clone());
             b.append(&s);
         }
