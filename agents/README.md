@@ -23,6 +23,24 @@ commands.
 | **aisudo** | The root commands agents may run without a password: services, logs, official package installs, reading non-secret system files, diagnostics. The allowlist is a root-owned script that agents can't change. Anything else still needs you. |
 | **Skills** | `ai-workspace`, `ai-browser` and `crew` teach agents when and how to use all of the above, so they get it right without being told. |
 
+## Checking on your agents from anywhere
+
+Everything works from any shell, including over SSH from your phone, with no
+extra Claude session and without interrupting the agent:
+
+```sh
+crew                      # every agent: working or idle, task, last actions, files, sub-agents
+crew show NAME            # status report: what you last asked, its plan, what it said, what it did
+crew watch NAME           # follow it live
+crew ask NAME "how far are you with the deploy?"   # a real answer from the model, waits for it
+crew send NAME "also update the README"            # an instruction, no waiting
+```
+
+`show` and `watch` read the agent's transcript, so they're instant and cost
+nothing. `ask` and `send` reach the agent at its next step (or wake it when
+idle). They arrive marked as coming from you, the owner, so it treats them as
+your words and answers with `crew reply`.
+
 ## Install
 
 ```sh

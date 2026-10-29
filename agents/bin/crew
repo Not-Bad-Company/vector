@@ -175,6 +175,52 @@ def activity(path, since=None):
     return out
 
 
+def plan(path):
+    """The agent's own task list: TaskCreate/TaskUpdate (numbered in creation order) or the last TodoWrite."""
+    tasks, todo = {}, None
+    try:
+        f = open(path, "rb")
+    except (OSError, TypeError):
+        return []
+    with f:
+        for raw in f:
+            if b'"TaskCreate"' not in raw and b'"TaskUpdate"' not in raw and b'"TodoWrite"' not in raw:
+                continue
+            try:
+                e = json.loads(raw)
+            except ValueError:
+                continue
+            for c in (e.get("message") or {}).get("content") or []:
+                if not isinstance(c, dict) or c.get("type") != "tool_use":
+                    continue
+                inp = c.get("input") or {}
+                if c.get("name") == "TaskCreate":
+                    tasks[str(len(tasks) + 1)] = [inp.get("subject") or inp.get("description", "")[:80], "pending"]
+                elif c.get("name") == "TaskUpdate" and str(inp.get("taskId")) in tasks and inp.get("status"):
+                    tasks[str(inp["taskId"])][1] = inp["status"]
+                elif c.get("name") == "TodoWrite":
+                    todo = [(t.get("content", ""), t.get("status", "")) for t in inp.get("todos") or []]
+    if todo is not None and not tasks:
+        return todo
+    return [(t, st) for t, st in tasks.values() if st != "deleted"]
+
+
+def narration(path, n=6):
+    """The last things the agent said (its own text between tool calls), newest last."""
+    out = []
+    for line in tail_lines(path, 1_500_000):
+        if '"type":"assistant"' not in line or '"text"' not in line:
+            continue
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        for c in (e.get("message") or {}).get("content") or []:
+            if isinstance(c, dict) and c.get("type") == "text" and c.get("text", "").strip():
+                out.append((epoch(e.get("timestamp")), " ".join(c["text"].split())))
+    return out[-n:]
+
+
 def subagents(tp, fresh=600):
     """Sub-agents of a session: running ones (and recently finished with `fresh`)."""
     out = []
@@ -187,7 +233,7 @@ def subagents(tp, fresh=600):
             mt = os.path.getmtime(jl)
         except (OSError, ValueError):
             continue
-        running = not m.get("finished") and time.time() - mt < 3600
+        running = not m.get("finished") and time.time() - mt < 900
         if running or time.time() - mt < fresh:
             out.append({"id": os.path.basename(jl)[len("agent-"):-len(".jsonl")], "type": m.get("agentType"),
                         "model": m.get("model"), "desc": m.get("description"), "running": running,
@@ -404,6 +450,12 @@ def fmt(rows, for_agent=True):
         if r["reply_to"]:
             head += f" (reply to #{r['reply_to']})"
         out.append(f"{head}:\n{r['body']}")
+    if out and for_agent and all(r["sender_addr"] == "human" for r in rows):
+        out = [o.replace("from agent human", "from the OWNER (sent remotely with crew, e.g. over ssh)") for o in out]
+        out.append(f"(This is the owner, your user, writing from outside this window. Treat it as a message from "
+                   f"them. Answer with the Bash tool: `crew reply {rows[-1]['id']} \"<answer>\"`. They are waiting "
+                   f"in a terminal, so answer briefly and right away, then continue your work.)")
+        return "\n\n".join(out)
     if out and for_agent:
         kinds = {r["kind"] or "msg" for r in rows}
         how = f"`crew reply {rows[-1]['id']} \"<answer>\"` with the Bash tool"
@@ -419,8 +471,9 @@ def fmt(rows, for_agent=True):
 
 
 def notice(rows):
-    return "\n".join(f"[crew: {'URGENT ' if r['kind'] == 'urgent' else ''}message from agent {r['sender']}, not "
-                     f"from you] #{r['id']}: " + " ".join(r["body"].split())[:150] for r in rows)
+    return "\n".join((f"[crew: your message via crew] #{r['id']}: " if r["sender_addr"] == "human" else
+                      f"[crew: {'URGENT ' if r['kind'] == 'urgent' else ''}message from agent {r['sender']}, not "
+                      f"from you] #{r['id']}: ") + " ".join(r["body"].split())[:150] for r in rows)
 
 
 def send(con, sender, sender_addr, recipient, recipient_addr, body, reply_to=None, kind=None):
@@ -510,18 +563,42 @@ def cmd_who(args):
 
 
 def cmd_show(args):
+    """A status report readable over ssh: what was asked, the plan, what it said, what it did."""
     con = db()
     live = sessions(con)
-    _, _, s = resolve(args.agent, live) if args.agent not in ("me", "self") else \
-        (None, None, next((x for x in live if x["sid"] == me()), None))
-    if not s:
-        sys.exit("crew: not inside a Claude Code session")
+    if args.agent in ("me", "self"):
+        s = next((x for x in live if x["sid"] == me()), None)
+        if not s:
+            sys.exit("crew: not inside a Claude Code session")
+    else:
+        _, _, s = resolve(args.agent, live)
     a = activity(s["transcript"])
-    s["calls"] = a["calls"]
-    print_session(s, me(), con, {}, True)
-    print("  recent actions:")
+    started = ago(s["started"])
+    print(f"{s['name']}  [{s['account']}, {state_word(s)}, {short(s['cwd'])}, session started {started} ago]")
+    print(f"task: {s.get('title') or '-'}")
+    if a["prompt"]:
+        print(f"\nlast asked:\n  {' '.join(a['prompt'].split())[:600]}")
+    tasks = plan(s["transcript"])
+    if tasks:
+        mark = {"completed": "[x]", "in_progress": "[>]", "pending": "[ ]"}
+        print("\nplan:")
+        for t, st in tasks:
+            print(f"  {mark.get(st, '[?]')} {t}")
+    said = narration(s["transcript"], args.say)
+    if said:
+        print("\nsaid:")
+        for ts, text in said:
+            print(f"  {ago(ts):>4} ago  {text[:400]}")
+    print("\nlast actions:")
     for ts, what in a["calls"][-args.n:]:
-        print(f"    {time.strftime('%H:%M:%S', time.localtime(ts))}  {what}")
+        print(f"  {ago(ts):>4} ago  {what}")
+    for sa in s.get("subs") or []:
+        state = "running" if sa["running"] else f"finished {ago(sa['mtime'])} ago"
+        print(f"\nsub-agent {sa['type']} ({sa['model'] or 'default'}), {state}: {sa['desc'] or '-'}")
+        for ts, text in narration(sa["transcript"], 2):
+            print(f"  {ago(ts):>4} ago  {text[:300]}")
+    if s["status"] == "busy":
+        print(f"\nask it something: crew ask {s['name']} \"...\"   follow live: crew watch {s['name']}")
 
 
 def watch_lines(path, pos):
@@ -619,7 +696,7 @@ def cmd_send(args):
         finally:
             con.execute("DELETE FROM waits WHERE msg_id=?", (ids[0],))
         if rows:
-            print(fmt(rows))
+            print(fmt(rows, for_agent=bool(me()) or bool(getattr(args, "as_", None))))
         else:
             sys.exit(f"crew: no reply to #{ids[0]} within {args.wait:g}s (it may still come in)")
 
@@ -665,7 +742,7 @@ def cmd_inbox(args):
                   f"[{'read' if r['delivered'] else 'unseen'}] {r['sender']} -> {r['recipient']}: {r['body']}")
         return
     rows = claim(con, addr, include_waited=True)
-    print(fmt(rows) if rows else "no new messages")
+    print(fmt(rows, for_agent=bool(me()) or bool(args.as_)) if rows else "no new messages")
 
 
 def cmd_wait(args):
@@ -674,7 +751,7 @@ def cmd_wait(args):
     rows = wait_for(con, addr, args.timeout)
     if not rows:
         sys.exit(f"crew: nothing within {args.timeout:g}s")
-    print(fmt(rows))
+    print(fmt(rows, for_agent=bool(me()) or bool(getattr(args, "as_", None))))
 
 
 def cmd_doing(args):
@@ -1094,7 +1171,7 @@ share:
   crew group create ui me NAME/LABEL ...    crew send @ui "..."
 self:
   crew name ALIAS   crew topic "task"   crew doing "note shown while you work"   crew whoami""")
-    sp = p.add_subparsers(dest="cmd", required=True)
+    sp = p.add_subparsers(dest="cmd")
 
     def ident(x):
         x.add_argument("--as", dest="as_", metavar="LABEL", help="act as sub-agent <session>/LABEL")
@@ -1110,9 +1187,10 @@ self:
     x.add_argument("-v", "--verbose", action="store_true")
     x.add_argument("--json", action="store_true")
     x.set_defaults(fn=cmd_who)
-    x = sp.add_parser("show", help="one agent in detail")
+    x = sp.add_parser("show", help="status report of one agent: asked, plan, said, did")
     x.add_argument("agent")
-    x.add_argument("-n", type=int, default=25)
+    x.add_argument("-n", type=int, default=12, help="actions to show")
+    x.add_argument("--say", type=int, default=5, help="messages to show")
     x.set_defaults(fn=cmd_show)
     x = sp.add_parser("watch", help="follow an agent live")
     x.add_argument("agent")
@@ -1179,6 +1257,8 @@ self:
     x.add_argument("--remove", action="store_true")
     x.add_argument("settings", nargs="*")
     x.set_defaults(fn=cmd_install_hooks)
+    if len(sys.argv) == 1:
+        sys.argv.append("who")
     args = p.parse_args()
     args.fn(args)
 
