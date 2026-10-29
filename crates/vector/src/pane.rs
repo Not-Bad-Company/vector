@@ -1041,8 +1041,17 @@ impl Pane {
         let icon = gtk::Label::new(None);
         icon.add_css_class("icon");
         self.header.append(&icon);
-        self.header
-            .append(&col("name", SortKey::Name, 16, 0.0, true));
+        let name = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        name.set_hexpand(true);
+        name.append(&col("name", SortKey::Name, 0, 0.0, false));
+        // no type column, but the key belongs with the others (the grid has it too)
+        let kind = col("type", SortKey::Type, 0, 0.0, false);
+        kind.set_margin_start(12);
+        if sort.key != SortKey::Type {
+            kind.set_opacity(0.35);
+        }
+        name.append(&kind);
+        self.header.append(&name);
         let badge = gtk::Label::new(None);
         badge.add_css_class("badge");
         self.header.append(&badge);
@@ -1060,9 +1069,16 @@ impl Pane {
         let date = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         date.set_halign(gtk::Align::End);
         date.set_size_request(-1, -1);
-        let modified = col("modified", SortKey::Modified, 0, 1.0, false);
+        // narrow window: the rows drop the date column, but its two sort keys stay
+        // reachable here under short names
+        let compact = self.compact.get();
+        let modified = col(if compact { "mod" } else { "modified" }, SortKey::Modified, 0, 1.0, false);
         let added = col(
-            if trash { "trashed" } else { "added" },
+            match (trash, compact) {
+                (true, _) => "trashed",
+                (false, true) => "add",
+                (false, false) => "added",
+            },
             SortKey::Added,
             0,
             1.0,
@@ -1079,7 +1095,9 @@ impl Pane {
         date.append(&modified);
         date.append(&between);
         date.append(&added);
-        date.set_visible(!self.compact.get());
+        if compact {
+            date.set_margin_start(8);
+        }
         self.header.append(&date);
     }
 
