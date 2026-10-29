@@ -33,20 +33,26 @@ pub fn dispatch(args: &str) {
     });
 }
 
-type Listener = Box<dyn Fn(&str, &str) -> bool>;
+type Listener = (u64, Box<dyn Fn(&str, &str) -> bool>);
 
 thread_local! {
     static LISTENERS: std::cell::RefCell<Vec<Listener>> = std::cell::RefCell::default();
     static STARTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static NEXT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// Calls `f(name, data)` for every Hyprland event (`name>>data`). One socket
 /// is shared by all listeners and reconnects if Hyprland restarts it.
-/// `f` returns false once its owner is gone, which unregisters it.
-pub fn events(f: impl Fn(&str, &str) -> bool + 'static) {
-    LISTENERS.with(|l| l.borrow_mut().push(Box::new(f)));
+/// `f` returns false once its owner is gone, which unregisters it; dropping
+/// the returned guard unregisters it too.
+pub fn events(f: impl Fn(&str, &str) -> bool + 'static) -> Events {
+    let id = NEXT.with(|n| {
+        n.set(n.get() + 1);
+        n.get()
+    });
+    LISTENERS.with(|l| l.borrow_mut().push((id, Box::new(f))));
     if STARTED.with(|s| s.replace(true)) {
-        return;
+        return Events(id);
     }
     let (tx, rx) = async_channel::unbounded::<String>();
     std::thread::spawn(move || {
@@ -68,7 +74,7 @@ pub fn events(f: impl Fn(&str, &str) -> bool + 'static) {
         while let Ok(line) = rx.recv().await {
             if let Some((name, data)) = line.split_once(">>") {
                 let mut list = LISTENERS.with(|l| std::mem::take(&mut *l.borrow_mut()));
-                list.retain(|f| f(name, data));
+                list.retain(|(_, f)| f(name, data));
                 // listeners added while dispatching went into the fresh list
                 LISTENERS.with(|l| {
                     let mut cur = l.borrow_mut();
@@ -78,4 +84,19 @@ pub fn events(f: impl Fn(&str, &str) -> bool + 'static) {
             }
         }
     });
+    Events(id)
+}
+
+/// Keeps a listener registered; dropping it removes the listener.
+pub struct Events(u64);
+
+impl Drop for Events {
+    fn drop(&mut self) {
+        let id = self.0;
+        let _ = LISTENERS.try_with(|l| {
+            if let Ok(mut l) = l.try_borrow_mut() {
+                l.retain(|(i, _)| *i != id);
+            }
+        });
+    }
 }

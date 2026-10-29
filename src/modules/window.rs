@@ -18,7 +18,7 @@ struct Inner {
     current: RefCell<(String, String)>,
 }
 
-pub struct Window(Rc<Inner>);
+pub struct Window(Rc<Inner>, #[allow(dead_code)] hypr::Events);
 
 impl Window {
     pub fn new(ctx: &Ctx) -> Window {
@@ -40,7 +40,7 @@ impl Window {
             Some(s.upcast())
         });
         let w = Rc::downgrade(&inner);
-        hypr::events(move |name, data| {
+        let ev = hypr::events(move |name, data| {
             let Some(i) = w.upgrade() else { return false };
             if name == "activewindow" {
                 let (class, title) = data.split_once(',').unwrap_or((data, ""));
@@ -51,7 +51,7 @@ impl Window {
             true
         });
         inner.query();
-        Window(inner)
+        Window(inner, ev)
     }
 }
 

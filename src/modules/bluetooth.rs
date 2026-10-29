@@ -364,12 +364,20 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
                     c2.call(Some(BLUEZ), &a, "org.bluez.Adapter1", "StopDiscovery", None, None, gio::DBusCallFlags::NONE, 2000, gio::Cancellable::NONE, |_| {});
                 }
             }
-            if s.agent_ok {
-                let path = glib::variant::ObjectPath::try_from(AGENT_PATH).expect("static path");
-                let _ = c2.call_sync(Some(BLUEZ), "/org/bluez", "org.bluez.AgentManager1", "UnregisterAgent", Some(&(path,).to_variant()), None, gio::DBusCallFlags::NONE, 1000, gio::Cancellable::NONE);
-            }
-            if let Some(id) = s.agent.take() {
-                let _ = c2.unregister_object(id);
+            // tell the daemon first (async: closing must not wait on it), then drop our object
+            let registered = s.agent_ok;
+            let id = s.agent.take();
+            let path = glib::variant::ObjectPath::try_from(AGENT_PATH).expect("static path");
+            let c3 = c2.clone();
+            let done = move |_: Result<glib::Variant, glib::Error>| {
+                if let Some(id) = id {
+                    let _ = c3.unregister_object(id);
+                }
+            };
+            if registered {
+                c2.call(Some(BLUEZ), "/org/bluez", "org.bluez.AgentManager1", "UnregisterAgent", Some(&(path,).to_variant()), None, gio::DBusCallFlags::NONE, 1000, gio::Cancellable::NONE, done);
+            } else {
+                done(Ok(().to_variant()));
             }
         });
     }

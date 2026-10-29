@@ -401,11 +401,20 @@ fn wifi_panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
         let (c2, ps2) = (conn.clone(), ps.clone());
         p.on_close(move || {
             let mut s = ps2.borrow_mut();
-            if s.agent_ok == Some(true) {
-                let _ = c2.call_sync(Some(IWD), "/net/connman/iwd", "net.connman.iwd.AgentManager", "UnregisterAgent", Some(&(glib::variant::ObjectPath::try_from(AGENT_PATH).expect("static path"),).to_variant()), None, gio::DBusCallFlags::NONE, 1000, gio::Cancellable::NONE);
-            }
-            if let Some(id) = s.agent.take() {
-                let _ = c2.unregister_object(id);
+            // tell the daemon first (async: closing must not wait on it), then drop our object
+            let registered = s.agent_ok == Some(true);
+            let id = s.agent.take();
+            let path = glib::variant::ObjectPath::try_from(AGENT_PATH).expect("static path");
+            let c3 = c2.clone();
+            let done = move |_: Result<glib::Variant, glib::Error>| {
+                if let Some(id) = id {
+                    let _ = c3.unregister_object(id);
+                }
+            };
+            if registered {
+                c2.call(Some(IWD), "/net/connman/iwd", "net.connman.iwd.AgentManager", "UnregisterAgent", Some(&(path,).to_variant()), None, gio::DBusCallFlags::NONE, 1000, gio::Cancellable::NONE, done);
+            } else {
+                done(Ok(().to_variant()));
             }
         });
     }

@@ -35,7 +35,7 @@ struct Inner {
     pending: std::cell::Cell<bool>,
 }
 
-pub struct Workspaces(Rc<Inner>);
+pub struct Workspaces(Rc<Inner>, #[allow(dead_code)] hypr::Events);
 
 impl Workspaces {
     pub fn new(ctx: &Ctx) -> Workspaces {
@@ -62,7 +62,7 @@ impl Workspaces {
         inner.query();
         let w = Rc::downgrade(&inner);
         // the event socket is shared by every module instance through this closure
-        hypr::events(move |name, data| {
+        let ev = hypr::events(move |name, data| {
             let Some(i) = w.upgrade() else { return false };
             match name {
                 "urgent" => {
@@ -95,7 +95,7 @@ impl Workspaces {
         });
         // safety net in case an event was missed
         util::every(5000, &inner, |i| i.query());
-        Workspaces(inner)
+        Workspaces(inner, ev)
     }
 }
 

@@ -71,7 +71,7 @@ impl Theme {
         let text = util::read(theme_file()).map(|base| format!("{base}\n{user}"));
         let mut bar_warn = None;
         let mut bar_crit = None;
-        for line in user.lines() {
+        for line in text.as_deref().unwrap_or(&user).lines() {
             if let Some((k, v)) = line.split_once('=') {
                 let v = v.trim().trim_matches('"').to_lowercase();
                 match k.trim() {

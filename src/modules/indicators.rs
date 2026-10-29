@@ -39,6 +39,7 @@ struct Inner {
     streams: RefCell<Vec<util::Stream>>,
     mic_busy: Cell<bool>,
     vm_pid: Cell<Option<u32>>,
+    mako_listener: Cell<u64>,
     order: Vec<String>,
     /// the mode block is on the bar: these states show there instead of as icons
     modes: bool,
@@ -93,6 +94,7 @@ impl Indicators {
             streams: RefCell::default(),
             mic_busy: Cell::new(false),
             vm_pid: Cell::new(None),
+            mako_listener: Cell::new(0),
             order: o
                 .list("show")
                 .unwrap_or_else(|| ["voxtype", "recording", "idle", "sleeplock", "win11", "dnd", "mic", "camera"].iter().map(|s| s.to_string()).collect()),
@@ -157,11 +159,12 @@ impl Indicators {
         // do-not-disturb: mako signals
         let m = mako::get();
         let w = Rc::downgrade(&inner);
-        m.changed.connect(move || {
+        let id = m.changed.connect(move || {
             if let Some(i) = w.upgrade() {
                 i.show(&i.dnd, M_SILENT, mako::get().dnd());
             }
         });
+        inner.mako_listener.set(id);
         inner.show(&inner.dnd, M_SILENT, m.dnd());
 
         // voxtype streams its own state
@@ -213,6 +216,12 @@ impl Indicators {
         util::every(10_000, &inner, |i| i.poll_cam());
         util::every(5000, &inner, |i| i.poll_win());
         Indicators(inner)
+    }
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        mako::get().changed.disconnect(self.mako_listener.get());
     }
 }
 
