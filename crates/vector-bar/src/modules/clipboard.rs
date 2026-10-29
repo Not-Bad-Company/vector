@@ -131,10 +131,10 @@ fn edit(c: &Clip, delete: bool) -> bool {
     }
     if delete {
         let gone = hist.remove(c.index);
-        if let Some(fp) = gone["filePath"].as_str() {
-            if fp.starts_with(&*clipse_dir().to_string_lossy()) {
-                let _ = std::fs::remove_file(fp);
-            }
+        if let Some(fp) = gone["filePath"].as_str()
+            && fp.starts_with(&*clipse_dir().to_string_lossy())
+        {
+            let _ = std::fs::remove_file(fp);
         }
     } else {
         let p = hist[c.index]["pinned"].as_bool().unwrap_or(false);
@@ -205,7 +205,7 @@ fn panel(p: &Panel) -> gtk::Widget {
         mtime: mtime(),
         thumbs: HashMap::new(),
     }));
-    let draw: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::default();
+    let draw: crate::ui::Redraw = Rc::default();
     let redraw = {
         let d = draw.clone();
         Rc::new(move || {

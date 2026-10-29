@@ -55,10 +55,6 @@ fn kb(v: &Value) -> u64 {
         .unwrap_or(0)
 }
 
-fn fmt_kb(k: u64) -> String {
-    util::size_kb(k)
-}
-
 fn spin_file() -> std::path::PathBuf {
     util::cache_dir().join("vector-bar/hdd-spin-start")
 }
@@ -145,20 +141,17 @@ impl Inner {
                 if let Some(o) = util::run(
                     &["tailscale", "status", "--json"],
                     Duration::from_millis(1500),
-                ) {
-                    if let Ok(v) = serde_json::from_str::<Value>(&o.stdout) {
-                        if let Some(p) = v["Peer"]
-                            .as_object()
-                            .and_then(|ps| ps.values().find(|p| p["HostName"] == peer.as_str()))
-                        {
-                            s.online = p["Online"] == true;
-                            s.last_seen = p["LastSeen"]
-                                .as_str()
-                                .and_then(util::parse_iso)
-                                .map(|t| util::local(t, "%Y-%m-%d %H:%M"))
-                                .unwrap_or_default();
-                        }
-                    }
+                ) && let Ok(v) = serde_json::from_str::<Value>(&o.stdout)
+                    && let Some(p) = v["Peer"]
+                        .as_object()
+                        .and_then(|ps| ps.values().find(|p| p["HostName"] == peer.as_str()))
+                {
+                    s.online = p["Online"] == true;
+                    s.last_seen = p["LastSeen"]
+                        .as_str()
+                        .and_then(util::parse_iso)
+                        .map(|t| util::local(t, "%Y-%m-%d %H:%M"))
+                        .unwrap_or_default();
                 }
                 // /proc/mounts, not the path itself: stat-ing it would wake the drive via autofs
                 s.mounted = util::read("/proc/mounts")
@@ -168,25 +161,25 @@ impl Inner {
                         let f: Vec<&str> = l.split_whitespace().collect();
                         f.len() > 2 && f[1] == mount && (f[2] == "cifs" || f[2] == "smb3")
                     });
-                if s.mounted {
-                    if let Some(o) = util::run(&["fuser", "-m", &mount], Duration::from_secs(3)) {
-                        let mut names: Vec<String> = o
-                            .stdout
-                            .split_whitespace()
-                            .filter_map(|p| {
-                                p.trim_end_matches(|c: char| c.is_alphabetic())
-                                    .parse::<u32>()
-                                    .ok()
-                            })
-                            .filter_map(|pid| util::read_trim(format!("/proc/{pid}/comm")))
-                            .collect();
-                        names.sort();
-                        names.dedup();
-                        s.holders = names;
-                    }
+                if s.mounted
+                    && let Some(o) = util::run(&["fuser", "-m", &mount], Duration::from_secs(3))
+                {
+                    let mut names: Vec<String> = o
+                        .stdout
+                        .split_whitespace()
+                        .filter_map(|p| {
+                            p.trim_end_matches(|c: char| c.is_alphabetic())
+                                .parse::<u32>()
+                                .ok()
+                        })
+                        .filter_map(|pid| util::read_trim(format!("/proc/{pid}/comm")))
+                        .collect();
+                    names.sort();
+                    names.dedup();
+                    s.holders = names;
                 }
-                if s.online {
-                    if let Some(o) = util::run(
+                if s.online
+                    && let Some(o) = util::run(
                         &[
                             "ssh",
                             "-n",
@@ -197,21 +190,21 @@ impl Inner {
                             &ssh,
                         ],
                         Duration::from_millis(4500),
-                    ) {
-                        let raw = o.stdout.trim();
-                        let json = raw
-                            .lines()
-                            .find_map(|l| l.split_once("METRICS_JSON=").map(|x| x.1.to_string()))
-                            .unwrap_or_else(|| raw.to_string());
-                        if let Ok(v) = serde_json::from_str::<Value>(&json) {
-                            if v.is_object() {
-                                s.m = v;
-                                s.cached = false;
-                                s.fetched = util::now();
-                                if let Ok(t) = serde_json::to_string(&s.m) {
-                                    let _ = util::write_atomic(metrics_cache(), &t);
-                                }
-                            }
+                    )
+                {
+                    let raw = o.stdout.trim();
+                    let json = raw
+                        .lines()
+                        .find_map(|l| l.split_once("METRICS_JSON=").map(|x| x.1.to_string()))
+                        .unwrap_or_else(|| raw.to_string());
+                    if let Ok(v) = serde_json::from_str::<Value>(&json)
+                        && v.is_object()
+                    {
+                        s.m = v;
+                        s.cached = false;
+                        s.fetched = util::now();
+                        if let Ok(t) = serde_json::to_string(&s.m) {
+                            let _ = util::write_atomic(metrics_cache(), &t);
                         }
                     }
                 }
@@ -269,9 +262,7 @@ impl Inner {
         self.pi.set_markup(&text);
         let cls = if !s.online || s.cached {
             "faint"
-        } else if throttled {
-            "crit"
-        } else if temp.is_some_and(|t| t >= 80) {
+        } else if throttled || temp.is_some_and(|t| t >= 80) {
             "crit"
         } else if temp.is_some_and(|t| t >= 70) {
             "warn"

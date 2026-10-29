@@ -2,7 +2,7 @@
 //! mode, charge limit, lock/suspend/restart/shut down). Right: battery notification.
 
 use std::cell::{Cell, RefCell};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -33,7 +33,7 @@ pub struct Bat {
 }
 
 impl Bat {
-    pub fn read(dev: &PathBuf) -> Bat {
+    pub fn read(dev: &Path) -> Bat {
         let n = |f: &str| util::read_num(dev.join(f));
         let ac = std::fs::read_dir("/sys/class/power_supply")
             .map(|rd| {
@@ -361,7 +361,6 @@ fn power_panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
                 let _ = std::fs::write(&lim_path, v);
             });
             row.append(&seg);
-        } else {
         }
         body.append(&row);
     }

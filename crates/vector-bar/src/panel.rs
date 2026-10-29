@@ -41,13 +41,18 @@ fn theme() -> Rc<crate::theme::Theme> {
     THEME.with(|x| x.borrow().clone()).unwrap_or_default()
 }
 
+/// `on_open` hook: called with the panel name and whether it opened.
+type OnOpen = Rc<dyn Fn(&str, bool)>;
+/// Key handler of an open panel.
+type KeyHandler = Rc<dyn Fn(gdk::Key, gdk::ModifierType) -> bool>;
+
 thread_local! {
     static TOP: Cell<i32> = const { Cell::new(0) };
     static MAXB: Cell<i32> = const { Cell::new(560) };
     static THEME: RefCell<Option<Rc<crate::theme::Theme>>> = const { RefCell::new(None) };
     static APP: RefCell<Option<gtk::Application>> = const { RefCell::new(None) };
     static OPEN: RefCell<Option<Open>> = const { RefCell::new(None) };
-    static ON_OPEN: RefCell<Option<Rc<dyn Fn(&str, bool)>>> = const { RefCell::new(None) };
+    static ON_OPEN: RefCell<Option<OnOpen>> = const { RefCell::new(None) };
 }
 
 struct Open {
@@ -63,10 +68,6 @@ pub fn init(app: &gtk::Application, on_open: impl Fn(&str, bool) + 'static) {
 
 pub fn is_open(name: &str) -> bool {
     OPEN.with(|o| o.borrow().as_ref().is_some_and(|o| o.name == name))
-}
-
-pub fn any_open() -> bool {
-    OPEN.with(|o| o.borrow().is_some())
 }
 
 fn notify_open(name: &str, open: bool) {
@@ -208,24 +209,22 @@ fn open(name: &str, build: PanelFn, anchor: Option<gtk::Widget>, center: bool) {
         .and_then(|a| a.root())
         .map(|r| r.upcast::<gtk::Widget>().downgrade());
     outside.connect_released(move |g, _, px, py| {
-        if let (Some(c), Some(f)) = (card_w.upgrade(), fixed_w.upgrade()) {
-            if let Some(b) = c.compute_bounds(&f) {
-                if b.contains_point(&gtk::graphene::Point::new(px as f32, py as f32)) {
-                    return;
-                }
-            }
+        if let (Some(c), Some(f)) = (card_w.upgrade(), fixed_w.upgrade())
+            && let Some(b) = c.compute_bounds(&f)
+            && b.contains_point(&gtk::graphene::Point::new(px as f32, py as f32))
+        {
+            return;
         }
         let button = g.current_button();
         // on the bar row: let the bar item there handle it (it closes/switches the panel)
         let target_y = py - top_offset() as f64;
-        if target_y >= 0.0 && (target_y as i32) < bar_h {
-            if let Some(bar) = bar_root.as_ref().and_then(|w| w.upgrade()) {
-                if let Some(hit) = bar.pick(px, target_y, gtk::PickFlags::DEFAULT) {
-                    if crate::slot::click_at(&hit, button) {
-                        return;
-                    }
-                }
-            }
+        if target_y >= 0.0
+            && (target_y as i32) < bar_h
+            && let Some(bar) = bar_root.as_ref().and_then(|w| w.upgrade())
+            && let Some(hit) = bar.pick(px, target_y, gtk::PickFlags::DEFAULT)
+            && crate::slot::click_at(&hit, button)
+        {
+            return;
         }
         close();
     });
@@ -236,10 +235,10 @@ fn open(name: &str, build: PanelFn, anchor: Option<gtk::Widget>, center: bool) {
     let p2 = panel.clone();
     keys.connect_key_pressed(move |_, key, _, mods| {
         let h = p2.0.key.borrow().clone();
-        if let Some(h) = h {
-            if h(key, mods) {
-                return glib::Propagation::Stop;
-            }
+        if let Some(h) = h
+            && h(key, mods)
+        {
+            return glib::Propagation::Stop;
         }
         if key == gdk::Key::Escape {
             close();
@@ -264,7 +263,7 @@ struct PInner {
     width: Cell<i32>,
     closers: RefCell<Vec<Box<dyn FnOnce()>>>,
     sources: RefCell<Vec<glib::SourceId>>,
-    key: RefCell<Option<Rc<dyn Fn(gdk::Key, gdk::ModifierType) -> bool>>>,
+    key: RefCell<Option<KeyHandler>>,
     closed: Cell<bool>,
 }
 
@@ -275,10 +274,6 @@ pub struct Panel(Rc<PInner>);
 impl Panel {
     pub fn set_width(&self, w: i32) {
         self.0.width.set(w);
-    }
-
-    pub fn closed(&self) -> bool {
-        self.0.closed.get()
     }
 
     /// Calls `f` every `ms` while the panel is open.
@@ -327,7 +322,6 @@ impl Panel {
 /// scrolling body, optional footer.
 pub struct Card {
     pub root: gtk::Box,
-    pub head: gtk::Box,
     pub detail: gtk::Label,
     pub controls: gtk::Box,
     pub body: gtk::Box,
@@ -378,7 +372,6 @@ impl Card {
         root.append(&foot);
         let card = Card {
             root,
-            head,
             detail: d,
             controls,
             body,

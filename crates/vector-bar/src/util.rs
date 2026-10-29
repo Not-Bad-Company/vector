@@ -281,20 +281,6 @@ fn trim0(s: String) -> String {
     }
 }
 
-/// Bytes, compact: "512 B", "3.4 KB", "12 MB".
-pub fn size_bytes(b: u64) -> String {
-    let b = b as f64;
-    if b < 1024.0 {
-        format!("{b:.0} B")
-    } else if b < 1024.0 * 1024.0 {
-        format!("{:.1} KB", b / 1024.0)
-    } else if b < 1024.0 * 1024.0 * 1024.0 {
-        format!("{:.1} MB", b / 1048576.0)
-    } else {
-        format!("{:.1} GB", b / 1073741824.0)
-    }
-}
-
 /// "just now", "5m ago", "2h 03m ago", "3d ago".
 pub fn ago(ts: f64) -> String {
     if ts <= 0.0 {
@@ -357,77 +343,11 @@ pub fn parse_iso(s: &str) -> Option<f64> {
         .map(|d| d.timestamp_millis() as f64 / 1000.0)
 }
 
-/// Human count: 1.2B, 3.4M, 12k.
-pub fn human(n: f64) -> String {
-    if n >= 1e9 {
-        format!("{:.1}B", n / 1e9)
-    } else if n >= 1e6 {
-        format!("{:.1}M", n / 1e6)
-    } else if n >= 1e3 {
-        format!("{:.0}k", n / 1e3)
-    } else {
-        format!("{n:.0}")
-    }
-}
-
 /// Is a program on PATH?
 pub fn which(prog: &str) -> bool {
     std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).any(|d| d.join(prog).is_file()))
         .unwrap_or(false)
-}
-
-/// Does a process with exactly this comm name run?
-pub fn proc_running(comm: &str) -> bool {
-    let Ok(rd) = std::fs::read_dir("/proc") else {
-        return false;
-    };
-    rd.flatten().any(|e| {
-        let n = e.file_name();
-        n.to_str()
-            .is_some_and(|s| s.bytes().all(|b| b.is_ascii_digit()))
-            && read_trim(e.path().join("comm")).as_deref() == Some(comm)
-    })
-}
-
-/// First process whose full command line starts with `prefix`.
-pub fn proc_cmdline_starts(prefix: &str) -> Option<u32> {
-    let rd = std::fs::read_dir("/proc").ok()?;
-    for e in rd.flatten() {
-        let Some(pid) = e.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else {
-            continue;
-        };
-        if let Ok(raw) = std::fs::read(e.path().join("cmdline")) {
-            let line = String::from_utf8_lossy(&raw).replace('\0', " ");
-            if line.starts_with(prefix) {
-                return Some(pid);
-            }
-        }
-    }
-    None
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sizes() {
-        assert_eq!(size_kb(40 * 1024), "40 MB");
-        assert_eq!(size_kb(1_572_864), "1.5 GB");
-        assert_eq!(size_kb(31 * 1_048_576), "31 GB");
-        assert_eq!(size_kb(2 * 1_048_576), "2 GB");
-        assert_eq!(size_kb(440 * 1_048_576), "440 GB");
-    }
-
-    #[test]
-    fn run_times_out() {
-        let t = Instant::now();
-        assert!(run(&["sleep", "5"], Duration::from_millis(200)).is_none());
-        assert!(t.elapsed() < Duration::from_secs(2));
-        let o = run(&["echo", "hi"], Duration::from_secs(2)).unwrap();
-        assert_eq!(o.stdout.trim(), "hi");
-    }
 }
 
 /// A long-running command whose stdout lines are delivered on the GTK thread.
@@ -550,4 +470,27 @@ pub fn used_of(used_kb: u64, total_kb: u64) -> String {
         }
     };
     format!("{} / {} {unit}", f(u), f(tn))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sizes() {
+        assert_eq!(size_kb(40 * 1024), "40 MB");
+        assert_eq!(size_kb(1_572_864), "1.5 GB");
+        assert_eq!(size_kb(31 * 1_048_576), "31 GB");
+        assert_eq!(size_kb(2 * 1_048_576), "2 GB");
+        assert_eq!(size_kb(440 * 1_048_576), "440 GB");
+    }
+
+    #[test]
+    fn run_times_out() {
+        let t = Instant::now();
+        assert!(run(&["sleep", "5"], Duration::from_millis(200)).is_none());
+        assert!(t.elapsed() < Duration::from_secs(2));
+        let o = run(&["echo", "hi"], Duration::from_secs(2)).unwrap();
+        assert_eq!(o.stdout.trim(), "hi");
+    }
 }

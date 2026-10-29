@@ -344,7 +344,7 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
         }
     }));
 
-    let draw: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::default();
+    let draw: crate::ui::Redraw = Rc::default();
     let rr: Rc<dyn Fn()> = {
         let d = draw.clone();
         Rc::new(move || {
@@ -356,102 +356,99 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
     };
 
     // pairing agent: only devices the user started pairing from here are accepted
-    if let Ok(node) = gio::DBusNodeInfo::for_xml(AGENT_XML) {
-        if let Some(iface) = node.lookup_interface("org.bluez.Agent1") {
-            let (ps2, rr2) = (ps.clone(), rr.clone());
-            let reg = conn
-                .register_object(AGENT_PATH, &iface)
-                .method_call(move |_, _, _, _, method, params, inv| {
-                    let dev = (params.n_children() > 0)
-                        .then(|| params.child_value(0).str().unwrap_or("").to_string())
-                        .unwrap_or_default();
-                    let ours = ps2.borrow().pairing.contains(&dev);
-                    {
-                        let mut s = ps2.borrow_mut();
-                        match method {
-                            "DisplayPasskey" => {
-                                let k = params.child_value(1).get::<u32>().unwrap_or(0);
-                                s.codes.insert(
-                                    dev.clone(),
-                                    format!("type {k:06} on the device, then enter"),
-                                );
-                            }
-                            "DisplayPinCode" => {
-                                let k = params.child_value(1).str().unwrap_or("").to_string();
-                                s.codes.insert(
-                                    dev.clone(),
-                                    format!("type {k} on the device, then enter"),
-                                );
-                            }
-                            "RequestConfirmation" if ours => {
-                                let k = params.child_value(1).get::<u32>().unwrap_or(0);
-                                s.codes.insert(
-                                    dev.clone(),
-                                    format!("code {k:06}: confirm on the device if it asks"),
-                                );
-                            }
-                            _ => {}
-                        }
-                    }
+    if let Ok(node) = gio::DBusNodeInfo::for_xml(AGENT_XML)
+        && let Some(iface) = node.lookup_interface("org.bluez.Agent1")
+    {
+        let (ps2, rr2) = (ps.clone(), rr.clone());
+        let reg = conn
+            .register_object(AGENT_PATH, &iface)
+            .method_call(move |_, _, _, _, method, params, inv| {
+                let dev = if params.n_children() > 0 {
+                    params.child_value(0).str().unwrap_or("").to_string()
+                } else {
+                    Default::default()
+                };
+                let ours = ps2.borrow().pairing.contains(&dev);
+                {
+                    let mut s = ps2.borrow_mut();
                     match method {
-                        "Release" | "Cancel" | "DisplayPinCode" | "DisplayPasskey" => {
-                            inv.return_value(None)
+                        "DisplayPasskey" => {
+                            let k = params.child_value(1).get::<u32>().unwrap_or(0);
+                            s.codes.insert(
+                                dev.clone(),
+                                format!("type {k:06} on the device, then enter"),
+                            );
                         }
-                        "RequestConfirmation" | "RequestAuthorization" | "AuthorizeService"
-                            if ours =>
-                        {
-                            inv.return_value(None)
+                        "DisplayPinCode" => {
+                            let k = params.child_value(1).str().unwrap_or("").to_string();
+                            s.codes
+                                .insert(dev.clone(), format!("type {k} on the device, then enter"));
                         }
-                        "RequestPinCode" if ours => inv.return_value(Some(&("0000",).to_variant())),
-                        _ => inv.return_dbus_error(
-                            "org.bluez.Error.Rejected",
-                            "not started from the panel",
-                        ),
+                        "RequestConfirmation" if ours => {
+                            let k = params.child_value(1).get::<u32>().unwrap_or(0);
+                            s.codes.insert(
+                                dev.clone(),
+                                format!("code {k:06}: confirm on the device if it asks"),
+                            );
+                        }
+                        _ => {}
                     }
-                    rr2();
-                })
-                .build();
-            if let Ok(id) = reg {
-                ps.borrow_mut().agent = Some(id);
-                let (c2, ps3) = (conn.clone(), ps.clone());
-                glib::spawn_future_local(async move {
-                    let path =
-                        glib::variant::ObjectPath::try_from(AGENT_PATH).expect("static path");
-                    let r = dbus::call(
-                        &c2,
-                        BLUEZ,
-                        "/org/bluez",
-                        "org.bluez.AgentManager1",
-                        "RegisterAgent",
-                        Some((path, "DisplayYesNo").to_variant()),
-                        3000,
-                    )
-                    .await;
-                    ps3.borrow_mut().agent_ok =
-                        r.is_ok() || r.err().is_some_and(|f| f.name == "AlreadyExists");
-                });
-            }
+                }
+                match method {
+                    "Release" | "Cancel" | "DisplayPinCode" | "DisplayPasskey" => {
+                        inv.return_value(None)
+                    }
+                    "RequestConfirmation" | "RequestAuthorization" | "AuthorizeService" if ours => {
+                        inv.return_value(None)
+                    }
+                    "RequestPinCode" if ours => inv.return_value(Some(&("0000",).to_variant())),
+                    _ => inv.return_dbus_error(
+                        "org.bluez.Error.Rejected",
+                        "not started from the panel",
+                    ),
+                }
+                rr2();
+            })
+            .build();
+        if let Ok(id) = reg {
+            ps.borrow_mut().agent = Some(id);
+            let (c2, ps3) = (conn.clone(), ps.clone());
+            glib::spawn_future_local(async move {
+                let path = glib::variant::ObjectPath::try_from(AGENT_PATH).expect("static path");
+                let r = dbus::call(
+                    &c2,
+                    BLUEZ,
+                    "/org/bluez",
+                    "org.bluez.AgentManager1",
+                    "RegisterAgent",
+                    Some((path, "DisplayYesNo").to_variant()),
+                    3000,
+                )
+                .await;
+                ps3.borrow_mut().agent_ok =
+                    r.is_ok() || r.err().is_some_and(|f| f.name == "AlreadyExists");
+            });
         }
     }
     {
         let (c2, ps2, i2) = (conn.clone(), ps.clone(), Rc::downgrade(i));
         p.on_close(move || {
             let mut s = ps2.borrow_mut();
-            if s.by_us {
-                if let Some(a) = i2.upgrade().and_then(|i| i.state.borrow().adapter.clone()) {
-                    c2.call(
-                        Some(BLUEZ),
-                        &a,
-                        "org.bluez.Adapter1",
-                        "StopDiscovery",
-                        None,
-                        None,
-                        gio::DBusCallFlags::NONE,
-                        2000,
-                        gio::Cancellable::NONE,
-                        |_| {},
-                    );
-                }
+            if s.by_us
+                && let Some(a) = i2.upgrade().and_then(|i| i.state.borrow().adapter.clone())
+            {
+                c2.call(
+                    Some(BLUEZ),
+                    &a,
+                    "org.bluez.Adapter1",
+                    "StopDiscovery",
+                    None,
+                    None,
+                    gio::DBusCallFlags::NONE,
+                    2000,
+                    gio::Cancellable::NONE,
+                    |_| {},
+                );
             }
             // tell the daemon first (async: closing must not wait on it), then drop our object
             let registered = s.agent_ok;
@@ -516,20 +513,19 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
                     5000,
                 )
                 .await
+                    && f.name != "InProgress"
                 {
-                    if f.name != "InProgress" {
-                        let mut s = ps.borrow_mut();
-                        s.scan_hold = None;
-                        s.by_us = false;
-                        s.errors.insert(
-                            "scan".into(),
-                            if on {
-                                format!("couldn't start scanning: {}", bt_error(&f))
-                            } else {
-                                "another app started this scan: stop it there".into()
-                            },
-                        );
-                    }
+                    let mut s = ps.borrow_mut();
+                    s.scan_hold = None;
+                    s.by_us = false;
+                    s.errors.insert(
+                        "scan".into(),
+                        if on {
+                            format!("couldn't start scanning: {}", bt_error(&f))
+                        } else {
+                            "another app started this scan: stop it there".into()
+                        },
+                    );
                 }
                 rr();
             });
@@ -562,7 +558,8 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
     };
     let connect: Rc<dyn Fn(String, bool)> = {
         let (c, ps, rr) = (conn.clone(), ps.clone(), rr.clone());
-        let me: Rc<RefCell<Option<Rc<dyn Fn(String, bool)>>>> = Rc::default();
+        type Connect = Rc<dyn Fn(String, bool)>;
+        let me: Rc<RefCell<Option<Connect>>> = Rc::default();
         let me2 = me.clone();
         let f: Rc<dyn Fn(String, bool)> = Rc::new(move |key: String, retry: bool| {
             ps.borrow_mut()
@@ -718,8 +715,8 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
             let (c, ps, rr) = (c.clone(), ps.clone(), rr.clone());
             glib::spawn_future_local(async move {
                 let path = glib::variant::ObjectPath::try_from(key.clone()).ok();
-                if let Some(path) = path {
-                    if let Err(f) = dbus::call(
+                if let Some(path) = path
+                    && let Err(f) = dbus::call(
                         &c,
                         BLUEZ,
                         &a,
@@ -729,9 +726,8 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
                         5000,
                     )
                     .await
-                    {
-                        ps.borrow_mut().errors.insert(key, bt_error(&f));
-                    }
+                {
+                    ps.borrow_mut().errors.insert(key, bt_error(&f));
                 }
                 rr();
             });
@@ -915,7 +911,7 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
                 let paired: Vec<Dev> = s.devs.iter().filter(|d| d.paired).cloned().collect();
                 let mut nearby: Vec<Dev> = s.devs.iter().filter(|d| !d.paired).cloned().collect();
                 nearby.sort_by_key(|d| -d.rssi.unwrap_or(-999));
-                let mut group = |title: &'static str, devs: Vec<Dev>, items: &mut Vec<ui::Item>| {
+                let group = |title: &'static str, devs: Vec<Dev>, items: &mut Vec<ui::Item>| {
                     items.push((
                         format!("sec-{title}"),
                         String::new(),

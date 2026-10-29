@@ -58,16 +58,6 @@ pub trait Module {
     }
 }
 
-/// A module that is just a row of slots.
-pub fn slots_view(slots: &[Slot], spacing: i32) -> gtk::Widget {
-    use gtk::prelude::*;
-    let b = gtk::Box::new(gtk::Orientation::Horizontal, spacing);
-    for s in slots {
-        b.append(&s.view());
-    }
-    b.upcast()
-}
-
 pub fn build(name: &str, ctx: &Ctx) -> Option<Rc<dyn Module>> {
     if let Some(custom) = name.strip_prefix("custom:") {
         return ctx

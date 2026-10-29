@@ -127,12 +127,11 @@ impl Phone {
                             match r.read_line(&mut line) {
                                 Ok(0) => break,
                                 Ok(_) => {
-                                    if let Ok(v) = serde_json::from_str::<Value>(&line) {
-                                        if v["type"] == "status"
-                                            && tx.send_blocking(Some(v["data"].clone())).is_err()
-                                        {
-                                            return;
-                                        }
+                                    if let Ok(v) = serde_json::from_str::<Value>(&line)
+                                        && v["type"] == "status"
+                                        && tx.send_blocking(Some(v["data"].clone())).is_err()
+                                    {
+                                        return;
                                     }
                                 }
                                 // read timeout: just check `stop` again
@@ -316,7 +315,7 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
     let busy: Rc<RefCell<HashMap<String, String>>> = Rc::default();
     let errors: Rc<RefCell<HashMap<String, String>>> = Rc::default();
 
-    let draw: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::default();
+    let draw: crate::ui::Redraw = Rc::default();
     let redraw: Rc<dyn Fn()> = {
         let d = draw.clone();
         Rc::new(move || {
@@ -327,7 +326,8 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
         })
     };
     // phone calls run on a thread: the phone may take a moment to answer
-    let call: Rc<dyn Fn(&str, &str, Value)> = {
+    type Call = Rc<dyn Fn(&str, &str, Value)>;
+    let call: Call = {
         let (busy, errors, rr) = (busy.clone(), errors.clone(), redraw.clone());
         Rc::new(move |key: &str, method: &str, params: Value| {
             busy.borrow_mut().insert(key.into(), "…".into());
@@ -546,7 +546,7 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
             for (k, v) in busy.borrow().iter() {
                 body.append(&ui::text(&format!("{k} {v}"), &["msg", "dim"]));
             }
-            for (_, v) in errors.borrow().iter() {
+            for v in errors.borrow().values() {
                 body.append(&ui::text(v, &["msg", "crit"]).tap(|l| l.set_wrap(true)));
             }
             let perms = &st["permissions"];

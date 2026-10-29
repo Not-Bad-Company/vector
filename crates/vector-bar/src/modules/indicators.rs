@@ -421,10 +421,8 @@ impl Inner {
                         std::fs::read_link(fd.path())
                             .is_ok_and(|t| t.to_string_lossy().starts_with("/dev/video"))
                     });
-                    if uses {
-                        if let Some(c) = util::read_trim(e.path().join("comm")) {
-                            apps.push(c);
-                        }
+                    if uses && let Some(c) = util::read_trim(e.path().join("comm")) {
+                        apps.push(c);
                     }
                 }
                 apps.sort();

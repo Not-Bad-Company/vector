@@ -54,7 +54,7 @@ pub struct Runtime {
 }
 
 thread_local! {
-    static RT: RefCell<Weak<Runtime>> = RefCell::new(Weak::new());
+    static RT: RefCell<Weak<Runtime>> = const { RefCell::new(Weak::new()) };
 }
 
 fn rt() -> Option<Rc<Runtime>> {
@@ -170,7 +170,10 @@ fn install(lua: &Lua) -> mlua::Result<()> {
     )?;
     bar.set(
         "spawn",
-        lua.create_function(|_, cmd: String| Ok(util::spawn_sh(&cmd)))?,
+        lua.create_function(|_, cmd: String| {
+            util::spawn_sh(&cmd);
+            Ok(())
+        })?,
     )?;
     bar.set(
         "read",

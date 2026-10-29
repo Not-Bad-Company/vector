@@ -17,9 +17,12 @@ pub type TooltipFn = Rc<dyn Fn() -> Option<gtk::Widget>>;
 pub type PanelFn = Rc<dyn Fn(&panel::Panel) -> gtk::Widget>;
 
 /// Change notification with connect/disconnect (for open panels).
+/// Listeners with their ids.
+type Listeners = Rc<RefCell<Vec<(u64, Rc<dyn Fn()>)>>>;
+
 #[derive(Clone, Default)]
 pub struct Notify {
-    list: Rc<RefCell<Vec<(u64, Rc<dyn Fn()>)>>>,
+    list: Listeners,
     next: Rc<Cell<u64>>,
 }
 
@@ -199,10 +202,6 @@ impl Slot {
         if !on && panel::is_open(&self.0.name) {
             panel::close();
         }
-    }
-
-    pub fn visible(&self) -> bool {
-        self.0.state.borrow().visible
     }
 
     /// Marks the content as changed so an open tooltip is rebuilt.

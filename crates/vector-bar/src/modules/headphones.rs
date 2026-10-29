@@ -165,10 +165,10 @@ impl Headphones {
             let w = Rc::downgrade(&inner);
             *inner._sub.borrow_mut() =
                 Some(dbus::subscribe(c, "org.bluez", move |_, member, _| {
-                    if member == "PropertiesChanged" || member == "InterfacesAdded" {
-                        if let Some(i) = w.upgrade() {
-                            util::after(1200, &i, |i| i.poll());
-                        }
+                    if (member == "PropertiesChanged" || member == "InterfacesAdded")
+                        && let Some(i) = w.upgrade()
+                    {
+                        util::after(1200, &i, |i| i.poll());
                     }
                 }));
         }

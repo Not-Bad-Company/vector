@@ -156,12 +156,6 @@ impl Opts<'_> {
             .unwrap_or(default)
             .to_string()
     }
-    pub fn opt_str(&self, key: &str) -> Option<String> {
-        self.0
-            .and_then(|t| t.get(key))
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-    }
     pub fn num(&self, key: &str, default: f64) -> f64 {
         self.0
             .and_then(|t| t.get(key))

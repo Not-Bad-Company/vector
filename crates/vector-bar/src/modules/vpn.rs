@@ -169,12 +169,12 @@ async fn collect(c: &gio::DBusConnection) -> State {
         .as_ref()
         .is_some_and(|s| trusted_list.lines().any(|l| l == s));
     let mut loc = HashMap::new();
-    if let Some(v) = util::read_json(state_dir().join("location.json")) {
-        if v["key"].as_str() == active.as_deref() {
-            for k in ["ip", "city", "country", "org"] {
-                if let Some(x) = v[k].as_str() {
-                    loc.insert(k.to_string(), x.to_string());
-                }
+    if let Some(v) = util::read_json(state_dir().join("location.json"))
+        && v["key"].as_str() == active.as_deref()
+    {
+        for k in ["ip", "city", "country", "org"] {
+            if let Some(x) = v[k].as_str() {
+                loc.insert(k.to_string(), x.to_string());
             }
         }
     }
@@ -412,18 +412,18 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
     {
         let (i, guard) = (Rc::downgrade(i), guard.clone());
         sw.connect_state_set(move |_, on| {
-            if !guard.get() {
-                if let Some(i) = i.upgrade() {
-                    i.act(
-                        "head",
-                        &[if on { "up" } else { "down" }],
-                        if on {
-                            "connecting…"
-                        } else {
-                            "disconnecting…"
-                        },
-                    );
-                }
+            if !guard.get()
+                && let Some(i) = i.upgrade()
+            {
+                i.act(
+                    "head",
+                    &[if on { "up" } else { "down" }],
+                    if on {
+                        "connecting…"
+                    } else {
+                        "disconnecting…"
+                    },
+                );
             }
             glib::Propagation::Proceed
         });
@@ -522,7 +522,7 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
                 }
             }
             body.append(&ui::section("settings"));
-            let mut setting =
+            let setting =
                 |icon: &str, name: &str, meta: &str, on: bool, args: Vec<&'static str>| {
                     let r = ui::Row::new(icon, name, meta);
                     let i2 = Rc::downgrade(&i);

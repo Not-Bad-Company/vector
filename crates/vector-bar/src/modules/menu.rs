@@ -19,7 +19,6 @@ use crate::util;
 
 pub struct Menu {
     slot: Slot,
-    theme: Rc<Theme>,
     /// detection lives in the indicators module; made here when it isn't on the bar
     _indicators: Option<super::indicators::Indicators>,
     listener: u64,
@@ -83,12 +82,10 @@ impl Menu {
             s.append(&ui::thint("click menu  ·  right terminal"));
             Some(s.upcast())
         });
-        let theme = ctx.theme.clone();
-        let t2 = theme.clone();
+        let t2 = ctx.theme.clone();
         slot.panel(move |p| menu_panel(p, &t2));
         Menu {
             slot,
-            theme,
             _indicators,
             listener,
         }
@@ -107,51 +104,6 @@ impl Module for Menu {
     fn slots(&self) -> Vec<Slot> {
         vec![self.slot.clone()]
     }
-}
-
-/// The Vector mark: two axes from an origin and the vector, drawn in the
-/// widget's CSS colour (so it turns dark inside a mode block).
-pub fn mark(_t: &Theme, size: i32) -> gtk::DrawingArea {
-    let d = gtk::DrawingArea::new();
-    d.set_content_width(size);
-    d.set_content_height(size);
-    d.set_valign(gtk::Align::Center);
-    d.set_draw_func(move |area, cr, w, h| {
-        let c = area.color();
-        let s = w.min(h) as f64;
-        let u = s / 16.0;
-        let (ox, oy) = (2.5 * u, 13.5 * u);
-        cr.set_line_cap(gtk::cairo::LineCap::Square);
-        cr.set_source_rgba(
-            c.red() as f64,
-            c.green() as f64,
-            c.blue() as f64,
-            c.alpha() as f64 * 0.7,
-        );
-        cr.set_line_width(1.5 * u);
-        cr.move_to(ox, 2.0 * u);
-        cr.line_to(ox, oy);
-        cr.line_to(14.5 * u, oy);
-        let _ = cr.stroke();
-        cr.set_source_rgba(
-            c.red() as f64,
-            c.green() as f64,
-            c.blue() as f64,
-            c.alpha() as f64,
-        );
-        cr.set_line_width(2.2 * u);
-        cr.move_to(ox, oy);
-        cr.line_to(10.0 * u, 6.0 * u);
-        let _ = cr.stroke();
-        cr.move_to(14.0 * u, 2.0 * u);
-        cr.line_to(7.6 * u, 3.8 * u);
-        cr.line_to(12.2 * u, 8.4 * u);
-        cr.close_path();
-        let _ = cr.fill();
-        cr.arc(ox, oy, 1.5 * u, 0.0, std::f64::consts::TAU);
-        let _ = cr.fill();
-    });
-    d
 }
 
 pub fn action_row(p: &Panel, icon: &str, name: &str, meta: &str, cmd: &str) -> gtk::Box {
@@ -179,7 +131,7 @@ pub fn fold(icon: &str, name: &str, meta: &str, content: &gtk::Widget) -> gtk::B
     ui::on_click(&r.root, move || {
         let open = !rev2.reveals_child();
         rev2.set_reveal_child(open);
-        arrow.set_text(if open { "" } else { "" });
+        arrow.set_text("");
     });
     b.append(&r.root);
     b.append(&rev);

@@ -163,11 +163,12 @@ fn proc_start(pid: u32) -> Option<String> {
 
 type Meta = (String, String, String, f64);
 
-/// transcript path -> (size, mtime, parsed): only changed files are read again.
-/// Process-wide: the scans run on worker threads.
-static META: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<PathBuf, (u64, std::time::SystemTime, Meta)>>,
-> = std::sync::LazyLock::new(Default::default);
+/// transcript path -> (size, mtime, parsed)
+type MetaMap =
+    std::sync::Mutex<std::collections::HashMap<PathBuf, (u64, std::time::SystemTime, Meta)>>;
+
+/// Only changed files are read again. Process-wide: the scans run on worker threads.
+static META: std::sync::LazyLock<MetaMap> = std::sync::LazyLock::new(Default::default);
 
 /// Title, last prompt and what the latest tool call does, from the transcript tail.
 /// Cached per file until its size or mtime changes.
@@ -176,10 +177,10 @@ fn transcript_meta(path: &Path) -> Meta {
         return Default::default();
     };
     let (size, mtime) = (md.len(), md.modified().unwrap_or(std::time::UNIX_EPOCH));
-    if let Ok(c) = META.lock() {
-        if let Some((_, _, m)) = c.get(path).filter(|(s, t, _)| *s == size && *t == mtime) {
-            return m.clone();
-        }
+    if let Ok(c) = META.lock()
+        && let Some((_, _, m)) = c.get(path).filter(|(s, t, _)| *s == size && *t == mtime)
+    {
+        return m.clone();
     }
     let m = read_meta(path);
     if let Ok(mut c) = META.lock() {
@@ -312,10 +313,10 @@ fn transcript_path(home: &Path, sid: &str, cwd: &str) -> PathBuf {
             })
         })
         .unwrap_or_else(|| home.join(".claude/projects").join(&dashed).join(&name));
-    if found.exists() {
-        if let Ok(mut m) = TRANSCRIPTS.lock() {
-            m.insert(sid.to_string(), found.clone());
-        }
+    if found.exists()
+        && let Ok(mut m) = TRANSCRIPTS.lock()
+    {
+        m.insert(sid.to_string(), found.clone());
     }
     found
 }
@@ -662,7 +663,7 @@ impl Window {
         let elapsed = 1.0 - (r - util::now()) / self.span;
         (0.02..=1.0)
             .contains(&elapsed)
-            .then(|| self.pct - elapsed * 100.0)
+            .then_some(self.pct - elapsed * 100.0)
     }
 }
 
@@ -930,12 +931,11 @@ fn newest_rollout_limits(home: &Path) -> Option<(Value, f64)> {
             let p = e.path();
             if p.is_dir() && depth < 4 {
                 walk(&p, best, depth + 1);
-            } else if p.extension().is_some_and(|x| x == "jsonl") {
-                if let Ok(m) = e.metadata().and_then(|m| m.modified()) {
-                    if best.as_ref().is_none_or(|(t, _)| m > *t) {
-                        *best = Some((m, p));
-                    }
-                }
+            } else if p.extension().is_some_and(|x| x == "jsonl")
+                && let Ok(m) = e.metadata().and_then(|m| m.modified())
+                && best.as_ref().is_none_or(|(t, _)| m > *t)
+            {
+                *best = Some((m, p));
             }
         }
     }
@@ -1068,7 +1068,7 @@ struct Inner {
 pub struct Ai(Rc<Inner>);
 
 thread_local! {
-    static SHARED: RefCell<std::rc::Weak<Inner>> = RefCell::new(std::rc::Weak::new());
+    static SHARED: RefCell<std::rc::Weak<Inner>> = const { RefCell::new(std::rc::Weak::new()) };
 }
 
 impl Ai {
@@ -1281,9 +1281,7 @@ impl Inner {
             .iter()
             .filter_map(|c| c.worst())
             .fold(None, |m: Option<f64>, p| Some(m.map_or(p, |x| x.min(p))));
-        let cls = if waiting > 0 {
-            "crit"
-        } else if best.is_some_and(|b| b >= 100.0) {
+        let cls = if waiting > 0 || best.is_some_and(|b| b >= 100.0) {
             "crit"
         } else if best.is_some_and(|b| b >= 90.0) {
             "warn"
@@ -1577,10 +1575,10 @@ fn usage_block(acc: &Account, mark: &str, t: &Theme) -> gtk::Widget {
     d.set_hexpand(true);
     ui::ellipsize(&d, 30);
     head.append(&d);
-    if let Some(w) = acc.windows.iter().map(|w| w.pct).reduce(f64::max) {
-        if w >= 100.0 {
-            head.append(&ui::label(&ui::colored("limit reached", &t.color1), &[]));
-        }
+    if let Some(w) = acc.windows.iter().map(|w| w.pct).reduce(f64::max)
+        && w >= 100.0
+    {
+        head.append(&ui::label(&ui::colored("limit reached", &t.color1), &[]));
     }
     b.append(&head);
     // one label column per account, as wide as its longest label (antigravity's are long)

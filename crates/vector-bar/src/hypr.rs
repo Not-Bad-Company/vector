@@ -57,13 +57,13 @@ pub fn events(f: impl Fn(&str, &str) -> bool + 'static) -> Events {
     let (tx, rx) = async_channel::unbounded::<String>();
     std::thread::spawn(move || {
         loop {
-            if let Some(path) = dir().map(|d| d.join(".socket2.sock")) {
-                if let Ok(s) = UnixStream::connect(path) {
-                    for line in BufReader::new(s).lines() {
-                        let Ok(line) = line else { break };
-                        if tx.send_blocking(line).is_err() {
-                            return;
-                        }
+            if let Some(path) = dir().map(|d| d.join(".socket2.sock"))
+                && let Ok(s) = UnixStream::connect(path)
+            {
+                for line in BufReader::new(s).lines() {
+                    let Ok(line) = line else { break };
+                    if tx.send_blocking(line).is_err() {
+                        return;
                     }
                 }
             }

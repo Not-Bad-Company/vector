@@ -42,6 +42,7 @@ thread_local! {
 }
 
 /// The shared client (one D-Bus subscription for every module).
+#[allow(deprecated)] // signal_subscribe: subscribe_to_signal would unsubscribe on drop
 pub fn get() -> Rc<Mako> {
     if let Some(m) = MAKO.with(|m| m.borrow().clone()) {
         return m;

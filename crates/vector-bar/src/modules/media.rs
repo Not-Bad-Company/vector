@@ -112,6 +112,7 @@ fn parse(bus: &str, identity: String, all: &glib::Variant) -> Track {
 }
 
 impl Media {
+    #[allow(deprecated)] // signal_subscribe: subscribe_to_signal would unsubscribe on drop
     pub fn new(ctx: &Ctx) -> Media {
         let o = ctx.opts("media");
         let conn = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE).ok();
@@ -210,6 +211,7 @@ impl Media {
 }
 
 impl Drop for Inner {
+    #[allow(deprecated)] // signal_subscribe: subscribe_to_signal would unsubscribe on drop
     fn drop(&mut self) {
         if let Some(c) = &self.conn {
             for id in self.subs.borrow_mut().drain(..) {
@@ -310,10 +312,10 @@ impl Inner {
     /// The player shown: the picked one if still there, else playing, else paused with a title.
     fn current(&self) -> Option<Track> {
         let ps = self.players.borrow();
-        if let Some(c) = self.chosen.borrow().as_ref() {
-            if let Some(t) = ps.iter().find(|t| &t.bus == c) {
-                return Some(t.clone());
-            }
+        if let Some(c) = self.chosen.borrow().as_ref()
+            && let Some(t) = ps.iter().find(|t| &t.bus == c)
+        {
+            return Some(t.clone());
         }
         ps.iter()
             .find(|t| t.status == "Playing")

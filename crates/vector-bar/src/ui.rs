@@ -16,6 +16,9 @@ use gtk::{gdk, pango};
 pub const PCT_WARN: f64 = 75.0;
 pub const PCT_CRIT: f64 = 90.0;
 
+/// A redraw hook that a widget fills in once its closures exist.
+pub type Redraw = std::rc::Rc<std::cell::RefCell<Option<std::rc::Rc<dyn Fn()>>>>;
+
 pub fn dim(s: &str) -> String {
     format!("<span alpha=\"50%\">{s}</span>")
 }
@@ -115,14 +118,6 @@ impl ModeAccent for gtk::DrawingArea {
     }
 }
 
-pub fn set_detail(l: &gtk::Label, detail: &str) {
-    if detail.is_empty() {
-        l.set_markup("");
-    } else {
-        l.set_markup(&format!(" · {detail}"));
-    }
-}
-
 pub fn section(t: &str) -> gtk::Label {
     text(t, &["section"])
 }
@@ -173,17 +168,6 @@ pub fn pct_class(pct: f64) -> &'static str {
         "warn"
     } else {
         ""
-    }
-}
-
-pub fn pct_markup(pct: f64, t: &crate::theme::Theme) -> String {
-    let s = format!("{pct:.0}%");
-    if pct >= PCT_CRIT {
-        colored(&s, &t.color1)
-    } else if pct >= PCT_WARN {
-        colored(&s, &t.color3)
-    } else {
-        s
     }
 }
 
@@ -342,7 +326,6 @@ pub fn switch(active: bool, f: impl Fn(bool) + 'static) -> gtk::Switch {
 pub struct Row {
     pub root: gtk::Box,
     pub icon: gtk::Label,
-    pub name: gtk::Label,
     pub meta: gtk::Label,
     pub trail: gtk::Box,
 }
@@ -363,7 +346,6 @@ impl Row {
         Row {
             root,
             icon: ic,
-            name: nm,
             meta: mt,
             trail,
         }
@@ -435,18 +417,14 @@ impl KeyedList {
         m.connect_leave(move |_| {
             h.set(false);
             // apply the order we held back
-            if let Some(l) = weak.upgrade() {
-                if let Some(items) = l.pending.borrow_mut().take() {
-                    l.sync_now(items, false);
-                }
+            if let Some(l) = weak.upgrade()
+                && let Some(items) = l.pending.borrow_mut().take()
+            {
+                l.sync_now(items, false);
             }
         });
         l.root.add_controller(m);
         l
-    }
-
-    pub fn hovered(&self) -> bool {
-        self.hovered.get()
     }
 
     pub fn sync(&self, items: Vec<Item>) {

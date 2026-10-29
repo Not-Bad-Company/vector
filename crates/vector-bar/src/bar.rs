@@ -14,6 +14,9 @@ use crate::modules::{BarInfo, Module};
 use crate::theme::Theme;
 use crate::{mode, slot, ui};
 
+/// One zone of a section: its kind and the modules and names in it.
+type Zone<'a> = (Kind, Vec<&'a Rc<dyn Module>>, Vec<&'a str>);
+
 pub type Section = Vec<(String, Rc<dyn Module>)>;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -190,7 +193,7 @@ pub fn build(
         b.set_valign(gtk::Align::Fill);
         let right = i == 2;
         // group consecutive modules of the same kind into one zone
-        let mut zones: Vec<(Kind, Vec<&Rc<dyn Module>>, Vec<&str>)> = Vec::new();
+        let mut zones: Vec<Zone<'_>> = Vec::new();
         for (name, m) in sec {
             let k = kind(name);
             match zones.last_mut() {
@@ -338,10 +341,8 @@ fn fix_dividers(center: &gtk::Box) {
                 ch.set_visible(false);
                 pending = Some(ch);
             } else if shown(&ch) {
-                if seen {
-                    if let Some(d) = pending.take() {
-                        d.set_visible(true);
-                    }
+                if seen && let Some(d) = pending.take() {
+                    d.set_visible(true);
                 }
                 seen = true;
                 pending = None;

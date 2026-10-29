@@ -293,10 +293,10 @@ fn panel(p: &Panel) -> gtk::Widget {
                             j += 1;
                         }
                         let row = note_row(&h[i], false, &m2);
-                        if j - i > 1 {
-                            if let Some(top) = row.first_child().and_downcast::<gtk::Box>() {
-                                top.append(&ui::text(&format!("×{}", j - i), &["dim"]));
-                            }
+                        if j - i > 1
+                            && let Some(top) = row.first_child().and_downcast::<gtk::Box>()
+                        {
+                            top.append(&ui::text(&format!("×{}", j - i), &["dim"]));
                         }
                         hist.append(&row);
                         i = j;

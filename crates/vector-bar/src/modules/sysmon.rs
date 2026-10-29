@@ -70,10 +70,10 @@ fn meminfo() -> HashMap<String, u64> {
     let mut m = HashMap::new();
     for l in util::read("/proc/meminfo").unwrap_or_default().lines() {
         let mut it = l.split_whitespace();
-        if let (Some(k), Some(v)) = (it.next(), it.next()) {
-            if let Ok(v) = v.parse() {
-                m.insert(k.trim_end_matches(':').to_string(), v);
-            }
+        if let (Some(k), Some(v)) = (it.next(), it.next())
+            && let Ok(v) = v.parse()
+        {
+            m.insert(k.trim_end_matches(':').to_string(), v);
         }
     }
     m

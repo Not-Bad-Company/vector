@@ -205,10 +205,10 @@ fn find_slot(name: &str) -> Option<slot::Slot> {
             s.modules.values().cloned().collect::<Vec<_>>(),
         )
     });
-    if let Some(m) = direct {
-        if let Some(s) = m.slots().into_iter().find(|s| s.has_panel()) {
-            return Some(s);
-        }
+    if let Some(m) = direct
+        && let Some(s) = m.slots().into_iter().find(|s| s.has_panel())
+    {
+        return Some(s);
     }
     all.iter()
         .flat_map(|m| m.slots())

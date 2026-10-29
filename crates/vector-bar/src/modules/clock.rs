@@ -1,6 +1,6 @@
 //! Clock. Click: calendar panel. Middle: alternate format. Right: time zone.
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::rc::Rc;
 
 use chrono::{Datelike, Duration as CDuration, Local, NaiveDate};
@@ -97,7 +97,7 @@ fn calendar_panel(p: &Panel) -> gtk::Widget {
     card.body.append(&nav);
     card.body.append(&grid_holder);
 
-    let draw: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::default();
+    let draw: crate::ui::Redraw = Rc::default();
     let render = {
         let month = month.clone();
         let grid_holder = grid_holder.clone();

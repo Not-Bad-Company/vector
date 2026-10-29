@@ -14,7 +14,6 @@ use super::{BarInfo, Ctx, Module};
 use crate::dbus::{self, Fail, Objects};
 use crate::panel::{Card, Panel};
 use crate::slot::{Notify, Slot};
-use crate::theme::Theme;
 use crate::ui::{self, Tap};
 use crate::util;
 
@@ -213,7 +212,6 @@ struct Inner {
     conn: Option<gio::DBusConnection>,
     state: RefCell<State>,
     changed: Notify,
-    theme: Rc<Theme>,
     pending: Cell<bool>,
     _sub: RefCell<Option<dbus::Sub>>,
 }
@@ -229,7 +227,6 @@ impl Network {
             conn,
             state: RefCell::default(),
             changed: Notify::default(),
-            theme: ctx.theme.clone(),
             pending: Cell::new(false),
             _sub: RefCell::default(),
         });
@@ -428,53 +425,48 @@ fn wifi_panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
     }));
 
     // the agent hands iwd the password typed into a row
-    if let Ok(node) = gio::DBusNodeInfo::for_xml(AGENT_XML) {
-        if let Some(iface) = node.lookup_interface("net.connman.iwd.Agent") {
-            let ps2 = ps.clone();
-            let reg = conn
-                .register_object(AGENT_PATH, &iface)
-                .method_call(move |_, _, _, _, method, params, inv| match method {
-                    "RequestPassphrase" => {
-                        let net = params.child_value(0).str().unwrap_or("").to_string();
-                        let pw = ps2.borrow().passwords.get(&net).cloned();
-                        match pw {
-                            Some(pw) => inv.return_value(Some(&(pw,).to_variant())),
-                            None => inv.return_dbus_error(
-                                "net.connman.iwd.Agent.Error.Canceled",
-                                "no passphrase",
-                            ),
-                        }
+    if let Ok(node) = gio::DBusNodeInfo::for_xml(AGENT_XML)
+        && let Some(iface) = node.lookup_interface("net.connman.iwd.Agent")
+    {
+        let ps2 = ps.clone();
+        let reg = conn
+            .register_object(AGENT_PATH, &iface)
+            .method_call(move |_, _, _, _, method, params, inv| match method {
+                "RequestPassphrase" => {
+                    let net = params.child_value(0).str().unwrap_or("").to_string();
+                    let pw = ps2.borrow().passwords.get(&net).cloned();
+                    match pw {
+                        Some(pw) => inv.return_value(Some(&(pw,).to_variant())),
+                        None => inv.return_dbus_error(
+                            "net.connman.iwd.Agent.Error.Canceled",
+                            "no passphrase",
+                        ),
                     }
-                    "Release" | "Cancel" => inv.return_value(None),
-                    _ => {
-                        inv.return_dbus_error("net.connman.iwd.Agent.Error.Canceled", "unsupported")
-                    }
-                })
-                .build();
-            if let Ok(id) = reg {
-                ps.borrow_mut().agent = Some(id);
-                let (c2, ps3) = (conn.clone(), ps.clone());
-                glib::spawn_future_local(async move {
-                    let r =
-                        dbus::call(
-                            &c2,
-                            IWD,
-                            "/net/connman/iwd",
-                            "net.connman.iwd.AgentManager",
-                            "RegisterAgent",
-                            Some(
-                                (glib::variant::ObjectPath::try_from(AGENT_PATH)
-                                    .expect("static path"),)
-                                    .to_variant(),
-                            ),
-                            3000,
-                        )
-                        .await;
-                    ps3.borrow_mut().agent_ok = Some(
-                        r.is_ok() || r.as_ref().err().is_some_and(|f| f.name == "AlreadyExists"),
-                    );
-                });
-            }
+                }
+                "Release" | "Cancel" => inv.return_value(None),
+                _ => inv.return_dbus_error("net.connman.iwd.Agent.Error.Canceled", "unsupported"),
+            })
+            .build();
+        if let Ok(id) = reg {
+            ps.borrow_mut().agent = Some(id);
+            let (c2, ps3) = (conn.clone(), ps.clone());
+            glib::spawn_future_local(async move {
+                let r = dbus::call(
+                    &c2,
+                    IWD,
+                    "/net/connman/iwd",
+                    "net.connman.iwd.AgentManager",
+                    "RegisterAgent",
+                    Some(
+                        (glib::variant::ObjectPath::try_from(AGENT_PATH).expect("static path"),)
+                            .to_variant(),
+                    ),
+                    3000,
+                )
+                .await;
+                ps3.borrow_mut().agent_ok =
+                    Some(r.is_ok() || r.as_ref().err().is_some_and(|f| f.name == "AlreadyExists"));
+            });
         }
     }
     {
@@ -510,7 +502,7 @@ fn wifi_panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
         });
     }
 
-    let render: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::default();
+    let render: crate::ui::Redraw = Rc::default();
     let rerender = {
         let r = render.clone();
         move || {
@@ -535,19 +527,19 @@ fn wifi_panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
             glib::spawn_future_local(async move {
                 if let Err(f) =
                     dbus::call(&c, IWD, &dev, "net.connman.iwd.Station", "Scan", None, 5000).await
+                    && f.name != "Busy"
+                    && f.name != "InProgress"
                 {
-                    if f.name != "Busy" && f.name != "InProgress" {
-                        let mut s = ps.borrow_mut();
-                        s.scan_hold = None;
-                        s.errors.insert(
-                            "scan".into(),
-                            if f.name == "NotAvailable" {
-                                "can't scan while connecting".into()
-                            } else {
-                                format!("scan failed: {}", f.message)
-                            },
-                        );
-                    }
+                    let mut s = ps.borrow_mut();
+                    s.scan_hold = None;
+                    s.errors.insert(
+                        "scan".into(),
+                        if f.name == "NotAvailable" {
+                            "can't scan while connecting".into()
+                        } else {
+                            format!("scan failed: {}", f.message)
+                        },
+                    );
                 }
                 rr();
             });
@@ -679,20 +671,20 @@ fn wifi_panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
             rr();
             let (c, ps, rr) = (c.clone(), ps.clone(), rr.clone());
             glib::spawn_future_local(async move {
-                if pw.is_some() {
-                    if let Some(k) = &n.known {
-                        // iwd never asks again for a saved network: forget, then connect fresh
-                        let _ = dbus::call(
-                            &c,
-                            IWD,
-                            k,
-                            "net.connman.iwd.KnownNetwork",
-                            "Forget",
-                            None,
-                            5000,
-                        )
-                        .await;
-                    }
+                if pw.is_some()
+                    && let Some(k) = &n.known
+                {
+                    // iwd never asks again for a saved network: forget, then connect fresh
+                    let _ = dbus::call(
+                        &c,
+                        IWD,
+                        k,
+                        "net.connman.iwd.KnownNetwork",
+                        "Forget",
+                        None,
+                        5000,
+                    )
+                    .await;
                 }
                 let r = dbus::call(
                     &c,

@@ -13,10 +13,6 @@ pub fn system() -> Option<gio::DBusConnection> {
     gio::bus_get_sync(gio::BusType::System, gio::Cancellable::NONE).ok()
 }
 
-pub fn session() -> Option<gio::DBusConnection> {
-    gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE).ok()
-}
-
 /// a{sv} -> map (values unboxed).
 pub fn props(v: &glib::Variant) -> Props {
     let mut m = HashMap::new();
@@ -177,6 +173,7 @@ pub fn get_i64(p: &Props, k: &str) -> Option<i64> {
 pub struct Sub(gio::DBusConnection, Option<gio::SignalSubscriptionId>);
 
 impl Drop for Sub {
+    #[allow(deprecated)] // signal_subscribe: subscribe_to_signal would unsubscribe on drop
     fn drop(&mut self) {
         if let Some(id) = self.1.take() {
             self.0.signal_unsubscribe(id);
@@ -184,6 +181,7 @@ impl Drop for Sub {
     }
 }
 
+#[allow(deprecated)] // signal_subscribe: subscribe_to_signal would unsubscribe on drop
 pub fn subscribe(
     c: &gio::DBusConnection,
     service: &str,

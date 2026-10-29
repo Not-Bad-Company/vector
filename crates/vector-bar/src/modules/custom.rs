@@ -39,30 +39,28 @@ struct Out {
 }
 
 fn parse(line: &str, json: bool) -> Out {
-    if json {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) {
-            let s = |k: &str| match &v[k] {
-                serde_json::Value::String(s) => s.clone(),
-                serde_json::Value::Null => String::new(),
-                other => other.to_string(),
-            };
-            let classes = match &v["class"] {
-                serde_json::Value::String(s) => vec![s.clone()],
-                serde_json::Value::Array(a) => a
-                    .iter()
-                    .filter_map(|x| x.as_str().map(str::to_string))
-                    .collect(),
-                _ => vec![],
-            };
-            return Out {
-                text: s("text"),
-                tooltip: s("tooltip"),
-                classes,
-                alt: s("alt"),
-                percentage: v["percentage"].as_f64(),
-                raw: v,
-            };
-        }
+    if json && let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) {
+        let s = |k: &str| match &v[k] {
+            serde_json::Value::String(s) => s.clone(),
+            serde_json::Value::Null => String::new(),
+            other => other.to_string(),
+        };
+        let classes = match &v["class"] {
+            serde_json::Value::String(s) => vec![s.clone()],
+            serde_json::Value::Array(a) => a
+                .iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect(),
+            _ => vec![],
+        };
+        return Out {
+            text: s("text"),
+            tooltip: s("tooltip"),
+            classes,
+            alt: s("alt"),
+            percentage: v["percentage"].as_f64(),
+            raw: v,
+        };
     }
     let mut it = line.lines();
     Out {
@@ -179,10 +177,10 @@ impl Inner {
                     &o.percentage.map(|p| format!("{p:.0}")).unwrap_or_default(),
                 );
         }
-        if let Some(max) = self.spec.max_length {
-            if text.chars().count() > max {
-                text = text.chars().take(max.saturating_sub(1)).collect::<String>() + "…";
-            }
+        if let Some(max) = self.spec.max_length
+            && text.chars().count() > max
+        {
+            text = text.chars().take(max.saturating_sub(1)).collect::<String>() + "…";
         }
         let markup = if self.spec.markup {
             text.clone()
