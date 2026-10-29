@@ -1306,7 +1306,8 @@ struct Inner {
     claude: Vec<(String, PathBuf, PathBuf)>,
     codex: Vec<(String, PathBuf)>,
     agy: bool,
-    notified: RefCell<Vec<String>>,
+    /// agents that need you, with their notification (0: sent elsewhere)
+    notified: RefCell<Vec<(String, u32)>>,
 }
 
 pub struct Ai(Rc<Inner>);
@@ -1426,24 +1427,40 @@ impl Inner {
         util::bg(agents, move |a| {
             let Some(i) = w.upgrade() else { return };
             i.busy.set(false);
-            // one notification per wait
+            // one notification per wait, closed again once the agent stops waiting
             {
+                let store = crate::notify::get();
                 let mut seen = i.notified.borrow_mut();
                 for ag in a.iter().filter(|a| a.needs_you()) {
-                    if !seen.contains(&ag.sid) {
-                        seen.push(ag.sid.clone());
-                        util::spawn(&[
-                            "notify-send",
-                            "-u",
-                            "critical",
-                            "-a",
-                            "vector-bar",
-                            "Agent needs you",
-                            &format!("{} · {}", ag.name, ag.label()),
-                        ]);
+                    if seen.iter().any(|(s, _)| s == &ag.sid) {
+                        continue;
                     }
+                    let body = format!("{} · {}", ag.name, ag.label());
+                    let id = if crate::notify::enabled() {
+                        store.notify(
+                            crate::notify::Note {
+                                app: "vector-bar".into(),
+                                summary: "Agent needs you".into(),
+                                body,
+                                urgency: 2,
+                                ..Default::default()
+                            },
+                            0,
+                            0,
+                        )
+                    } else {
+                        util::spawn(&["notify-send", "-u", "critical", "-a", "vector-bar", "Agent needs you", &body]);
+                        0
+                    };
+                    seen.push((ag.sid.clone(), id));
                 }
-                seen.retain(|s| a.iter().any(|x| &x.sid == s && x.needs_you()));
+                seen.retain(|(s, id)| {
+                    let waiting = a.iter().any(|x| &x.sid == s && x.needs_you());
+                    if !waiting && *id != 0 && store.live().iter().any(|n| n.id == *id) {
+                        store.close(*id, 3);
+                    }
+                    waiting
+                });
             }
             mode::set(M_AGENT, a.iter().any(|x| x.needs_you()));
             let changed = *i.agents.borrow() != a;
