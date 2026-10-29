@@ -19,7 +19,6 @@ use crate::theme::Theme;
 use crate::ui::{self, Tap};
 use crate::util;
 
-const WIN_IDLE_FILE: &str = "/media/daanh/Shared/VMs/win11-setup/win11-idle.txt";
 const WIN_LIMIT: u64 = 1800;
 
 struct Inner {
@@ -36,6 +35,7 @@ struct Inner {
     mic_apps: RefCell<Vec<String>>,
     cam_apps: RefCell<Vec<String>>,
     win_state: RefCell<WinState>,
+    win_idle_file: PathBuf,
     streams: RefCell<Vec<util::Stream>>,
     mic_busy: Cell<bool>,
     vm_pid: Cell<Option<u32>>,
@@ -111,6 +111,14 @@ impl Indicators {
             mic_apps: RefCell::default(),
             cam_apps: RefCell::default(),
             win_state: RefCell::default(),
+            win_idle_file: {
+                let p = o.str("vm_idle_file", "");
+                if p.is_empty() {
+                    util::runtime_dir().join("vm-idle.txt")
+                } else {
+                    util::expand(&p)
+                }
+            },
             streams: RefCell::default(),
             mic_busy: Cell::new(false),
             vm_pid: Cell::new(None),
@@ -485,7 +493,7 @@ impl Inner {
                 })
                 .unwrap_or_default();
         }
-        st.input_idle = std::fs::metadata(WIN_IDLE_FILE)
+        st.input_idle = std::fs::metadata(&self.win_idle_file)
             .ok()
             .filter(|m| {
                 m.modified()
@@ -493,7 +501,7 @@ impl Inner {
                     .and_then(|t| t.elapsed().ok())
                     .is_some_and(|e| e.as_secs() < 90)
             })
-            .and_then(|_| util::read(WIN_IDLE_FILE))
+            .and_then(|_| util::read(&self.win_idle_file))
             .map(|s| s.chars().filter(|c| c.is_ascii_digit()).collect::<String>())
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);

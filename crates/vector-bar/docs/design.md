@@ -81,10 +81,11 @@ scroll to switch.
 center: clock (format/alt format, right tz select), media (MPRIS; click
 play-pause, right next, scroll skip), dividers that hide themselves, indicators:
 voxtype, screen recording, idle inhibit, sleep lock, win11 VM, notification silencing.
-right: pi + nas drive, phone (phonectl), Nothing buds (earctl), Sony (sonyctl),
-AI, clipboard, notifications, bluetooth, vpn, network, sysmon, battery;
-optional tray (StatusNotifierItem), custom exec modules (Waybar JSON format, so
-any old script still works).
+right: phone (phonectl), AI, clipboard, notifications, bluetooth (with embedded
+Sony sonyctl and Nothing earctl headphone controls), vpn, network, sysmon,
+battery; optional pi + nas drive (`homelab`, enabled via `init.lua`), tray
+(StatusNotifierItem), custom exec modules (Waybar JSON format, so any old script
+still works).
 
 ## Cut-over
 

@@ -487,8 +487,7 @@ fn cli_agents() -> Vec<Agent> {
                 subs: Vec::new(),
             });
         } else {
-            // agy keeps its conversations in binary stores: busy = it used cpu since the last poll
-            let busy = {
+            let cpu_busy = {
                 let mut m = TICKS.lock().ok();
                 let prev = m.as_ref().and_then(|m| m.get(&pid).copied());
                 if let Some(m) = m.as_mut() {
@@ -498,26 +497,32 @@ fn cli_agents() -> Vec<Agent> {
                     now > at && (ticks.saturating_sub(t)) as f64 / 100.0 / (now - at) > 0.03
                 })
             };
+            let (doing, prompt, in_turn, waiting, since, changed) = agy_session(pid, started, now);
+            let busy = in_turn || cpu_busy;
             out.push(Agent {
                 pid,
                 sid: format!("agy-{pid}"),
                 name: format!("agy {pid}"),
                 account: "antigravity".into(),
-                cwd: cwd.clone(),
-                status: if busy { "busy".into() } else { "idle".into() },
-                waiting: None,
+                cwd,
+                status: if waiting.is_some() {
+                    "waiting".into()
+                } else if busy {
+                    "busy".into()
+                } else {
+                    "idle".into()
+                },
+                waiting,
                 started,
-                since: started,
-                title: format!(
-                    "antigravity · {}",
-                    Path::new(&cwd)
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_default()
-                ),
-                doing: String::new(),
-                prompt: String::new(),
-                changed: started,
+                since,
+                title: "antigravity".into(),
+                doing: if busy && doing.is_empty() {
+                    "thinking".into()
+                } else {
+                    doing
+                },
+                prompt,
+                changed,
                 subs: Vec::new(),
             });
         }
@@ -526,6 +531,190 @@ fn cli_agents() -> Vec<Agent> {
         m.retain(|pid, _| seen.contains(pid));
     }
     out
+}
+
+type AgyMeta = (String, String, bool, Option<String>, f64, f64);
+type AgyMetaMap =
+    std::sync::Mutex<std::collections::HashMap<PathBuf, (u64, std::time::SystemTime, AgyMeta)>>;
+
+static AGY_META: std::sync::LazyLock<AgyMetaMap> = std::sync::LazyLock::new(Default::default);
+
+fn agy_transcript_path(pid: u32, since: f64) -> Option<PathBuf> {
+    let base = util::home().join(".gemini/antigravity-cli");
+    if let Ok(rd) = std::fs::read_dir(format!("/proc/{pid}/fd")) {
+        for e in rd.flatten() {
+            let Ok(target) = std::fs::read_link(e.path()) else {
+                continue;
+            };
+            let s = target.to_string_lossy();
+            let id = s
+                .split("/.gemini/antigravity-cli/presence/")
+                .nth(1)
+                .and_then(|x| x.strip_suffix(".lock"))
+                .or_else(|| {
+                    s.split("/.gemini/antigravity-cli/conversations/")
+                        .nth(1)
+                        .and_then(|x| x.strip_suffix(".db"))
+                });
+            if let Some(id) = id {
+                let p = base
+                    .join("brain")
+                    .join(id)
+                    .join(".system_generated/logs/transcript.jsonl");
+                if p.exists() {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    let Ok(rd) = std::fs::read_dir(base.join("brain")) else {
+        return None;
+    };
+    let mut best: Option<(f64, PathBuf)> = None;
+    for e in rd.flatten() {
+        let p = e.path().join(".system_generated/logs/transcript.jsonl");
+        let m = std::fs::metadata(&p)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+        if m >= since - 5.0 && best.as_ref().is_none_or(|(t, _)| m > *t) {
+            best = Some((m, p));
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
+fn describe_agy_tool(name: &Value, args: &Value) -> String {
+    if let Some(s) = args["toolSummary"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return s.to_lowercase();
+    }
+    let name = name.as_str().unwrap_or("");
+    let file = |k: &str| {
+        args[k]
+            .as_str()
+            .and_then(|p| Path::new(p).file_name())
+            .map(|f| f.to_string_lossy().to_string())
+    };
+    match name {
+        "read_file" => file("Path").map(|f| format!("reading {f}")),
+        "edit_file" => file("Path").map(|f| format!("editing {f}")),
+        "write_file" => file("Path").map(|f| format!("writing {f}")),
+        "run_command" => args["CommandLine"]
+            .as_str()
+            .map(|c| c.chars().take(48).collect()),
+        "search_web" => args["query"]
+            .as_str()
+            .map(|q| format!("searching {q}"))
+            .or_else(|| Some("on the web".into())),
+        "invoke_subagent" => args["Role"]
+            .as_str()
+            .map(|r| format!("subagent: {}", r.to_lowercase())),
+        "ask_question" => Some("waiting for answer".into()),
+        _ => None,
+    }
+    .unwrap_or_else(|| name.replace('_', " ").to_lowercase())
+}
+
+fn agy_session(pid: u32, started: f64, now: f64) -> AgyMeta {
+    let Some(path) = agy_transcript_path(pid, started) else {
+        return (String::new(), String::new(), false, None, started, started);
+    };
+    let Ok(md) = std::fs::metadata(&path) else {
+        return (String::new(), String::new(), false, None, started, started);
+    };
+    let (size, mtime) = (md.len(), md.modified().unwrap_or(std::time::UNIX_EPOCH));
+    if let Ok(c) = AGY_META.lock()
+        && let Some((_, _, m)) = c.get(&path).filter(|(s, t, _)| *s == size && *t == mtime)
+    {
+        let (doing, prompt, in_turn, waiting, since, changed) = m.clone();
+        let active = in_turn && now - changed < 900.0;
+        return (doing, prompt, active, waiting, since, changed);
+    }
+    use std::io::{Read, Seek, SeekFrom};
+    let mut buf = Vec::new();
+    if let Ok(mut f) = std::fs::File::open(&path) {
+        let len = f.seek(SeekFrom::End(0)).unwrap_or(0);
+        let _ = f.seek(SeekFrom::Start(len.saturating_sub(128_000)));
+        let _ = f.read_to_end(&mut buf);
+    }
+    let text = String::from_utf8_lossy(&buf);
+    let (mut doing, mut doing_at) = (String::new(), 0.0);
+    let (mut prompt, mut turn_start) = (String::new(), 0.0);
+    let (mut last_type, mut last_tools, mut last_at, mut waiting) =
+        (String::new(), 0usize, 0.0, None);
+    for line in text.lines().rev() {
+        let line = line.trim();
+        if line.is_empty() || !line.starts_with('{') {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let ty = v["type"].as_str().unwrap_or("");
+        let at = v["created_at"]
+            .as_str()
+            .and_then(util::parse_iso)
+            .unwrap_or(0.0);
+        let tools = v["tool_calls"].as_array();
+        if last_type.is_empty() && !ty.is_empty() {
+            last_type = ty.to_string();
+            last_tools = tools.map_or(0, Vec::len);
+            last_at = at;
+            if ty == "PLANNER_RESPONSE"
+                && tools.is_some_and(|ts| ts.iter().any(|c| c["name"] == "ask_question"))
+            {
+                waiting = Some("question".into());
+            }
+        }
+        if doing.is_empty()
+            && let Some(ts) = tools
+            && let Some(c) = ts.last()
+        {
+            doing = describe_agy_tool(&c["name"], &c["args"]);
+            doing_at = at;
+        }
+        if turn_start == 0.0 && ty == "USER_INPUT" {
+            turn_start = at;
+            if let Some(raw) = v["content"].as_str() {
+                let body = raw
+                    .split("<USER_REQUEST>")
+                    .nth(1)
+                    .and_then(|s| s.split("</USER_REQUEST>").next())
+                    .unwrap_or(raw)
+                    .trim();
+                prompt = body.to_string();
+            }
+        }
+        if !last_type.is_empty() && !doing.is_empty() && turn_start > 0.0 {
+            break;
+        }
+    }
+    if turn_start > 0.0 && doing_at < turn_start {
+        doing = "thinking".into();
+    }
+    let in_turn = matches!(last_type.as_str(), "USER_INPUT" | "GENERIC")
+        || (last_type == "PLANNER_RESPONSE" && last_tools > 0);
+    let since = if in_turn {
+        turn_start.max(started)
+    } else {
+        last_at.max(started)
+    };
+    let changed = last_at.max(doing_at).max(turn_start).max(started);
+    let res = (doing, prompt, in_turn, waiting, since, changed);
+    if let Ok(mut c) = AGY_META.lock() {
+        if c.len() > 64 {
+            c.clear();
+        }
+        c.insert(path, (size, mtime, res.clone()));
+    }
+    let active = res.2 && now - res.5 < 900.0;
+    (res.0, res.1, active, res.3, res.4, res.5)
 }
 
 /// From the newest rollout of a codex account written since the process started:
@@ -1343,11 +1532,19 @@ impl Inner {
                 .filter(|s| s.changed > t.changed - 1.0)
                 .map(|s| s.description.clone())
                 .unwrap_or_else(|| t.doing.clone());
+            let mid = if what.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " {} {}",
+                    ui::dim("·"),
+                    ui::dim(&util::esc(&short(&what, 42)))
+                )
+            };
             format!(
-                "{}  {}  {}  {}{more}",
+                "{}  {}{mid}  {}{more}",
                 SPIN[self.spin.get()],
                 util::esc(&short(&t.label(), 38)),
-                ui::dim(&util::esc(&short(&what, 42))),
                 ui::dim(&util::dur((now - t.since).max(0.0) as u64)),
             )
         } else {

@@ -69,8 +69,10 @@ fn err(e: mlua::Error) -> String {
     }
 }
 
-/// Loads every plugin file; `None` when there is no init.lua or plugins dir.
-pub fn load() -> Option<Rc<Runtime>> {
+/// Loads every plugin file and applies any `bar.setup` / `bar.config` /
+/// `bar.enable` / `bar.disable` calls to `cfg`; `None` when there is no
+/// `init.lua` or `plugins` dir.
+pub fn load(cfg: &mut crate::config::Config) -> Option<Rc<Runtime>> {
     let dir = util::config_dir().join("vector-bar");
     let mut files = Vec::new();
     if dir.join("init.lua").exists() {
@@ -88,6 +90,7 @@ pub fn load() -> Option<Rc<Runtime>> {
     if files.is_empty() {
         return None;
     }
+    PENDING_CFG.with(|c| *c.borrow_mut() = Some(cfg.clone()));
     let lua = Lua::new();
     let mut errors = Vec::new();
     if let Err(e) = install(&lua) {
@@ -115,6 +118,9 @@ pub fn load() -> Option<Rc<Runtime>> {
             Err(e) => errors.push(format!("{name}: {e}")),
         }
     }
+    if let Some(updated) = PENDING_CFG.with(|c| c.borrow_mut().take()) {
+        *cfg = updated;
+    }
     // registrations made while the files ran
     let regs: Vec<(String, RegistryKey)> = PENDING.with(|p| p.borrow_mut().drain(..).collect());
     rt.modules.borrow_mut().extend(regs);
@@ -127,11 +133,91 @@ pub fn load() -> Option<Rc<Runtime>> {
 thread_local! {
     static PENDING: RefCell<Vec<(String, RegistryKey)>> = const { RefCell::new(Vec::new()) };
     static PENDING_HOOKS: RefCell<Vec<RegistryKey>> = const { RefCell::new(Vec::new()) };
+    static PENDING_CFG: RefCell<Option<crate::config::Config>> = const { RefCell::new(None) };
+}
+
+fn merge_json(dst: &mut serde_json::Value, src: serde_json::Value) {
+    match (dst, src) {
+        (serde_json::Value::Object(d), serde_json::Value::Object(s)) => {
+            for (k, v) in s {
+                if v.is_null() {
+                    continue;
+                }
+                match d.get_mut(&k) {
+                    Some(existing) => merge_json(existing, v),
+                    None => {
+                        d.insert(k, v);
+                    }
+                }
+            }
+        }
+        (d, s) => *d = s,
+    }
+}
+
+fn apply_table_to_cfg(lua: &Lua, tbl: Table) -> mlua::Result<()> {
+    let patch: serde_json::Value = lua.from_value(Value::Table(tbl))?;
+    PENDING_CFG.with(|c| {
+        if let Some(cfg) = c.borrow_mut().as_mut()
+            && let Ok(mut base) = serde_json::to_value(&*cfg)
+        {
+            merge_json(&mut base, patch);
+            if let Ok(next) = serde_json::from_value::<crate::config::Config>(base) {
+                *cfg = next;
+            }
+        }
+    });
+    Ok(())
 }
 
 fn install(lua: &Lua) -> mlua::Result<()> {
     let bar = lua.create_table()?;
     bar.set("home", util::home().to_string_lossy().to_string())?;
+    for fn_name in ["setup", "config"] {
+        bar.set(fn_name, lua.create_function(apply_table_to_cfg)?)?;
+    }
+    bar.set(
+        "enable",
+        lua.create_function(|lua, (name, opts): (String, Option<Table>)| {
+            if let Some(t) = opts {
+                let m = lua.create_table()?;
+                let mods = lua.create_table()?;
+                mods.set(name.as_str(), t)?;
+                m.set("modules", mods)?;
+                apply_table_to_cfg(lua, m)?;
+            }
+            PENDING_CFG.with(|c| {
+                if let Some(cfg) = c.borrow_mut().as_mut() {
+                    let present = cfg.left.contains(&name)
+                        || cfg.center.contains(&name)
+                        || cfg.right.contains(&name);
+                    if !present {
+                        let idx = cfg
+                            .right
+                            .iter()
+                            .position(|x| x == "tray")
+                            .map(|i| i + 1)
+                            .unwrap_or(0);
+                        cfg.right.insert(idx, name);
+                    }
+                }
+            });
+            Ok(())
+        })?,
+    )?;
+    bar.set(
+        "disable",
+        lua.create_function(|_, name: String| {
+            PENDING_CFG.with(|c| {
+                if let Some(cfg) = c.borrow_mut().as_mut() {
+                    cfg.left.retain(|x| x != &name);
+                    cfg.center.retain(|x| x != &name);
+                    cfg.right.retain(|x| x != &name);
+                }
+            });
+            Ok(())
+        })?,
+    )?;
     bar.set(
         "module",
         lua.create_function(|lua, (name, spec): (String, Table)| {

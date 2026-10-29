@@ -16,19 +16,21 @@
 //! for that thing, read from the system.
 
 use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 use std::rc::Rc;
-use std::time::Duration;
+use std::sync::{Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use gtk::gdk;
 use gtk::prelude::*;
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::ui;
 use crate::util;
 
 /// `[osd]` in config.toml.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     /// ms on screen after the last change
@@ -283,8 +285,68 @@ fn describe(s: &serde_json::Value, input: bool) -> (String, String, String) {
     (title, detail, glyph.to_string())
 }
 
-fn volume_view(input: bool) -> View {
-    let Some(s) = pa_default(input) else {
+#[derive(Default)]
+struct WorkerState {
+    /// (pct, muted, when) for [sink, source]
+    vol: [Option<(i32, bool, Instant)>; 2],
+    /// cached (title, detail, glyph, when) for [sink, source]
+    sink_meta: [Option<(String, String, String, Instant)>; 2],
+    /// cached (title, detail, when) for display brightness
+    display_meta: Option<(String, String, Instant)>,
+}
+
+static STATE: std::sync::LazyLock<Mutex<WorkerState>> =
+    std::sync::LazyLock::new(|| Mutex::new(WorkerState::default()));
+
+/// Fast volume + mute read via `wpctl get-volume` ("Volume: 0.50 [MUTED]").
+fn wp_volume(input: bool) -> Option<(f64, bool)> {
+    let dev = if input {
+        "@DEFAULT_AUDIO_SOURCE@"
+    } else {
+        "@DEFAULT_AUDIO_SINK@"
+    };
+    let out = sh(&["wpctl", "get-volume", dev])?;
+    let muted = out.contains("MUTED");
+    let v = out
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse::<f64>().ok())?;
+    Some((v, muted))
+}
+
+fn sink_describe(input: bool, force: bool) -> Option<(String, String, String)> {
+    let idx = usize::from(input);
+    if !force
+        && let Ok(st) = STATE.lock()
+        && let Some((t, d, g, at)) = &st.sink_meta[idx]
+        && at.elapsed() < Duration::from_millis(2500)
+    {
+        return Some((t.clone(), d.clone(), g.clone()));
+    }
+    let s = pa_default(input)?;
+    let (t, d, g) = describe(&s, input);
+    if let Ok(mut st) = STATE.lock() {
+        st.sink_meta[idx] = Some((t.clone(), d.clone(), g.clone(), Instant::now()));
+    }
+    Some((t, d, g))
+}
+
+fn volume_view_with(input: bool, v_override: Option<(f64, bool)>, force_meta: bool) -> View {
+    let (v, muted) = match v_override.or_else(|| wp_volume(input)) {
+        Some(x) => x,
+        None => {
+            let Some(s) = pa_default(input) else {
+                return View {
+                    block: if input { "MIC" } else { "VOLUME" }.into(),
+                    title: "no device".into(),
+                    crit: true,
+                    ..Default::default()
+                };
+            };
+            (pa_volume(&s), s["mute"].as_bool().unwrap_or(false))
+        }
+    };
+    let Some((title, detail, glyph)) = sink_describe(input, force_meta) else {
         return View {
             block: if input { "MIC" } else { "VOLUME" }.into(),
             title: "no device".into(),
@@ -292,9 +354,6 @@ fn volume_view(input: bool) -> View {
             ..Default::default()
         };
     };
-    let v = pa_volume(&s);
-    let muted = s["mute"].as_bool().unwrap_or(false);
-    let (title, detail, glyph) = describe(&s, input);
     let block = match (input, muted) {
         (false, false) => "VOLUME",
         (false, true) => "MUTED",
@@ -319,43 +378,77 @@ fn volume_view(input: bool) -> View {
     }
 }
 
-fn change_volume(input: bool, arg: &str, cfg: &Config) {
+fn volume_view(input: bool) -> View {
+    volume_view_with(input, None, true)
+}
+
+fn step_volume_pct(cur: i32, arg: &str, cfg: &Config) -> Option<i32> {
+    let step = cfg.step.max(1) as i32;
+    let max = cfg.max_volume as i32;
+    let next = match arg {
+        "raise" => ((cur / step) + 1) * step,
+        "lower" => ((cur + step - 1) / step - 1) * step,
+        "mute-toggle" => return None,
+        a => {
+            if let Some(n) = a.strip_prefix('+').and_then(|n| n.parse::<i32>().ok()) {
+                cur + n
+            } else if let Some(n) = a.strip_prefix('-').and_then(|n| n.parse::<i32>().ok()) {
+                cur - n
+            } else if let Ok(n) = a.parse::<i32>() {
+                n
+            } else {
+                return None;
+            }
+        }
+    };
+    Some(next.clamp(0, max))
+}
+
+fn apply_volume_steps(input: bool, args: &[String], cfg: &Config) -> View {
     let dev = if input {
         "@DEFAULT_AUDIO_SOURCE@"
     } else {
         "@DEFAULT_AUDIO_SINK@"
     };
-    let limit = format!("{:.2}", cfg.max_volume as f64 / 100.0);
-    let step = cfg.step;
-    let set = |amount: String| {
-        sh(&["wpctl", "set-mute", dev, "0"]);
-        sh(&["wpctl", "set-volume", "-l", &limit, dev, &amount]);
+    let idx = usize::from(input);
+    let (hw_vol, hw_muted) = wp_volume(input).unwrap_or((0.0, false));
+    let hw_pct = (hw_vol * 100.0).round() as i32;
+    let (mut cur, mut muted) = {
+        let st = STATE.lock().ok();
+        match st.as_ref().and_then(|s| s.vol[idx]).filter(|(p, _, at)| {
+            at.elapsed() < Duration::from_millis(2500) && (*p - hw_pct).abs() <= 8
+        }) {
+            Some((p, m, _)) => (p, m),
+            None => (hw_pct, hw_muted),
+        }
     };
-    match arg {
-        "raise" => set(format!("{step}%+")),
-        "lower" => {
-            sh(&[
-                "wpctl",
-                "set-volume",
-                "-l",
-                &limit,
-                dev,
-                &format!("{step}%-"),
-            ]);
-        }
-        "mute-toggle" => {
-            sh(&["wpctl", "set-mute", dev, "toggle"]);
-        }
-        a => {
-            if let Some(n) = a.strip_prefix('+').and_then(|n| n.parse::<u32>().ok()) {
-                set(format!("{n}%+"));
-            } else if let Some(n) = a.strip_prefix('-').and_then(|n| n.parse::<u32>().ok()) {
-                sh(&["wpctl", "set-volume", "-l", &limit, dev, &format!("{n}%-")]);
-            } else if let Ok(n) = a.parse::<u32>() {
-                set(format!("{n}%"));
+    let mut changed_vol = false;
+    let mut toggled_mute = false;
+    for arg in args {
+        if arg == "mute-toggle" {
+            muted = !muted;
+            toggled_mute = true;
+        } else if let Some(next) = step_volume_pct(cur, arg, cfg) {
+            if arg == "raise" || arg.starts_with('+') || !arg.starts_with('-') {
+                muted = false;
             }
+            cur = next;
+            changed_vol = true;
         }
     }
+    if toggled_mute && !changed_vol {
+        sh(&["wpctl", "set-mute", dev, if muted { "1" } else { "0" }]);
+    } else if changed_vol {
+        if hw_muted && !muted {
+            sh(&["wpctl", "set-mute", dev, "0"]);
+        }
+        let limit = format!("{:.2}", cfg.max_volume as f64 / 100.0);
+        sh(&["wpctl", "set-volume", "-l", &limit, dev, &format!("{cur}%")]);
+    }
+    if let Ok(mut st) = STATE.lock() {
+        st.vol[idx] = Some((cur, muted, Instant::now()));
+    }
+    volume_view_with(input, Some((cur as f64 / 100.0, muted)), false)
 }
 
 fn backlight() -> Option<std::path::PathBuf> {
@@ -383,13 +476,13 @@ fn focused_monitor_json() -> Option<serde_json::Value> {
         .cloned()
 }
 
-fn display_view(known: Option<f64>) -> View {
-    let value = known.or_else(|| {
-        let d = backlight()?;
-        let cur = util::read_num(d.join("brightness"))? as f64;
-        let max = util::read_num(d.join("max_brightness"))? as f64;
-        Some(cur / max.max(1.0))
-    });
+fn display_meta() -> (String, String) {
+    if let Ok(st) = STATE.lock()
+        && let Some((t, d, at)) = &st.display_meta
+        && at.elapsed() < Duration::from_millis(2500)
+    {
+        return (t.clone(), d.clone());
+    }
     let mon = focused_monitor_json();
     let connector = mon
         .as_ref()
@@ -402,14 +495,18 @@ fn display_view(known: Option<f64>) -> View {
         .unwrap_or("")
         .trim()
         .to_string();
-    let title = if connector.starts_with("eDP") {
+    let builtin = connector.starts_with("eDP");
+    let title = if builtin {
         "built-in display".to_string()
     } else if !model.is_empty() {
         model
     } else {
         connector.clone()
     };
-    let mut extra = vec![connector];
+    let mut extra = Vec::new();
+    if !builtin && title != connector {
+        extra.push(connector);
+    }
     // night light: hyprsunset's current temperature, when it tints
     if util::proc_running("hyprsunset")
         && let Some(t) =
@@ -422,6 +519,21 @@ fn display_view(known: Option<f64>) -> View {
     if util::runtime_dir().join("lumend.sock").exists() {
         extra.push("adaptive".into());
     }
+    let detail = extra.join(" · ");
+    if let Ok(mut st) = STATE.lock() {
+        st.display_meta = Some((title.clone(), detail.clone(), Instant::now()));
+    }
+    (title, detail)
+}
+
+fn display_view(known: Option<f64>) -> View {
+    let value = known.or_else(|| {
+        let d = backlight()?;
+        let cur = util::read_num(d.join("brightness"))? as f64;
+        let max = util::read_num(d.join("max_brightness"))? as f64;
+        Some(cur / max.max(1.0))
+    });
+    let (title, detail) = display_meta();
     View {
         block: "DISPLAY".into(),
         glyph: match value {
@@ -430,7 +542,7 @@ fn display_view(known: Option<f64>) -> View {
             _ => "󰃠".into(),
         },
         title,
-        detail: extra.join(" · "),
+        detail,
         value,
         value_text: value.map(pct).unwrap_or_default(),
         ..Default::default()
@@ -630,14 +742,30 @@ fn custom_view(msg: &str, icon: &str, progress: Option<f64>, ptext: &str) -> Vie
     }
 }
 
-fn work(req: &Req, cfg: &Config) -> View {
-    match req {
+fn work_batch(batch: Vec<(u64, Req, Config)>) -> Option<(u64, View)> {
+    let (last_seq, last_req, last_cfg) = batch.last()?.clone();
+    // Coalesce consecutive volume steps on the same device so key-repeat never lags or races.
+    if let Req::Volume { input, .. } = &last_req {
+        let input = *input;
+        let args: Vec<String> = batch
+            .iter()
+            .filter_map(|(_, r, _)| match r {
+                Req::Volume { input: i, arg } if *i == input => Some(arg.clone()),
+                _ => None,
+            })
+            .collect();
+        return Some((last_seq, apply_volume_steps(input, &args, &last_cfg)));
+    }
+    let view = match &last_req {
         Req::Volume { input, arg } => {
-            change_volume(*input, arg, cfg);
-            volume_view(*input)
+            apply_volume_steps(*input, std::slice::from_ref(arg), &last_cfg)
         }
-        Req::Brightness(arg) => {
-            change_brightness(arg, cfg);
+        Req::Brightness(_) => {
+            for (_, r, c) in &batch {
+                if let Req::Brightness(a) = r {
+                    change_brightness(a, c);
+                }
+            }
             display_view(None)
         }
         Req::Player(a) => player_view(a),
@@ -647,14 +775,32 @@ fn work(req: &Req, cfg: &Config) -> View {
             progress,
             progress_text,
         } => custom_view(msg, icon, *progress, progress_text),
-    }
+    };
+    Some((last_seq, view))
 }
 
 // ── the window ──────────────────────────────────────────────────────────
 
+type MeterState = Rc<RefCell<(f64, Option<u32>, bool, bool)>>;
+
+struct Widgets {
+    card: gtk::Box,
+    block: gtk::Label,
+    slant: gtk::DrawingArea,
+    slant_crit: Rc<Cell<bool>>,
+    glyph: gtk::Label,
+    title: gtk::Label,
+    detail: gtk::Label,
+    value: gtk::Label,
+    meter: gtk::DrawingArea,
+    meter_state: MeterState,
+    list: gtk::Box,
+}
+
 struct Osd {
     app: gtk::Application,
     win: RefCell<Option<gtk::ApplicationWindow>>,
+    widgets: RefCell<Option<Widgets>>,
     hide: RefCell<Option<glib::SourceId>>,
     seq: Cell<u64>,
     shown_seq: Cell<u64>,
@@ -662,18 +808,63 @@ struct Osd {
     monitor: RefCell<Option<String>>,
 }
 
+type Queue = (Mutex<VecDeque<(u64, Req, Config)>>, Condvar);
+
+static QUEUE: std::sync::LazyLock<Queue> =
+    std::sync::LazyLock::new(|| (Mutex::new(VecDeque::new()), Condvar::new()));
+
 thread_local! {
     static OSD: RefCell<Option<Rc<Osd>>> = const { RefCell::new(None) };
+    static WORKER_STARTED: Cell<bool> = const { Cell::new(false) };
+}
+
+fn ensure_worker() {
+    if WORKER_STARTED.with(|s| s.replace(true)) {
+        return;
+    }
+    let (tx, rx) = async_channel::unbounded::<(u64, View)>();
+    std::thread::spawn(move || {
+        let (lock, cvar) = &*QUEUE;
+        loop {
+            let batch: Vec<(u64, Req, Config)> = {
+                let mut q = lock.lock().unwrap();
+                while q.is_empty() {
+                    q = cvar.wait(q).unwrap();
+                }
+                q.drain(..).collect()
+            };
+            if let Some(res) = work_batch(batch)
+                && tx.send_blocking(res).is_err()
+            {
+                break;
+            }
+        }
+    });
+    glib::spawn_future_local(async move {
+        while let Ok((seq, view)) = rx.recv().await {
+            let Some(o) = osd() else { continue };
+            if seq < o.shown_seq.get() {
+                continue;
+            }
+            o.shown_seq.set(seq);
+            o.show(&view);
+        }
+    });
 }
 
 pub fn init(app: &gtk::Application, cfg: &Config) {
+    ensure_worker();
     let existing = OSD.with(|o| o.borrow().clone());
     match existing {
-        Some(o) => *o.cfg.borrow_mut() = cfg.clone(),
+        Some(o) => {
+            *o.cfg.borrow_mut() = cfg.clone();
+            *o.widgets.borrow_mut() = None;
+        }
         None => {
             let o = Rc::new(Osd {
                 app: app.clone(),
                 win: RefCell::default(),
+                widgets: RefCell::default(),
                 hide: RefCell::default(),
                 seq: Cell::new(0),
                 shown_seq: Cell::new(0),
@@ -695,22 +886,15 @@ pub fn request(args: &[&str]) -> String {
         return "osd: nothing to show (see vector-bar --help)".into();
     };
     let Some(o) = osd() else { return String::new() };
+    ensure_worker();
     let seq = o.seq.get() + 1;
     o.seq.set(seq);
     let cfg = o.cfg.borrow().clone();
-    let w = Rc::downgrade(&o);
-    util::bg(
-        move || work(&req, &cfg),
-        move |view| {
-            let Some(o) = w.upgrade() else { return };
-            // key repeat: an older answer arriving late must not win
-            if seq < o.shown_seq.get() {
-                return;
-            }
-            o.shown_seq.set(seq);
-            o.show(&view);
-        },
-    );
+    let (lock, cvar) = &*QUEUE;
+    if let Ok(mut q) = lock.lock() {
+        q.push_back((seq, req, cfg));
+        cvar.notify_one();
+    }
     String::new()
 }
 
@@ -766,16 +950,15 @@ fn focused_monitor() -> Option<(gdk::Monitor, String)> {
 impl Osd {
     fn show(self: &Rc<Self>, v: &View) {
         let cfg = self.cfg.borrow().clone();
-        let mon = focused_monitor();
-        // moved to another screen: remap there
-        let moved = mon.as_ref().map(|(_, c)| c.clone()) != *self.monitor.borrow();
-        if moved && let Some(w) = self.win.borrow_mut().take() {
-            w.destroy();
-        }
-        let existing = self.win.borrow().clone();
-        let win = match existing {
-            Some(w) => w,
-            None => {
+        let already_visible = self.win.borrow().as_ref().is_some_and(|w| w.is_visible());
+        if !already_visible {
+            let mon = focused_monitor();
+            let moved = mon.as_ref().map(|(_, c)| c.clone()) != *self.monitor.borrow();
+            if moved && let Some(w) = self.win.borrow_mut().take() {
+                w.destroy();
+                *self.widgets.borrow_mut() = None;
+            }
+            if self.win.borrow().is_none() {
                 let w = gtk::ApplicationWindow::new(&self.app);
                 w.add_css_class("vosd");
                 w.init_layer_shell();
@@ -795,11 +978,20 @@ impl Osd {
                         s.set_input_region(Some(&gtk::cairo::Region::create()));
                     }
                 });
-                *self.win.borrow_mut() = Some(w.clone());
-                w
+                *self.win.borrow_mut() = Some(w);
             }
+        }
+        let Some(win) = self.win.borrow().clone() else {
+            return;
         };
-        win.set_child(Some(&build(v, cfg.width)));
+        if self.widgets.borrow().is_none() {
+            let ws = build_widgets(cfg.width);
+            win.set_child(Some(&ws.card));
+            *self.widgets.borrow_mut() = Some(ws);
+        }
+        if let Some(ws) = self.widgets.borrow().as_ref() {
+            update_widgets(ws, v, cfg.width);
+        }
         if !win.is_visible() {
             win.present();
         }
@@ -820,64 +1012,109 @@ impl Osd {
     }
 }
 
-fn build(v: &View, width: i32) -> gtk::Widget {
+fn build_widgets(width: i32) -> Widgets {
     let t = crate::panel::current_theme();
     let card = ui::vbox(0, &["card", "osd"]);
-    if v.crit {
-        card.add_css_class("crit-block");
-    }
     card.set_size_request(width, -1);
     let head = ui::hbox(0, &["head"]);
-    let block = ui::text(&v.block, &["htitle"]);
+    let block = ui::text("", &["htitle"]);
     block.set_valign(gtk::Align::Fill);
     head.append(&block);
-    head.append(&slant(if v.crit { &t.color1 } else { &t.accent }));
-    if !v.glyph.is_empty() {
-        let g = ui::text(&v.glyph, &["oglyph"]);
-        g.set_margin_start(8);
-        head.append(&g);
-    }
-    let title = ui::text(&v.title, &["otitle"]);
+    let slant_crit = Rc::new(Cell::new(false));
+    let slant_area = slant(&t.accent, &t.color1, slant_crit.clone());
+    head.append(&slant_area);
+    let glyph = ui::text("", &["oglyph"]);
+    glyph.set_margin_start(10);
+    head.append(&glyph);
+    let title = ui::text("", &["otitle"]);
     title.set_margin_start(8);
-    ui::ellipsize(&title, 26);
+    ui::ellipsize(&title, 24);
     head.append(&title);
-    if !v.detail.is_empty() {
-        let d = ui::text(&v.detail, &["hdetail"]);
-        d.set_margin_start(8);
-        ui::ellipsize(&d, 26);
-        head.append(&d);
-    }
+    let detail = ui::text("", &["hdetail"]);
+    detail.set_margin_start(8);
+    ui::ellipsize(&detail, 22);
+    head.append(&detail);
     head.append(&ui::spacer());
-    if !v.value_text.is_empty() {
-        head.append(&ui::text(&v.value_text, &["ovalue"]));
-    }
+    let value = ui::text("", &["ovalue"]);
+    value.set_margin_start(12);
+    head.append(&value);
     card.append(&head);
-    if let Some(val) = v.value {
-        card.append(&meter(val, v.cells, v.smooth, v.crit, &t));
+
+    let meter_state = Rc::new(RefCell::new((0.0, None, false, false)));
+    let meter_area = meter(meter_state.clone(), &t);
+    card.append(&meter_area);
+
+    let list = ui::vbox(0, &["olist"]);
+    card.append(&list);
+
+    Widgets {
+        card,
+        block,
+        slant: slant_area,
+        slant_crit,
+        glyph,
+        title,
+        detail,
+        value,
+        meter: meter_area,
+        meter_state,
+        list,
     }
+}
+
+fn update_widgets(ws: &Widgets, v: &View, width: i32) {
+    ws.card.set_size_request(width, -1);
+    if v.crit {
+        ws.card.add_css_class("crit-block");
+    } else {
+        ws.card.remove_css_class("crit-block");
+    }
+    ws.block.set_text(&v.block);
+    if ws.slant_crit.replace(v.crit) != v.crit {
+        ws.slant.queue_draw();
+    }
+    ws.glyph.set_text(&v.glyph);
+    ws.glyph.set_visible(!v.glyph.is_empty());
+    ws.title.set_text(&v.title);
+    ws.detail.set_text(&v.detail);
+    ws.detail.set_visible(!v.detail.is_empty());
+    ws.value.set_text(&v.value_text);
+    ws.value.set_visible(!v.value_text.is_empty());
+    match v.value {
+        Some(val) => {
+            *ws.meter_state.borrow_mut() = (val, v.cells, v.smooth, v.crit);
+            ws.meter.set_visible(true);
+            ws.meter.queue_draw();
+        }
+        None => {
+            ws.meter.set_visible(false);
+        }
+    }
+    ui::clear(&ws.list);
     if !v.list.is_empty() {
-        let l = ui::vbox(0, &["olist"]);
         for (name, cur) in &v.list {
             let r = ui::text(name, &[if *cur { "ocur" } else { "dim" }]);
             r.set_xalign(0.0);
-            l.append(&r);
+            ws.list.append(&r);
         }
-        card.append(&l);
+        ws.list.set_visible(true);
+    } else {
+        ws.list.set_visible(false);
     }
-    card.upcast()
 }
 
-fn slant(hex: &str) -> gtk::DrawingArea {
+fn slant(accent_hex: &str, crit_hex: &str, crit: Rc<Cell<bool>>) -> gtk::DrawingArea {
     let d = gtk::DrawingArea::new();
     d.set_content_width(10);
     d.set_vexpand(true);
-    let c = gdk::RGBA::parse(hex).unwrap_or(gdk::RGBA::WHITE);
+    let acc = gdk::RGBA::parse(accent_hex).unwrap_or(gdk::RGBA::WHITE);
+    let red = gdk::RGBA::parse(crit_hex).unwrap_or(gdk::RGBA::RED);
     d.set_draw_func(move |_, cr, w, h| {
         cr.move_to(0.0, 0.0);
         cr.line_to(w as f64, 0.0);
         cr.line_to(0.0, h as f64);
         cr.close_path();
-        cr.set_source_color(&c);
+        cr.set_source_color(if crit.get() { &red } else { &acc });
         let _ = cr.fill();
     });
     d
@@ -885,13 +1122,7 @@ fn slant(hex: &str) -> gtk::DrawingArea {
 
 /// Cells of 5% (one per key press), or the device's own levels, or a plain
 /// bar for a track. Past 100% the extra cells turn warm.
-fn meter(
-    value: f64,
-    cells: Option<u32>,
-    smooth: bool,
-    muted: bool,
-    t: &crate::theme::Theme,
-) -> gtk::DrawingArea {
+fn meter(state: MeterState, t: &crate::theme::Theme) -> gtk::DrawingArea {
     let d = gtk::DrawingArea::new();
     d.add_css_class("ometer");
     d.set_content_height(8);
@@ -900,20 +1131,19 @@ fn meter(
         let c = gdk::RGBA::parse(hex).unwrap_or(gdk::RGBA::WHITE);
         gdk::RGBA::new(c.red(), c.green(), c.blue(), a)
     };
-    let on = if muted {
-        rgba(&t.foreground, 0.30)
-    } else {
-        rgba(&t.accent, 1.0)
-    };
+    let on_normal = rgba(&t.accent, 1.0);
+    let on_muted = rgba(&t.foreground, 0.30);
     let over = rgba(&t.warn, 1.0);
     let off = rgba(&t.foreground, 0.10);
     d.set_draw_func(move |_, cr, w, h| {
+        let (value, cells, smooth, muted) = *state.borrow();
+        let on = if muted { &on_muted } else { &on_normal };
         let (w, h) = (w as f64, h as f64);
         if smooth {
             cr.set_source_color(&off);
             cr.rectangle(0.0, 0.0, w, h);
             let _ = cr.fill();
-            cr.set_source_color(&on);
+            cr.set_source_color(on);
             cr.rectangle(0.0, 0.0, w * value.clamp(0.0, 1.0), h);
             let _ = cr.fill();
             return;
@@ -931,7 +1161,7 @@ fn meter(
                 if (i + 1.0) / n * top > 1.0 + 1e-9 {
                     &over
                 } else {
-                    &on
+                    on
                 }
             } else {
                 &off

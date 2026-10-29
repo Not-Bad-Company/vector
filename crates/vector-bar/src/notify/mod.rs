@@ -94,7 +94,7 @@ impl Note {
 // ── config ──────────────────────────────────────────────────────────────
 
 /// `[notifications]` in config.toml.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     /// serve notifications (false: leave it to mako)
@@ -134,7 +134,7 @@ impl Default for Config {
 /// `[[notifications.rules]]`: every rule whose matches all hold applies, in
 /// order (built-in rules first, so yours win). Patterns are case-insensitive
 /// substrings, `a|b` alternatives, `^` / `$` anchors.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Rule {
     pub app: Option<String>,
@@ -304,14 +304,37 @@ fn apply_rules(rules: &[Rule], n: &mut Note) -> Effects {
 
 // ── text ────────────────────────────────────────────────────────────────
 
+fn is_invisible_filler(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00ad}'
+            | '\u{034f}'
+            | '\u{061c}'
+            | '\u{115f}'
+            | '\u{1160}'
+            | '\u{17b4}'
+            | '\u{17b5}'
+            | '\u{180e}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{206f}'
+            | '\u{feff}'
+            | '\u{ffa0}'
+    )
+}
+
 /// Plain text: tags dropped, entities decoded, whitespace collapsed.
 pub fn plain(t: &str) -> String {
     let mut out = String::new();
     let mut tag = false;
     for c in t.chars() {
+        if is_invisible_filler(c) {
+            continue;
+        }
         match c {
             '<' => tag = true,
             '>' => tag = false,
+            '\u{00a0}' | '\u{2007}' | '\u{202f}' if !tag => out.push(' '),
             _ if !tag => out.push(c),
             _ => {}
         }

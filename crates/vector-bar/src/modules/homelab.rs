@@ -3,7 +3,7 @@
 //! Click: panel (Pi health, storage, drive, local mount and who holds it,
 //! services). Pi right: ssh; middle: refresh. NAS click: panel; right: open /mnt/nas.
 //!
-//! Metrics come from the Pi's forced-command ssh key (`ssh -n nas-metrics`),
+//! Metrics come from the Pi's forced-command ssh key (`ssh -n pi-metrics`),
 //! reachability from `tailscale status`, the mount from /proc/mounts. The
 //! drive's mount point is never stat-ed while unmounted (that would wake it
 //! through autofs).
@@ -73,10 +73,10 @@ impl Homelab {
             changed: Notify::default(),
             theme: ctx.theme.clone(),
             busy: Cell::new(false),
-            host: o.str("host", "daanhpi"),
-            peer: o.str("tailscale_name", "daanhpi"),
+            host: o.str("host", "raspberrypi"),
+            peer: o.str("tailscale_name", "raspberrypi"),
             mount: o.str("mount", "/mnt/nas"),
-            ssh_host: o.str("metrics_ssh", "nas-metrics"),
+            ssh_host: o.str("metrics_ssh", "pi-metrics"),
         });
         // first paint from the last known metrics
         let seed = util::read_json(metrics_cache())

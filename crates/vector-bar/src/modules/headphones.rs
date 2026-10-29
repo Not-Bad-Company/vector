@@ -94,7 +94,7 @@ struct State {
 
 struct Inner {
     kind: Kind,
-    slot: Slot,
+    slot: Option<Slot>,
     conn: Option<gio::DBusConnection>,
     state: RefCell<State>,
     changed: Notify,
@@ -107,6 +107,102 @@ struct Inner {
 
 pub struct Headphones(Rc<Inner>);
 
+/// Embedded controller used by the `bluetooth` module to expose Sony (`sonyctl`)
+/// and Nothing (`earctl`) headphone controls directly inside the Bluetooth popup
+/// and tooltip without taking extra bar slots.
+pub struct Both {
+    earbuds: Rc<Inner>,
+    sony: Rc<Inner>,
+}
+
+impl Both {
+    pub fn new(on_change: Notify) -> Self {
+        let earbuds = Inner::new(None, Kind::Earbuds);
+        let sony = Inner::new(None, Kind::Sony);
+        let c1 = on_change.clone();
+        earbuds.changed.connect(move || c1.emit());
+        sony.changed.connect(move || on_change.emit());
+        Self { earbuds, sony }
+    }
+
+    pub fn poll(&self) {
+        self.earbuds.poll();
+        self.sony.poll();
+    }
+
+    pub fn cycle_noise(&self) {
+        for h in [&self.sony, &self.earbuds] {
+            if h.state.borrow().address.is_some() {
+                h.cycle_noise();
+            }
+        }
+    }
+
+    pub fn any_connected(&self) -> bool {
+        self.sony.state.borrow().address.is_some() || self.earbuds.state.borrow().address.is_some()
+    }
+
+    pub fn append_tooltip(&self, sh: &gtk::Box) {
+        for i in [&self.sony, &self.earbuds] {
+            let s = i.state.borrow();
+            if s.address.is_none() {
+                continue;
+            }
+            let Some(st) = s.status.as_ref().filter(|_| s.server) else {
+                sh.append(&ui::tsection(i.kind.title()));
+                sh.append(&ui::text(
+                    if s.server {
+                        "waiting for session…"
+                    } else {
+                        "control server offline"
+                    },
+                    &["dim"],
+                ));
+                continue;
+            };
+            let name = match i.kind {
+                Kind::Earbuds => st["session"]["model"]["name"].as_str(),
+                Kind::Sony => st["session"]["name"].as_str(),
+            }
+            .unwrap_or(i.kind.title())
+            .to_lowercase();
+            sh.append(&ui::tsection(&format!(
+                "{name} · {}",
+                noise_label(&i.noise(st))
+            )));
+            for (k, v, c) in batteries(i.kind, st) {
+                let row = ui::hbox(8, &[]);
+                row.append(&ui::text(&k, &["dim"]).tap(|l| l.set_width_chars(7)));
+                let cls = if v <= 10 {
+                    "crit"
+                } else if v <= 20 {
+                    "warn"
+                } else {
+                    ""
+                };
+                let m = ui::meter(v as f64 / 100.0, cls);
+                m.set_size_request(70, -1);
+                m.set_hexpand(false);
+                row.append(&m);
+                row.append(&ui::text(
+                    &format!("{v}%{}", if c { "  charging" } else { "" }),
+                    &[cls],
+                ));
+                sh.append(&row);
+            }
+        }
+    }
+
+    pub fn render_into(&self, root: &gtk::Box) {
+        ui::clear(root);
+        for i in [&self.sony, &self.earbuds] {
+            if i.state.borrow().address.is_some() {
+                fill_controls(i, root, true);
+            }
+        }
+    }
+}
+
 impl Headphones {
     pub fn earbuds(ctx: &Ctx) -> Headphones {
         Self::new(ctx, Kind::Earbuds)
@@ -116,9 +212,45 @@ impl Headphones {
     }
 
     fn new(ctx: &Ctx, kind: Kind) -> Headphones {
+        let slot = ctx.slot(kind.name(), &[]);
+        slot.set_visible(false);
+        let inner = Inner::new(Some(slot.clone()), kind);
+        let w = Rc::downgrade(&inner);
+        slot.on_left(move || {
+            if let Some(i) = w.upgrade() {
+                i.cycle_noise();
+            }
+        });
+        let w = Rc::downgrade(&inner);
+        slot.on_middle(move || {
+            if let Some(i) = w.upgrade() {
+                i.middle();
+            }
+        });
+        let w = Rc::downgrade(&inner);
+        slot.on_right(move || {
+            if let Some(i) = w.upgrade()
+                && let Some(s) = &i.slot
+            {
+                s.toggle_panel(None, false);
+            }
+        });
+        let w = Rc::downgrade(&inner);
+        slot.tooltip(move || w.upgrade().and_then(|i| i.tooltip()));
+        let w = Rc::downgrade(&inner);
+        slot.panel(move |p| match w.upgrade() {
+            Some(i) => panel(&i, p),
+            None => ui::vbox(0, &[]).upcast(),
+        });
+        Headphones(inner)
+    }
+}
+
+impl Inner {
+    fn new(slot: Option<Slot>, kind: Kind) -> Rc<Inner> {
         let inner = Rc::new(Inner {
             kind,
-            slot: ctx.slot(kind.name(), &[]),
+            slot,
             conn: dbus::system(),
             state: RefCell::default(),
             changed: Notify::default(),
@@ -131,34 +263,6 @@ impl Headphones {
             }),
             low_sent: RefCell::default(),
             _sub: RefCell::default(),
-        });
-        inner.slot.set_visible(false);
-        let w = Rc::downgrade(&inner);
-        inner.slot.on_left(move || {
-            if let Some(i) = w.upgrade() {
-                i.cycle_noise();
-            }
-        });
-        let w = Rc::downgrade(&inner);
-        inner.slot.on_middle(move || {
-            if let Some(i) = w.upgrade() {
-                i.middle();
-            }
-        });
-        let w = Rc::downgrade(&inner);
-        inner.slot.on_right(move || {
-            if let Some(i) = w.upgrade() {
-                i.slot.toggle_panel(None, false);
-            }
-        });
-        let w = Rc::downgrade(&inner);
-        inner
-            .slot
-            .tooltip(move || w.upgrade().and_then(|i| i.tooltip()));
-        let w = Rc::downgrade(&inner);
-        inner.slot.panel(move |p| match w.upgrade() {
-            Some(i) => panel(&i, p),
-            None => ui::vbox(0, &[]).upcast(),
         });
         // a device connecting shows up at once
         if let Some(c) = &inner.conn {
@@ -174,11 +278,8 @@ impl Headphones {
         }
         inner.poll();
         util::every(15_000, &inner, |i| i.poll());
-        Headphones(inner)
+        inner
     }
-}
-
-impl Inner {
     fn poll(self: &Rc<Self>) {
         if self.busy.replace(true) {
             return;
@@ -285,19 +386,22 @@ impl Inner {
 
     fn render(&self) {
         let s = self.state.borrow();
+        let Some(slot) = &self.slot else {
+            return;
+        };
         if s.address.is_none() {
-            self.slot.set_visible(false);
+            slot.set_visible(false);
             return;
         }
-        self.slot.set_visible(true);
+        slot.set_visible(true);
         let Some(st) = s.status.as_ref().filter(|_| s.server) else {
-            self.slot.set_markup(if self.kind == Kind::Earbuds {
+            slot.set_markup(if self.kind == Kind::Earbuds {
                 "󱡑"
             } else {
                 "󰋍"
             });
-            self.slot.set_classes(&["dim"]);
-            self.slot.bump();
+            slot.set_classes(&["dim"]);
+            slot.bump();
             return;
         };
         let n = self.noise(st);
@@ -320,7 +424,7 @@ impl Inner {
         if chg {
             t += " \u{f140b}";
         }
-        self.slot.set_markup(&t);
+        slot.set_markup(&t);
         let cls = if n == "off" {
             "dim"
         } else if lvl.is_some_and(|l| l <= 10) && !chg {
@@ -330,8 +434,8 @@ impl Inner {
         } else {
             ""
         };
-        self.slot.set_classes(&[cls]);
-        self.slot.bump();
+        slot.set_classes(&[cls]);
+        slot.bump();
     }
 
     fn check_low(&self, s: &State) {
@@ -531,14 +635,343 @@ fn batteries(k: Kind, st: &Value) -> Vec<(String, i64, bool)> {
 
 impl Module for Headphones {
     fn view(&self, _: &BarInfo) -> gtk::Widget {
-        self.0.slot.view()
+        self.0
+            .slot
+            .as_ref()
+            .map(Slot::view)
+            .unwrap_or_else(|| ui::hbox(0, &[]).upcast())
     }
     fn refresh(&self) {
         self.0.poll();
     }
     fn slots(&self) -> Vec<Slot> {
-        vec![self.0.slot.clone()]
+        self.0.slot.iter().cloned().collect()
     }
+}
+
+fn fill_controls(i: &Rc<Inner>, body: &gtk::Box, embedded: bool) -> String {
+    let s = i.state.borrow().clone();
+    let Some(st) = s.status.clone().filter(|_| s.server) else {
+        let msg = if s.server {
+            "waiting for the session…"
+        } else {
+            "control server is not running"
+        };
+        if embedded {
+            body.append(&ui::section(i.kind.title()));
+            body.append(&ui::text(msg, &["empty-note"]));
+        }
+        if !s.server {
+            body.append(&ui::text(
+                &format!(
+                    "systemctl --user enable --now {}",
+                    if i.kind == Kind::Earbuds {
+                        "earctl"
+                    } else {
+                        "sonyctl"
+                    }
+                ),
+                &["empty-note"],
+            ));
+        }
+        return msg.to_string();
+    };
+    let name = match i.kind {
+        Kind::Earbuds => st["session"]["model"]["name"].as_str(),
+        Kind::Sony => st["session"]["name"].as_str(),
+    }
+    .unwrap_or(i.kind.title())
+    .to_lowercase();
+
+    if embedded {
+        let hdr = ui::hbox(8, &[]);
+        hdr.append(&ui::section(&name).tap(|l| l.set_hexpand(true)));
+        let w = Rc::downgrade(i);
+        let rc = ui::link("reconnect", &[], move || {
+            if let Some(i) = w.upgrade() {
+                let ep = i.kind.endpoint();
+                i.last_connect.set(0.0);
+                let w2 = Rc::downgrade(&i);
+                util::bg(
+                    move || delete(ep, "/api/session"),
+                    move |_| {
+                        if let Some(i) = w2.upgrade() {
+                            i.poll();
+                        }
+                    },
+                );
+            }
+        });
+        rc.set_margin_end(14);
+        hdr.append(&rc);
+        body.append(&hdr);
+    } else {
+        body.append(&ui::section("battery").tap(|l| l.add_css_class("first")));
+    }
+
+    for (k, v, c) in batteries(i.kind, &st) {
+        let cls = if v <= 10 {
+            "crit"
+        } else if v <= 20 {
+            "warn"
+        } else {
+            ""
+        };
+        body.append(&ui::meter_row(
+            &k,
+            v as f64 / 100.0,
+            &format!("{v}%"),
+            if c { "charging" } else { "" },
+            cls,
+        ));
+    }
+
+    body.append(&ui::section("noise control"));
+    let cur = i.noise(&st);
+    let opts: Vec<(&str, &str)> = match i.kind {
+        Kind::Earbuds => vec![
+            ("noise_cancellation_adaptive", "adaptive"),
+            ("noise_cancellation_high", "high"),
+            ("noise_cancellation_mid", "mid"),
+            ("noise_cancellation_low", "low"),
+            ("transparency", "transp"),
+            ("off", "off"),
+        ],
+        Kind::Sony => vec![
+            ("noise_cancelling", "cancel"),
+            ("ambient", "ambient"),
+            ("off", "off"),
+        ],
+    };
+    let w2 = Rc::downgrade(i);
+    let kind = i.kind;
+    body.append(
+        &ui::segmented(&opts, &cur, move |v| {
+            if let Some(i) = w2.upgrade() {
+                match kind {
+                    Kind::Earbuds => i.send("/api/anc", json!({"level": v})),
+                    Kind::Sony => i.send("/api/noise-control", json!({"mode": v})),
+                }
+            }
+        })
+        .tap(|b| b.add_css_class("chips")),
+    );
+    if i.kind == Kind::Sony && cur == "ambient" {
+        let lvl = st["noise_control"]["ambient_level"]
+            .as_f64()
+            .unwrap_or(10.0);
+        let row = ui::hbox(8, &["kv"]);
+        row.append(&ui::text("level", &["k"]));
+        let sc = gtk::Scale::with_range(gtk::Orientation::Horizontal, 1.0, 20.0, 1.0);
+        sc.set_value(lvl);
+        sc.set_hexpand(true);
+        sc.set_draw_value(true);
+        let w3 = Rc::downgrade(i);
+        sc.connect_change_value(move |_, _, v| {
+            if let Some(i) = w3.upgrade() {
+                i.send(
+                    "/api/noise-control",
+                    json!({"mode": "ambient", "ambient_level": v.round() as i64}),
+                );
+            }
+            glib::Propagation::Proceed
+        });
+        row.append(&sc);
+        body.append(&row);
+        let voice = st["noise_control"]["focus_on_voice"] == true;
+        let r = ui::Row::new("\u{f0362}", "focus on voice", "");
+        let w3 = Rc::downgrade(i);
+        r.trail.append(&ui::switch(voice, move |on| {
+            if let Some(i) = w3.upgrade() {
+                i.send(
+                    "/api/noise-control",
+                    json!({"mode": "ambient", "focus_on_voice": on}),
+                );
+            }
+        }));
+        body.append(&r.root);
+    }
+
+    body.append(&ui::section("sound"));
+    match i.kind {
+        Kind::Earbuds => {
+            if let Some(eq) = st["eq"].as_i64() {
+                let w3 = Rc::downgrade(i);
+                let seg = ui::segmented(
+                    &[
+                        ("0", "balanced"),
+                        ("1", "voice"),
+                        ("2", "treble"),
+                        ("3", "bass"),
+                        ("5", "custom"),
+                    ],
+                    &eq.to_string(),
+                    move |v| {
+                        if let (Some(i), Ok(m)) = (w3.upgrade(), v.parse::<i64>()) {
+                            i.send("/api/eq", json!({"mode": m}));
+                        }
+                    },
+                );
+                body.append(&seg.tap(|b| b.add_css_class("chips")));
+            }
+            if st["enhanced_bass"].is_object() {
+                let lvl = if st["enhanced_bass"]["enabled"] == true {
+                    st["enhanced_bass"]["level"].as_i64().unwrap_or(0)
+                } else {
+                    0
+                };
+                let row = ui::hbox(0, &["kv"]);
+                row.append(&ui::text("bass", &["k"]));
+                let w3 = Rc::downgrade(i);
+                row.append(&ui::segmented(
+                    &[
+                        ("0", "off"),
+                        ("1", "1"),
+                        ("2", "2"),
+                        ("3", "3"),
+                        ("4", "4"),
+                        ("5", "5"),
+                    ],
+                    &lvl.to_string(),
+                    move |v| {
+                        if let (Some(i), Ok(l)) = (w3.upgrade(), v.parse::<i64>()) {
+                            i.send("/api/enhanced-bass", json!({"enabled": l > 0, "level": l}));
+                        }
+                    },
+                ));
+                body.append(&row);
+            }
+        }
+        Kind::Sony => {
+            if let Some(eq) = st["equalizer"]["preset"].as_str() {
+                let flow = gtk::FlowBox::new();
+                flow.set_selection_mode(gtk::SelectionMode::None);
+                flow.set_max_children_per_line(6);
+                flow.set_margin_start(16);
+                flow.set_margin_end(16);
+                for (k, l) in [
+                    ("off", "off"),
+                    ("bright", "bright"),
+                    ("excited", "excited"),
+                    ("mellow", "mellow"),
+                    ("relaxed", "relaxed"),
+                    ("vocal", "vocal"),
+                    ("treble", "treble"),
+                    ("bass", "bass"),
+                    ("speech", "speech"),
+                    ("custom", "custom"),
+                ] {
+                    let w3 = Rc::downgrade(i);
+                    flow.insert(
+                        &ui::chip(l, k == eq, move || {
+                            if let Some(i) = w3.upgrade() {
+                                i.send("/api/eq", json!({"preset": k}));
+                            }
+                        }),
+                        -1,
+                    );
+                }
+                body.append(&flow);
+            }
+            if let Some(v) = st["volume"]["level"].as_f64() {
+                let row = ui::hbox(8, &["kv"]);
+                row.append(&ui::text("volume", &["k"]));
+                let sc = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 30.0, 1.0);
+                sc.set_value(v);
+                sc.set_hexpand(true);
+                sc.set_draw_value(true);
+                let w3 = Rc::downgrade(i);
+                sc.connect_change_value(move |_, _, v| {
+                    if let Some(i) = w3.upgrade() {
+                        i.send("/api/volume", json!({"level": v.round() as i64}));
+                    }
+                    glib::Propagation::Proceed
+                });
+                row.append(&sc);
+                body.append(&row);
+            }
+        }
+    }
+
+    body.append(&ui::section("settings"));
+    let toggles: Vec<(&str, &str, &'static str, &'static str, bool)> = match i.kind {
+        Kind::Earbuds => vec![
+            (
+                "\u{f04c5}",
+                "low latency",
+                "/api/latency",
+                "low_latency_enabled",
+                st["low_latency"] == true,
+            ),
+            (
+                "\u{f07c5}",
+                "in-ear detection",
+                "/api/in-ear",
+                "detection_enabled",
+                st["in_ear_detection"] == true,
+            ),
+        ],
+        Kind::Sony => vec![
+            (
+                "\u{f0d4b}",
+                "dsee extreme",
+                "/api/dsee",
+                "enabled",
+                st["dsee"]["enabled"] == true,
+            ),
+            (
+                "\u{f0b79}",
+                "voice prompts",
+                "/api/voice-guidance",
+                "enabled",
+                st["voice_guidance"]["enabled"] == true,
+            ),
+        ],
+    };
+    for (icon, tname, path, field, on) in toggles {
+        let r = ui::Row::new(icon, tname, "");
+        let w3 = Rc::downgrade(i);
+        r.trail.append(&ui::switch(on, move |v| {
+            if let Some(i) = w3.upgrade() {
+                let mut m = serde_json::Map::new();
+                m.insert(field.to_string(), Value::Bool(v));
+                i.send(path, Value::Object(m));
+            }
+        }));
+        body.append(&r.root);
+    }
+    if i.kind == Kind::Earbuds {
+        for (k, l) in [("personalized_anc", "anc fit"), ("super_mic", "super mic")] {
+            if let Some(v) = st[k].as_bool() {
+                body.append(&ui::kv(l, if v { "on" } else { "off" }).0);
+            }
+        }
+        let row = ui::hbox(4, &["chips"]);
+        row.append(&ui::text("find", &["dim"]).tap(|l| l.set_margin_end(8)));
+        for (side, glyph) in [("left", "ring left"), ("right", "ring right")] {
+            let w3 = Rc::downgrade(i);
+            let b = confirm_button(
+                glyph,
+                "plays a loud tone: take the buds out first",
+                move || {
+                    if let Some(i) = w3.upgrade() {
+                        i.send("/api/ring", json!({"enable": true, "side": side}));
+                    }
+                },
+            );
+            b.add_css_class("chip");
+            row.append(&b);
+        }
+        let w3 = Rc::downgrade(i);
+        row.append(&ui::chip("stop", false, move || {
+            if let Some(i) = w3.upgrade() {
+                i.send("/api/ring", json!({"enable": false, "side": "left"}));
+                i.send("/api/ring", json!({"enable": false, "side": "right"}));
+            }
+        }));
+        body.append(&row);
+    }
+    util::esc(&name)
 }
 
 fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
@@ -556,312 +989,12 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
         body.add_controller(m);
     }
     let fill = {
-        let (w, body, detail, pc) = (
-            Rc::downgrade(i),
-            body.clone(),
-            card.detail.clone(),
-            p.clone(),
-        );
+        let (w, body, detail) = (Rc::downgrade(i), body.clone(), card.detail.clone());
         move || {
             let Some(i) = w.upgrade() else { return };
             ui::clear(&body);
-            let s = i.state.borrow().clone();
-            let Some(st) = s.status.clone().filter(|_| s.server) else {
-                detail.set_markup(if s.server {
-                    "waiting for the session…"
-                } else {
-                    "control server is not running"
-                });
-                if !s.server {
-                    body.append(&ui::text(
-                        &format!(
-                            "systemctl --user enable --now {}",
-                            if i.kind == Kind::Earbuds {
-                                "earctl"
-                            } else {
-                                "sonyctl"
-                            }
-                        ),
-                        &["empty-note"],
-                    ));
-                }
-                return;
-            };
-            let name = match i.kind {
-                Kind::Earbuds => st["session"]["model"]["name"].as_str(),
-                Kind::Sony => st["session"]["name"].as_str(),
-            }
-            .unwrap_or(i.kind.title())
-            .to_lowercase();
-            detail.set_markup(&util::esc(&name));
-            body.append(&ui::section("battery").tap(|l| l.add_css_class("first")));
-            for (k, v, c) in batteries(i.kind, &st) {
-                let cls = if v <= 10 {
-                    "crit"
-                } else if v <= 20 {
-                    "warn"
-                } else {
-                    ""
-                };
-                body.append(&ui::meter_row(
-                    &k,
-                    v as f64 / 100.0,
-                    &format!("{v}%"),
-                    if c { "charging" } else { "" },
-                    cls,
-                ));
-            }
-
-            body.append(&ui::section("noise control"));
-            let cur = i.noise(&st);
-            let opts: Vec<(&str, &str)> = match i.kind {
-                Kind::Earbuds => vec![
-                    ("noise_cancellation_adaptive", "adaptive"),
-                    ("noise_cancellation_high", "high"),
-                    ("noise_cancellation_mid", "mid"),
-                    ("noise_cancellation_low", "low"),
-                    ("transparency", "transp"),
-                    ("off", "off"),
-                ],
-                Kind::Sony => vec![
-                    ("noise_cancelling", "cancel"),
-                    ("ambient", "ambient"),
-                    ("off", "off"),
-                ],
-            };
-            let w2 = Rc::downgrade(&i);
-            let kind = i.kind;
-            body.append(
-                &ui::segmented(&opts, &cur, move |v| {
-                    if let Some(i) = w2.upgrade() {
-                        match kind {
-                            Kind::Earbuds => i.send("/api/anc", json!({"level": v})),
-                            Kind::Sony => i.send("/api/noise-control", json!({"mode": v})),
-                        }
-                    }
-                })
-                .tap(|b| b.add_css_class("chips")),
-            );
-            if i.kind == Kind::Sony && cur == "ambient" {
-                let lvl = st["noise_control"]["ambient_level"]
-                    .as_f64()
-                    .unwrap_or(10.0);
-                let row = ui::hbox(8, &["kv"]);
-                row.append(&ui::text("level", &["k"]));
-                let sc = gtk::Scale::with_range(gtk::Orientation::Horizontal, 1.0, 20.0, 1.0);
-                sc.set_value(lvl);
-                sc.set_hexpand(true);
-                sc.set_draw_value(true);
-                let w3 = Rc::downgrade(&i);
-                sc.connect_change_value(move |_, _, v| {
-                    if let Some(i) = w3.upgrade() {
-                        i.send(
-                            "/api/noise-control",
-                            json!({"mode": "ambient", "ambient_level": v.round() as i64}),
-                        );
-                    }
-                    glib::Propagation::Proceed
-                });
-                row.append(&sc);
-                body.append(&row);
-                let voice = st["noise_control"]["focus_on_voice"] == true;
-                let r = ui::Row::new("\u{f0362}", "focus on voice", "");
-                let w3 = Rc::downgrade(&i);
-                r.trail.append(&ui::switch(voice, move |on| {
-                    if let Some(i) = w3.upgrade() {
-                        i.send(
-                            "/api/noise-control",
-                            json!({"mode": "ambient", "focus_on_voice": on}),
-                        );
-                    }
-                }));
-                body.append(&r.root);
-            }
-
-            body.append(&ui::section("sound"));
-            match i.kind {
-                Kind::Earbuds => {
-                    if let Some(eq) = st["eq"].as_i64() {
-                        let w3 = Rc::downgrade(&i);
-                        let seg = ui::segmented(
-                            &[
-                                ("0", "balanced"),
-                                ("1", "voice"),
-                                ("2", "treble"),
-                                ("3", "bass"),
-                                ("5", "custom"),
-                            ],
-                            &eq.to_string(),
-                            move |v| {
-                                if let (Some(i), Ok(m)) = (w3.upgrade(), v.parse::<i64>()) {
-                                    i.send("/api/eq", json!({"mode": m}));
-                                }
-                            },
-                        );
-                        body.append(&seg.tap(|b| b.add_css_class("chips")));
-                    }
-                    if st["enhanced_bass"].is_object() {
-                        let lvl = if st["enhanced_bass"]["enabled"] == true {
-                            st["enhanced_bass"]["level"].as_i64().unwrap_or(0)
-                        } else {
-                            0
-                        };
-                        let row = ui::hbox(0, &["kv"]);
-                        row.append(&ui::text("bass", &["k"]));
-                        let w3 = Rc::downgrade(&i);
-                        row.append(&ui::segmented(
-                            &[
-                                ("0", "off"),
-                                ("1", "1"),
-                                ("2", "2"),
-                                ("3", "3"),
-                                ("4", "4"),
-                                ("5", "5"),
-                            ],
-                            &lvl.to_string(),
-                            move |v| {
-                                if let (Some(i), Ok(l)) = (w3.upgrade(), v.parse::<i64>()) {
-                                    i.send(
-                                        "/api/enhanced-bass",
-                                        json!({"enabled": l > 0, "level": l}),
-                                    );
-                                }
-                            },
-                        ));
-                        body.append(&row);
-                    }
-                }
-                Kind::Sony => {
-                    if let Some(eq) = st["equalizer"]["preset"].as_str() {
-                        let flow = gtk::FlowBox::new();
-                        flow.set_selection_mode(gtk::SelectionMode::None);
-                        flow.set_max_children_per_line(6);
-                        flow.set_margin_start(16);
-                        flow.set_margin_end(16);
-                        for (k, l) in [
-                            ("off", "off"),
-                            ("bright", "bright"),
-                            ("excited", "excited"),
-                            ("mellow", "mellow"),
-                            ("relaxed", "relaxed"),
-                            ("vocal", "vocal"),
-                            ("treble", "treble"),
-                            ("bass", "bass"),
-                            ("speech", "speech"),
-                            ("custom", "custom"),
-                        ] {
-                            let w3 = Rc::downgrade(&i);
-                            flow.insert(
-                                &ui::chip(l, k == eq, move || {
-                                    if let Some(i) = w3.upgrade() {
-                                        i.send("/api/eq", json!({"preset": k}));
-                                    }
-                                }),
-                                -1,
-                            );
-                        }
-                        body.append(&flow);
-                    }
-                    if let Some(v) = st["volume"]["level"].as_f64() {
-                        let row = ui::hbox(8, &["kv"]);
-                        row.append(&ui::text("volume", &["k"]));
-                        let sc =
-                            gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 30.0, 1.0);
-                        sc.set_value(v);
-                        sc.set_hexpand(true);
-                        sc.set_draw_value(true);
-                        let w3 = Rc::downgrade(&i);
-                        sc.connect_change_value(move |_, _, v| {
-                            if let Some(i) = w3.upgrade() {
-                                i.send("/api/volume", json!({"level": v.round() as i64}));
-                            }
-                            glib::Propagation::Proceed
-                        });
-                        row.append(&sc);
-                        body.append(&row);
-                    }
-                }
-            }
-
-            body.append(&ui::section("settings"));
-            let toggles: Vec<(&str, &str, &'static str, &'static str, bool)> = match i.kind {
-                Kind::Earbuds => vec![
-                    (
-                        "\u{f04c5}",
-                        "low latency",
-                        "/api/latency",
-                        "low_latency_enabled",
-                        st["low_latency"] == true,
-                    ),
-                    (
-                        "\u{f07c5}",
-                        "in-ear detection",
-                        "/api/in-ear",
-                        "detection_enabled",
-                        st["in_ear_detection"] == true,
-                    ),
-                ],
-                Kind::Sony => vec![
-                    (
-                        "\u{f0d4b}",
-                        "dsee extreme",
-                        "/api/dsee",
-                        "enabled",
-                        st["dsee"]["enabled"] == true,
-                    ),
-                    (
-                        "\u{f0b79}",
-                        "voice prompts",
-                        "/api/voice-guidance",
-                        "enabled",
-                        st["voice_guidance"]["enabled"] == true,
-                    ),
-                ],
-            };
-            for (icon, name, path, field, on) in toggles {
-                let r = ui::Row::new(icon, name, "");
-                let w3 = Rc::downgrade(&i);
-                r.trail.append(&ui::switch(on, move |v| {
-                    if let Some(i) = w3.upgrade() {
-                        let mut m = serde_json::Map::new();
-                        m.insert(field.to_string(), Value::Bool(v));
-                        i.send(path, Value::Object(m));
-                    }
-                }));
-                body.append(&r.root);
-            }
-            if i.kind == Kind::Earbuds {
-                for (k, l) in [("personalized_anc", "anc fit"), ("super_mic", "super mic")] {
-                    if let Some(v) = st[k].as_bool() {
-                        body.append(&ui::kv(l, if v { "on" } else { "off" }).0);
-                    }
-                }
-                let row = ui::hbox(4, &["chips"]);
-                row.append(&ui::text("find", &["dim"]).tap(|l| l.set_margin_end(8)));
-                for (side, glyph) in [("left", "ring left"), ("right", "ring right")] {
-                    let w3 = Rc::downgrade(&i);
-                    let b = confirm_button(
-                        glyph,
-                        "plays a loud tone: take the buds out first",
-                        move || {
-                            if let Some(i) = w3.upgrade() {
-                                i.send("/api/ring", json!({"enable": true, "side": side}));
-                            }
-                        },
-                    );
-                    b.add_css_class("chip");
-                    row.append(&b);
-                }
-                let w3 = Rc::downgrade(&i);
-                row.append(&ui::chip("stop", false, move || {
-                    if let Some(i) = w3.upgrade() {
-                        i.send("/api/ring", json!({"enable": false, "side": "left"}));
-                        i.send("/api/ring", json!({"enable": false, "side": "right"}));
-                    }
-                }));
-                body.append(&row);
-            }
-            let _ = &pc;
+            let det = fill_controls(&i, &body, false);
+            detail.set_markup(&det);
         }
     };
     let fill = Rc::new(fill);

@@ -3,11 +3,11 @@
 
 use std::collections::HashMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::util;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub height: i32,
@@ -35,7 +35,7 @@ pub struct Config {
     pub osd: crate::osd::Config,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Bind {
     pub left: Option<String>,
@@ -47,7 +47,7 @@ pub struct Bind {
 
 /// A module driven by an external command, compatible with Waybar's
 /// `custom/*` (`return-type: json` = `{text, tooltip, class, alt, percentage}`).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Custom {
     pub name: String,
@@ -98,10 +98,7 @@ impl Default for Config {
             center: v(&["media", "indicators"]),
             right: v(&[
                 "tray",
-                "homelab",
                 "phone",
-                "earbuds",
-                "sony",
                 "ai",
                 "clipboard",
                 "notifications",

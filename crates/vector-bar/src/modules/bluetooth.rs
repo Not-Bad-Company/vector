@@ -146,6 +146,7 @@ struct Inner {
     slot: Slot,
     conn: Option<gio::DBusConnection>,
     state: RefCell<State>,
+    headphones: super::headphones::Both,
     changed: Notify,
     pending: Cell<bool>,
     _sub: RefCell<Option<dbus::Sub>>,
@@ -156,16 +157,24 @@ pub struct Bluetooth(Rc<Inner>);
 impl Bluetooth {
     pub fn new(ctx: &Ctx) -> Bluetooth {
         let o = ctx.opts("bluetooth");
+        let changed = Notify::default();
         let inner = Rc::new(Inner {
             slot: ctx.slot("bluetooth", &[]),
             conn: dbus::system(),
             state: RefCell::default(),
-            changed: Notify::default(),
+            headphones: super::headphones::Both::new(changed.clone()),
+            changed,
             pending: Cell::new(false),
             _sub: RefCell::default(),
         });
         let right = o.str("on_right", "omarchy-launch-bluetooth");
         inner.slot.on_right(move || util::spawn_sh(&right));
+        let w = Rc::downgrade(&inner);
+        inner.slot.on_middle(move || {
+            if let Some(i) = w.upgrade() {
+                i.headphones.cycle_noise();
+            }
+        });
         let w = Rc::downgrade(&inner);
         inner.slot.tooltip(move || w.upgrade().map(|i| i.tooltip()));
         let w = Rc::downgrade(&inner);
@@ -270,7 +279,12 @@ impl Inner {
                 sh.append(&row);
             }
         }
-        sh.append(&ui::thint("click devices  ·  right bluetui"));
+        self.headphones.append_tooltip(&sh);
+        sh.append(&ui::thint(if self.headphones.any_connected() {
+            "click devices & controls  ·  middle noise mode  ·  right bluetui"
+        } else {
+            "click devices  ·  right bluetui"
+        }));
         sh.upcast()
     }
 }
@@ -281,6 +295,7 @@ impl Module for Bluetooth {
     }
     fn refresh(&self) {
         self.0.query();
+        self.0.headphones.poll();
     }
     fn slots(&self) -> Vec<Slot> {
         vec![self.0.slot.clone()]
@@ -307,7 +322,7 @@ struct PState {
 type Act = Rc<dyn Fn(String)>;
 
 fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
-    p.set_width(350);
+    p.set_width(380);
     let card = Card::new("bluetooth", "");
     let Some(conn) = i.conn.clone() else {
         card.body
@@ -321,6 +336,17 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
     let guard = Rc::new(Cell::new(false));
     let msgs = ui::vbox(0, &[]);
     card.body.append(&msgs);
+    let hp_box = ui::vbox(0, &[]);
+    let hp_hover = Rc::new(Cell::new(false));
+    {
+        let m = gtk::EventControllerMotion::new();
+        let h = hp_hover.clone();
+        m.connect_enter(move |_, _, _| h.set(true));
+        let h = hp_hover.clone();
+        m.connect_leave(move |_| h.set(false));
+        hp_box.add_controller(m);
+    }
+    card.body.append(&hp_box);
     let list = ui::KeyedList::new();
     card.body.append(&list.root);
 
@@ -828,11 +854,13 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
 
     let render = {
         let i = Rc::downgrade(i);
-        let (ps, sw, guard, msgs, list, detail, spin, scan_l, scan_btn) = (
+        let (ps, sw, guard, msgs, hp_box, hp_hover, list, detail, spin, scan_l, scan_btn) = (
             ps.clone(),
             sw.clone(),
             guard.clone(),
             msgs.clone(),
+            hp_box.clone(),
+            hp_hover.clone(),
             list.clone(),
             card.detail.clone(),
             spin.clone(),
@@ -842,6 +870,9 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
         let (act, forget, rr) = (act.clone(), forget.clone(), rr.clone());
         move || {
             let Some(i) = i.upgrade() else { return };
+            if !hp_hover.get() {
+                i.headphones.render_into(&hp_box);
+            }
             let s = i.state.borrow().clone();
             let mut st = ps.borrow_mut();
             let mut shown = s.powered;

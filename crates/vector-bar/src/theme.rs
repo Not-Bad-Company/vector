@@ -173,8 +173,8 @@ window.vbar .bar {{ min-height: {inner}px; }}
 window.vbar .right {{ margin-right: 0; }}
 .zone.seg {{ background: alpha({fg}, 0.13); }}
 .zone.block .item, .zone.block .item label {{ color: {bg}; font-weight: bold; }}
-.zone.block .item {{ padding: 0 10px; }}
-.zone.block .item.clickable:hover {{ background: alpha({bg}, 0.14); }}
+.zone.block .item {{ padding: 0 10px; transition: none; }}
+.zone.block .item.clickable:hover, .zone.block .item.clickable.slant-hover {{ background: alpha({bg}, 0.14); }}
 .zone.block .item.open {{ background: alpha({bg}, 0.20); box-shadow: none; }}
 .zone.seg .item {{ padding: 0 8px; }}
 .zone.plain {{ padding: 0 4px; }}
@@ -379,7 +379,7 @@ window.vnotify, window.vosd {{ background: transparent; }}
 .ncard:hover button.nclose:hover {{ opacity: 1; }}
 .ncontent {{ padding: 0 14px 12px 14px; }}
 .nsum {{ font-weight: bold; }}
-.nprogress {{ margin-top: 6px; }}
+.nprogress {{ margin-top: 2px; }}
 .nthumb {{ border: 1px solid alpha({fg}, 0.12); }}
 .nbanner {{ margin: 0 14px 12px 14px; border: 1px solid alpha({fg}, 0.12); }}
 .nactions {{ padding: 0 8px 8px 8px; margin-top: -4px; }}
@@ -392,25 +392,37 @@ button.nmore:hover {{ color: {fg}; border-color: alpha({acc}, 0.45); }}
 .nrow.past {{ opacity: 0.82; }}
 
 /* ── on-screen display ───────────────────────────────── */
-.osd {{ box-shadow: none; animation: osd-in 140ms cubic-bezier(0.2, 0.9, 0.3, 1); }}
-@keyframes osd-in {{
-  from {{ opacity: 0; transform: translateY(10px); }}
-  to {{ opacity: 1; transform: none; }}
+.osd {{
+  box-shadow: 0 10px 28px alpha(black, 0.35);
+  animation: osd-in 90ms ease-out;
 }}
-.osd .head {{ margin-bottom: 0; min-height: 30px; padding-right: 14px; }}
-.osd .htitle {{ background: {acc}; color: {bg}; }}
+@keyframes osd-in {{
+  from {{ opacity: 0; }}
+  to {{ opacity: 1; }}
+}}
+.osd .head {{
+  margin-bottom: 0;
+  min-height: 30px;
+  padding: 0 14px 0 0;
+  background: alpha({fg}, 0.03);
+  border-bottom: 1px solid alpha({fg}, 0.07);
+}}
+.osd .htitle {{ background: {acc}; color: {bg}; padding: 0 12px; }}
 .osd.crit-block .htitle {{ background: {red}; }}
-.osd .oglyph {{ color: {acc}; }}
+.osd .oglyph {{ color: {acc}; font-size: {osd_glyph}px; }}
 .osd.crit-block .oglyph {{ color: {red}; }}
 .osd .otitle {{ font-weight: bold; }}
-.osd .ovalue {{ font-weight: bold; font-size: {big}px; }}
-.ometer {{ margin: 12px 14px 14px 14px; }}
+.osd .hdetail {{ color: alpha({fg}, 0.52); }}
+.osd .ovalue {{ font-weight: bold; font-size: {osd_val}px; }}
+.ometer {{ margin: 10px 14px 12px 14px; }}
 .olist {{ padding: 0 14px 12px 14px; }}
 .olist label {{ padding: 2px 0; }}
 .olist .ocur {{ color: {acc}; font-weight: bold; }}
 "#,
             small = (font_size - 2.0).max(8.0),
             big = font_size + 6.0,
+            osd_glyph = font_size + 2.0,
+            osd_val = font_size + 2.0,
             kcol = (font_size * 6.2) as i32,
             // the glass edge is 1px of the bar's height, not extra
             inner = if self.glass { height - 1 } else { height },

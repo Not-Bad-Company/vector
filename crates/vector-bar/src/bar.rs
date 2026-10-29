@@ -103,7 +103,8 @@ pub fn slant(
         let item = nb.borrow().as_ref().and_then(|r| r.upgrade());
         if let Some(item) = item {
             let open = item.has_css_class("open");
-            let hover = item.state_flags().contains(gtk::StateFlags::PRELIGHT)
+            let hover = (item.has_css_class("slant-hover")
+                || item.state_flags().contains(gtk::StateFlags::PRELIGHT))
                 && item.has_css_class("clickable");
             let alpha = if open {
                 0.20
@@ -122,10 +123,79 @@ pub fn slant(
     d
 }
 
-/// Links a slant to the block item beside it, so it redraws when that item
-/// gets hovered, opened or closed.
+/// Links a slant to the block item beside it, so the block and its diagonal
+/// edge hover and click as one shape without any frame lag.
 pub fn attach(s: &gtk::DrawingArea, nb: &Neighbour, item: &gtk::Widget) {
     *nb.borrow_mut() = Some(item.downgrade());
+    if item.has_css_class("clickable") {
+        ui::pointer(s);
+    }
+    let in_item = Rc::new(std::cell::Cell::new(false));
+    let in_slant = Rc::new(std::cell::Cell::new(false));
+    let sync = {
+        let s = s.downgrade();
+        let item = item.downgrade();
+        let in_item = in_item.clone();
+        let in_slant = in_slant.clone();
+        Rc::new(move || {
+            let hov = in_item.get() || in_slant.get();
+            if let Some(it) = item.upgrade() {
+                if hov {
+                    it.add_css_class("slant-hover");
+                } else {
+                    it.remove_css_class("slant-hover");
+                }
+                it.queue_draw();
+            }
+            if let Some(s) = s.upgrade() {
+                s.queue_draw();
+            }
+        })
+    };
+    let m_item = gtk::EventControllerMotion::new();
+    {
+        let (in_item, sync) = (in_item.clone(), sync.clone());
+        m_item.connect_enter(move |_, _, _| {
+            in_item.set(true);
+            sync();
+        });
+    }
+    {
+        let (in_item, sync) = (in_item.clone(), sync.clone());
+        m_item.connect_leave(move |_| {
+            in_item.set(false);
+            sync();
+        });
+    }
+    item.add_controller(m_item);
+
+    let m_slant = gtk::EventControllerMotion::new();
+    {
+        let (in_slant, sync) = (in_slant.clone(), sync.clone());
+        m_slant.connect_enter(move |_, _, _| {
+            in_slant.set(true);
+            sync();
+        });
+    }
+    {
+        let (in_slant, sync) = (in_slant.clone(), sync.clone());
+        m_slant.connect_leave(move |_| {
+            in_slant.set(false);
+            sync();
+        });
+    }
+    s.add_controller(m_slant);
+
+    let click = gtk::GestureClick::new();
+    click.set_button(0);
+    let item_w = item.downgrade();
+    click.connect_released(move |g, _, _, _| {
+        if let Some(it) = item_w.upgrade() {
+            slot::click_at(&it, g.current_button());
+        }
+    });
+    s.add_controller(click);
+
     let weak = s.downgrade();
     let w2 = weak.clone();
     item.connect_state_flags_changed(move |_, _| {

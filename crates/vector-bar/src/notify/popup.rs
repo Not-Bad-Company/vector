@@ -19,6 +19,9 @@ use crate::util;
 
 // ── a bin that can slide its child sideways (the swipe) ─────────────────
 
+/// Fixed card height matching the 2-line clipboard copy notification.
+const CARD_HEIGHT: i32 = 88;
+
 mod imp {
     use super::*;
 
@@ -44,15 +47,14 @@ mod imp {
 
     impl WidgetImpl for Swipe {
         fn request_mode(&self) -> gtk::SizeRequestMode {
-            gtk::SizeRequestMode::HeightForWidth
+            gtk::SizeRequestMode::ConstantSize
         }
-        fn measure(&self, o: gtk::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
-            match self.obj().first_child() {
-                Some(c) => {
-                    let (a, b, _, _) = c.measure(o, for_size);
-                    (a, b, -1, -1)
-                }
-                None => (0, 0, -1, -1),
+        fn measure(&self, o: gtk::Orientation, _for_size: i32) -> (i32, i32, i32, i32) {
+            let w = super::super::get().cfg().width.max(200);
+            match o {
+                gtk::Orientation::Horizontal => (w, w, -1, -1),
+                gtk::Orientation::Vertical => (CARD_HEIGHT, CARD_HEIGHT, -1, -1),
+                _ => (0, 0, -1, -1),
             }
         }
         fn size_allocate(&self, w: i32, h: i32, baseline: i32) {
@@ -63,12 +65,76 @@ mod imp {
             }
         }
     }
+
+    #[derive(Default)]
+    pub struct Thumb {
+        pub w: Cell<i32>,
+        pub h: Cell<i32>,
+    }
+
+    #[glib::object_subclass]
+    impl ObjectSubclass for Thumb {
+        const NAME: &'static str = "VbThumb";
+        type Type = super::Thumb;
+        type ParentType = gtk::Widget;
+    }
+
+    impl ObjectImpl for Thumb {
+        fn dispose(&self) {
+            while let Some(c) = self.obj().first_child() {
+                c.unparent();
+            }
+        }
+    }
+
+    impl WidgetImpl for Thumb {
+        fn measure(&self, o: gtk::Orientation, _for_size: i32) -> (i32, i32, i32, i32) {
+            let s = match o {
+                gtk::Orientation::Horizontal => self.w.get().max(0),
+                gtk::Orientation::Vertical => self.h.get().max(0),
+                _ => 0,
+            };
+            (s, s, -1, -1)
+        }
+        fn size_allocate(&self, w: i32, h: i32, baseline: i32) {
+            if let Some(c) = self.obj().first_child() {
+                c.allocate(w, h, baseline, None);
+            }
+        }
+    }
 }
 
 glib::wrapper! {
     pub struct Swipe(ObjectSubclass<imp::Swipe>)
         @extends gtk::Widget,
         @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
+}
+
+glib::wrapper! {
+    pub struct Thumb(ObjectSubclass<imp::Thumb>)
+        @extends gtk::Widget,
+        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
+}
+
+/// A cover-cropped picture whose natural size is `(w, h)`, not the texture's resolution.
+pub fn thumb(tex: &gdk::Texture, w: i32, h: i32, class: &str) -> gtk::Widget {
+    let t: Thumb = glib::Object::new();
+    t.imp().w.set(w);
+    t.imp().h.set(h);
+    t.set_overflow(gtk::Overflow::Hidden);
+    if w < 0 {
+        t.set_hexpand(true);
+    } else {
+        t.set_valign(gtk::Align::Start);
+    }
+    if !class.is_empty() {
+        t.add_css_class(class);
+    }
+    let p = gtk::Picture::for_paintable(tex);
+    p.set_content_fit(gtk::ContentFit::Cover);
+    p.set_can_shrink(true);
+    p.set_parent(&t);
+    t.upcast()
 }
 
 impl Swipe {
@@ -94,7 +160,6 @@ struct CardW {
     id: u32,
     note: Note,
     swipe: Swipe,
-    bodies: Vec<gtk::Label>,
     age: gtk::Label,
     leaving: Rc<Cell<bool>>,
 }
@@ -193,6 +258,27 @@ fn age(n: &Note) -> String {
     }
 }
 
+fn hypr_gaps_out() -> (i32, i32, i32, i32) {
+    if let Some(v) = crate::hypr::json("getoption general:gaps_out") {
+        if let Some(s) = v["custom"].as_str() {
+            let nums: Vec<i32> = s
+                .split_whitespace()
+                .filter_map(|p| p.parse::<i32>().ok())
+                .collect();
+            match nums.as_slice() {
+                [t, r, b, l, ..] => return (*t, *r, *b, *l),
+                [v] => return (*v, *v, *v, *v),
+                _ => {}
+            }
+        }
+        if let Some(n) = v["int"].as_i64() {
+            let n = n as i32;
+            return (n, n, n, n);
+        }
+    }
+    (5, 5, 5, 5)
+}
+
 impl Popup {
     fn ensure_window(self: &Rc<Self>) -> gtk::Box {
         if let Some(c) = self.column.borrow().as_ref() {
@@ -214,14 +300,15 @@ impl Popup {
         } else if !pos.ends_with("center") {
             win.set_anchor(Edge::Right, true);
         }
-        win.set_margin(Edge::Top, 8);
-        win.set_margin(Edge::Bottom, 8);
-        win.set_margin(Edge::Left, 8);
-        win.set_margin(Edge::Right, 8);
+        let (gt, gr, gb, gl) = hypr_gaps_out();
+        win.set_margin(Edge::Top, gt);
+        win.set_margin(Edge::Right, gr);
+        win.set_margin(Edge::Bottom, gb);
+        win.set_margin(Edge::Left, gl);
         if let Some(m) = focused_monitor() {
             win.set_monitor(Some(&m));
         }
-        let col = ui::vbox(8, &["ncolumn"]);
+        let col = ui::vbox(6, &["ncolumn"]);
         col.set_size_request(cfg.width, -1);
         col.set_valign(if top {
             gtk::Align::Start
@@ -265,11 +352,6 @@ impl Popup {
             return;
         }
         super::get().pause(on);
-        for c in self.cards.borrow().iter() {
-            for b in &c.bodies {
-                b.set_lines(if on { 18 } else { 3 });
-            }
-        }
     }
 
     fn sync(self: &Rc<Self>) {
@@ -412,6 +494,8 @@ impl Popup {
         let theme = crate::panel::current_theme();
         let id = n.id;
         let card = ui::vbox(0, &["card", "ncard"]);
+        card.set_overflow(gtk::Overflow::Hidden);
+        card.set_size_request(super::get().cfg().width.max(200), CARD_HEIGHT);
         match n.urgency {
             0 => card.add_css_class("low"),
             2 => card.add_css_class("critical"),
@@ -458,76 +542,52 @@ impl Popup {
         head.append(&x);
         card.append(&head);
 
-        // text, with a square picture beside it or a wide one below
-        let pic = picture(n);
-        let wide = pic
-            .as_ref()
-            .is_some_and(|(_, w, h)| *w as f64 / (*h).max(1) as f64 >= 1.35 && *w >= 120);
+        // fixed 2-line content area (same dimensions as the clipboard copy notification)
+        let pic = texture(n);
         let content = ui::hbox(12, &["ncontent"]);
-        if let (Some((p, _, _)), false) = (&pic, wide) {
-            p.set_size_request(44, 44);
-            p.set_valign(gtk::Align::Start);
-            p.add_css_class("nthumb");
-            content.append(p);
+        content.set_vexpand(true);
+        if let Some((tex, _, _)) = &pic {
+            content.append(&thumb(tex, 36, 36, "nthumb"));
         }
         let texts = ui::vbox(3, &[]);
         texts.set_hexpand(true);
-        let mut bodies = Vec::new();
+        texts.set_valign(gtk::Align::Center);
+
         let summary = super::plain(&n.summary);
-        if !summary.is_empty() {
-            let s = ui::text(&summary, &["nsum"]);
-            s.set_wrap(true);
-            s.set_wrap_mode(gtk::pango::WrapMode::WordChar);
-            s.set_lines(2);
-            s.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            s.set_xalign(0.0);
-            texts.append(&s);
-        }
-        let body = super::markup(&n.body);
-        if !body.is_empty() {
-            let b = ui::label(&body, &["body-text", "nbody"]);
-            b.set_wrap(true);
-            b.set_wrap_mode(gtk::pango::WrapMode::WordChar);
-            b.set_lines(if self.hover.get() { 18 } else { 3 });
-            b.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            b.set_xalign(0.0);
-            texts.append(&b);
-            bodies.push(b);
-        }
-        if let Some(v) = n.value {
+        let s = ui::text(&summary, &["nsum"]);
+        s.set_single_line_mode(true);
+        s.set_lines(1);
+        s.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        s.set_width_chars(1);
+        s.set_max_width_chars(1);
+        s.set_hexpand(true);
+        s.set_xalign(0.0);
+        texts.append(&s);
+
+        let body_plain = super::plain(&n.body);
+        if let (Some(v), true) = (n.value, body_plain.is_empty()) {
             let row = ui::hbox(10, &["nprogress"]);
             row.append(&ui::meter(v as f64 / 100.0, ""));
             row.append(&ui::text(&format!("{v}%"), &["dim"]));
             texts.append(&row);
+        } else {
+            let line2 = match (n.value, body_plain.is_empty()) {
+                (Some(v), false) => format!("{v}% · {}", super::markup(&body_plain)),
+                _ => super::markup(&body_plain),
+            };
+            let b = ui::label(&line2, &["body-text", "nbody"]);
+            b.set_single_line_mode(true);
+            b.set_lines(1);
+            b.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            b.set_width_chars(1);
+            b.set_max_width_chars(1);
+            b.set_hexpand(true);
+            b.set_xalign(0.0);
+            texts.append(&b);
         }
         content.append(&texts);
         card.append(&content);
-        if let (Some((p, _, _)), true) = (&pic, wide) {
-            p.set_size_request(-1, 150);
-            p.add_css_class("nbanner");
-            card.append(p);
-        }
 
-        // actions (the default one is the click itself)
-        let acts: Vec<_> = n
-            .actions
-            .iter()
-            .filter(|(k, l)| k != "default" && !l.is_empty())
-            .collect();
-        if !acts.is_empty() {
-            let row = ui::hbox(2, &["nactions"]);
-            for (i, (k, label)) in acts.into_iter().enumerate() {
-                let k = k.clone();
-                row.append(&ui::link(
-                    &label.to_lowercase(),
-                    if i == 0 { &["primary"] } else { &[] },
-                    move || super::get().invoke(id, &k),
-                ));
-            }
-            card.append(&row);
-        }
-
-        // what clicking does, said once on hover
         card.set_tooltip_text(None);
         card.append(&drain(id, &block_color));
 
@@ -538,7 +598,6 @@ impl Popup {
             id,
             note: n.clone(),
             swipe,
-            bodies,
             age: age_l,
             leaving: Rc::new(Cell::new(false)),
         }
@@ -612,18 +671,15 @@ fn app_icon(n: &Note) -> Option<gtk::Image> {
     Some(img)
 }
 
-/// The note's picture and its size: image data, or a picture file.
-fn picture(n: &Note) -> Option<(gtk::Picture, i32, i32)> {
+/// The note's texture and its dimensions: image data, or a picture file.
+fn texture(n: &Note) -> Option<(gdk::Texture, i32, i32)> {
     let tex = n.pixels.clone().or_else(|| {
         (!n.image.is_empty())
             .then(|| gdk::Texture::from_filename(&n.image).ok())
             .flatten()
     })?;
     let (w, h) = (tex.width(), tex.height());
-    let p = gtk::Picture::for_paintable(&tex);
-    p.set_content_fit(gtk::ContentFit::Cover);
-    p.set_can_shrink(true);
-    Some((p, w, h))
+    Some((tex, w, h))
 }
 
 /// The bottom line: drains while the card's time runs out.

@@ -234,7 +234,17 @@ fn set_open(name: &str, open: bool) {
 /// (Re)builds everything from config, theme and CSS.
 fn reload(app: &gtk::Application) {
     panel::close();
-    let (cfg, err) = Config::load();
+    let (mut cfg, mut error) = Config::load();
+    let lua = lua::load(&mut cfg);
+    if let Some(rt) = &lua {
+        let errs = rt.errors.borrow().join("\n");
+        if !errs.is_empty() {
+            error = Some(match error {
+                Some(e) => format!("{e}\n{errs}"),
+                None => errs,
+            });
+        }
+    }
     let theme = Theme::load(cfg.warn.as_deref(), cfg.crit.as_deref());
     let Some(display) = gdk::Display::default() else {
         return;
@@ -247,7 +257,6 @@ fn reload(app: &gtk::Application) {
     });
     css.load_from_string(&theme.css(&cfg.font, cfg.font_size, cfg.height));
     let user = gtk::CssProvider::new();
-    let mut error = err;
     if let Some(text) = util::read(config::user_css()) {
         let e = Rc::new(RefCell::new(None::<String>));
         let e2 = e.clone();
@@ -292,16 +301,6 @@ fn reload(app: &gtk::Application) {
     notify::configure(&cfg.notifications, app);
     osd::init(app, &cfg.osd);
     notify::popup::restyle();
-    let lua = lua::load();
-    if let Some(rt) = &lua {
-        let errs = rt.errors.borrow().join("\n");
-        if !errs.is_empty() {
-            error = Some(match error {
-                Some(e) => format!("{e}\n{errs}"),
-                None => errs,
-            });
-        }
-    }
     let ctx = Ctx {
         cfg: Rc::new(cfg.clone()),
         theme: theme_rc.clone(),

@@ -277,13 +277,7 @@ fn note_row(n: &Note, live: bool, m: &Rc<Mako>) -> gtk::Widget {
             .flatten()
     });
     if let Some(t) = tex {
-        let p = gtk::Picture::for_paintable(&t);
-        p.set_content_fit(gtk::ContentFit::Cover);
-        p.set_can_shrink(true);
-        p.set_size_request(36, 36);
-        p.set_valign(gtk::Align::Start);
-        p.add_css_class("nthumb");
-        mid.append(&p);
+        mid.append(&notify::popup::thumb(&t, 36, 36, "nthumb"));
     }
     if mid.first_child().is_some() {
         b.append(&mid);

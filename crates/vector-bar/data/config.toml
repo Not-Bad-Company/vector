@@ -14,9 +14,11 @@ font_size = 12
 #   homelab phone earbuds sony ai clipboard notifications bluetooth vpn
 #   network profile sysmon battery tray
 # plus custom:<name> ([[custom]] below) and any Lua plugin by its name.
+# (`homelab` is optional and can be enabled via `bar.enable("homelab", ...)` in
+# init.lua; `bluetooth` includes Sony sonyctl and Nothing earctl headphone controls.)
 left = ["mode", "workspaces", "agents"]
 center = ["media", "indicators"]
-right = ["tray", "homelab", "phone", "earbuds", "sony", "ai", "clipboard", "notifications",
+right = ["tray", "phone", "ai", "clipboard", "notifications",
          "bluetooth", "vpn", "network", "profile", "sysmon", "battery", "clock"]
 
 # lualine look: solid blocks in the mode colour, tinted segments beside them
@@ -42,9 +44,9 @@ antigravity = true
 agents_interval = 2
 
 [modules.homelab]
-host = "daanhpi"
-tailscale_name = "daanhpi"
-metrics_ssh = "nas-metrics"
+host = "raspberrypi"
+tailscale_name = "raspberrypi"
+metrics_ssh = "pi-metrics"
 mount = "/mnt/nas"
 # open = "vector-find /mnt/nas"
 
