@@ -20,7 +20,9 @@ opacity = 0.8
 # init.lua; `bluetooth` includes Sony sonyctl and Nothing earctl headphone controls.)
 left = ["mode", "workspaces", "agents"]
 center = ["media", "indicators"]
-right = ["tray", "phone", "ai", "clipboard", "notifications",
+# (clipboard history and notifications live in Vector Space: super+space, then ; or !;
+#  the clipboard and notifications modules still exist for anyone who wants them here)
+right = ["tray", "phone", "ai",
          "bluetooth", "vpn", "network", "profile", "sysmon", "battery", "clock"]
 
 # lualine look: solid blocks in the mode colour, tinted segments beside them

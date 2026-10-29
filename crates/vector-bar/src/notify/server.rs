@@ -13,6 +13,8 @@ const FDO_PATH: &str = "/org/freedesktop/Notifications";
 const FDO: &str = "org.freedesktop.Notifications";
 const MAKO_PATH: &str = "/fr/emersion/Mako";
 const MAKO: &str = "fr.emersion.Mako";
+const VEC_PATH: &str = "/org/vectoros/Notifications";
+const VEC: &str = "org.vectoros.Notifications";
 
 const FDO_XML: &str = r#"
 <node>
@@ -58,6 +60,23 @@ const MAKO_XML: &str = r#"
   </interface>
 </node>"#;
 
+/// For Vector Space's notification list: everything mako's interface has
+/// not (history with pictures and times, forgetting one, silence switch).
+const VEC_XML: &str = r#"
+<node>
+  <interface name="org.vectoros.Notifications">
+    <method name="List"><arg direction="out" type="aa{sv}"/></method>
+    <method name="Activate"><arg direction="in" type="u"/></method>
+    <method name="Invoke"><arg direction="in" type="u"/><arg direction="in" type="s"/></method>
+    <method name="Dismiss"><arg direction="in" type="u"/></method>
+    <method name="ClearHistory"/>
+    <method name="MarkSeen"/>
+    <method name="GetDnd"><arg direction="out" type="b"/></method>
+    <method name="SetDnd"><arg direction="in" type="b"/></method>
+    <signal name="Changed"/>
+  </interface>
+</node>"#;
+
 fn iface(xml: &str, name: &str) -> Option<gio::DBusInterfaceInfo> {
     gio::DBusNodeInfo::for_xml(xml).ok()?.lookup_interface(name)
 }
@@ -79,6 +98,24 @@ pub fn start(store: &Rc<Store>) {
             fdo_call(&s, sender.unwrap_or(""), method, &params, inv);
         })
         .build();
+    if let Some(vec) = iface(VEC_XML, VEC) {
+        let w = Rc::downgrade(store);
+        let _ = conn
+            .register_object(VEC_PATH, &vec)
+            .method_call(move |_, _, _, _, method, params, inv| {
+                let Some(s) = w.upgrade() else { return };
+                vec_call(&s, method, &params, inv);
+            })
+            .build();
+        let w = Rc::downgrade(store);
+        store.changed.connect(move || {
+            if let Some(s) = w.upgrade()
+                && let Some(c) = self::conn(&s)
+            {
+                let _ = c.emit_signal(None, VEC_PATH, VEC, "Changed", None);
+            }
+        });
+    }
     let w = Rc::downgrade(store);
     let w2 = Rc::downgrade(store);
     let _ = conn
@@ -378,6 +415,68 @@ fn mako_call(s: &Rc<Store>, method: &str, p: &glib::Variant, inv: gio::DBusMetho
         "ListModes" => inv.return_value(Some(&(s.modes(),).to_variant())),
         _ => inv.return_dbus_error("org.freedesktop.DBus.Error.UnknownMethod", method),
     }
+}
+
+/// One entry for Vector Space: plain text, the saved picture, the time.
+fn vec_dict(n: &Note, live: bool) -> glib::Variant {
+    let d = glib::VariantDict::new(None);
+    d.insert("id", n.id);
+    d.insert("app", n.label());
+    d.insert("summary", super::plain(&n.summary));
+    d.insert("body", super::plain(&n.body));
+    d.insert("urgency", n.urgency as u32);
+    d.insert("image", &n.image);
+    d.insert("time", n.time);
+    d.insert("count", n.count.max(1));
+    d.insert("unseen", n.unseen);
+    d.insert("live", live);
+    let acts: Vec<(String, String)> = n.actions.clone();
+    d.insert_value("actions", &acts.to_variant());
+    d.end()
+}
+
+fn vec_call(s: &Rc<Store>, method: &str, p: &glib::Variant, inv: gio::DBusMethodInvocation) {
+    let id = || p.child_value(0).get::<u32>().unwrap_or(0);
+    let live = |id: u32| s.live().iter().any(|n| n.id == id);
+    match method {
+        "List" => {
+            let items: Vec<glib::Variant> = s
+                .live()
+                .iter()
+                .filter(|n| !n.hidden)
+                .map(|n| vec_dict(n, true))
+                .chain(s.history().iter().map(|n| vec_dict(n, false)))
+                .collect();
+            let arr = glib::Variant::array_from_iter_with_type(glib::VariantTy::VARDICT, items);
+            return inv.return_value(Some(&glib::Variant::tuple_from_iter([arr])));
+        }
+        "Activate" => {
+            let id = id();
+            if live(id) {
+                s.activate(id);
+            } else if let Some(n) = s.history().into_iter().find(|n| n.id == id) {
+                super::focus_app(&n);
+            }
+        }
+        "Invoke" => {
+            let key = p.child_value(1).str().unwrap_or("default").to_string();
+            s.invoke(id(), &key);
+        }
+        "Dismiss" => {
+            let id = id();
+            if live(id) {
+                s.dismiss(id);
+            } else {
+                s.forget(id);
+            }
+        }
+        "ClearHistory" => s.clear_history(),
+        "MarkSeen" => s.mark_seen(),
+        "GetDnd" => return inv.return_value(Some(&(s.dnd(),).to_variant())),
+        "SetDnd" => s.set_dnd(p.child_value(0).get::<bool>().unwrap_or(false)),
+        _ => return inv.return_dbus_error("org.freedesktop.DBus.Error.UnknownMethod", method),
+    }
+    inv.return_value(None);
 }
 
 fn conn(s: &Store) -> Option<gio::DBusConnection> {

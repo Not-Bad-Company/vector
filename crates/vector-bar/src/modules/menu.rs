@@ -201,7 +201,7 @@ fn menu_panel(p: &Panel, t: &Rc<Theme>) -> gtk::Widget {
         "󰀻",
         "apps",
         "super space",
-        "omarchy-launch-walker",
+        "vector-space",
     ));
     b.append(&action_row(p, "", "files", "", "vector-find"));
     b.append(&action_row(p, "", "terminal", "", "xdg-terminal-exec"));

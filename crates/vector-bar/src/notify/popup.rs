@@ -300,11 +300,14 @@ impl Popup {
         } else if !pos.ends_with("center") {
             win.set_anchor(Edge::Right, true);
         }
+        // clear of the window gaps, so the cards float instead of lining up
+        // with the tiled windows' edges
         let (gt, gr, gb, gl) = hypr_gaps_out();
-        win.set_margin(Edge::Top, gt);
-        win.set_margin(Edge::Right, gr);
-        win.set_margin(Edge::Bottom, gb);
-        win.set_margin(Edge::Left, gl);
+        let off = |g: i32| (g + 12).max(16);
+        win.set_margin(Edge::Top, off(gt));
+        win.set_margin(Edge::Right, off(gr));
+        win.set_margin(Edge::Bottom, off(gb));
+        win.set_margin(Edge::Left, off(gl));
         if let Some(m) = focused_monitor() {
             win.set_monitor(Some(&m));
         }
@@ -820,8 +823,9 @@ fn gestures(sw: &Swipe, id: u32) {
 fn settle(sw: &Swipe, id: u32, velocity: f64) {
     let x = sw.offset();
     let w = sw.width().max(1) as f64;
-    if x.abs() > w * 0.28
-        || (velocity.abs() > 14.0 && velocity.signum() == x.signum() && x.abs() > 24.0)
+    // lenient: a short swipe or a light flick is enough
+    if x.abs() > (w * 0.15).min(56.0)
+        || (velocity.abs() > 6.0 && velocity.signum() == x.signum() && x.abs() > 14.0)
     {
         super::get().dismiss(id);
         return;

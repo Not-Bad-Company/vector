@@ -104,8 +104,6 @@ impl Default for Config {
                 "tray",
                 "phone",
                 "ai",
-                "clipboard",
-                "notifications",
                 "bluetooth",
                 "vpn",
                 "network",
