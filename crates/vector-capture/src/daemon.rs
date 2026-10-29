@@ -4,6 +4,7 @@
 //!
 //!   shot region|window|output [--view]
 //!   pick [hex|rgb|hsl]
+//!   record region|output [--audio=desktop,mic]   (again: stop)
 //!   --service        run resident (vector-capture.service)
 //!
 //! `VECTOR_CAPTURE_TEST=1` runs a separate test instance on its own D-Bus name.
@@ -12,6 +13,7 @@ mod capture;
 mod color;
 mod overlay;
 mod pick;
+mod record;
 mod shot;
 mod util;
 
@@ -77,6 +79,18 @@ fn command(app: &gtk::Application, words: &str) -> bool {
                 _ => None,
             };
             pick::start(app, format)
+        }
+        Some("record") => {
+            let (mut output, mut audio) = (false, record::Audio::default());
+            for w in it {
+                match w {
+                    "output" => output = true,
+                    "region" => output = false,
+                    w if w.starts_with("--audio=") => audio = record::Audio::parse(&w["--audio=".len()..]),
+                    _ => {}
+                }
+            }
+            record::toggle(app, output, audio)
         }
         Some("quit") => {
             app.quit();
