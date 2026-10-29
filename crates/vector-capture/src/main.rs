@@ -23,6 +23,17 @@ fn main() -> std::process::ExitCode {
             println!("vector-capture {}", env!("CARGO_PKG_VERSION"));
             return std::process::ExitCode::SUCCESS;
         }
+        Some("ocr") if args.len() == 2 => {
+            // runs here, not in the daemon: prints to this terminal
+            let exe = std::env::current_exe()
+                .ok()
+                .map(|p| p.with_file_name("vector-capture-daemon"))
+                .filter(|p| p.exists())
+                .unwrap_or_else(|| "vector-capture-daemon".into());
+            let err = std::process::Command::new(&exe).args(["--ocr-file", &args[1]]).exec();
+            eprintln!("vector-capture: {err}");
+            return std::process::ExitCode::FAILURE;
+        }
         _ => {}
     }
     let words = if args.is_empty() { "shot region".to_owned() } else { args.join(" ") };

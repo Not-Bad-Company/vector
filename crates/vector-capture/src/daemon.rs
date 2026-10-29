@@ -4,6 +4,7 @@
 //!
 //!   shot region|window|output [--view]
 //!   pick [hex|rgb|hsl]
+//!   ocr                                  text from a selection, to the clipboard
 //!   record region|output [--audio=desktop,mic]   (again: stop)
 //!   --service        run resident (vector-capture.service)
 //!
@@ -11,10 +12,12 @@
 
 mod capture;
 mod color;
+mod ocr;
 mod overlay;
 mod pick;
 mod record;
 mod shot;
+mod text;
 mod util;
 
 use gtk::prelude::*;
@@ -32,6 +35,22 @@ fn main() -> glib::ExitCode {
     // on every start
     // SAFETY: called before any thread is started
     unsafe { std::env::set_var("GTK_A11Y", "none") };
+    // `vector-capture ocr FILE`: read the text of an image file and print it (no window;
+    // Vector View hands images here)
+    let argv: Vec<String> = std::env::args().collect();
+    if argv.get(1).map(String::as_str) == Some("--ocr-file") {
+        let Some(path) = argv.get(2) else { return glib::ExitCode::FAILURE };
+        return match gtk::gdk_pixbuf::Pixbuf::from_file(path).map_err(|e| e.to_string()).and_then(|pb| ocr::read(&pb)) {
+            Ok(text) => {
+                println!("{text}");
+                glib::ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("vector-capture: {e}");
+                glib::ExitCode::FAILURE
+            }
+        };
+    }
     let app = gtk::Application::new(Some(if test() { TEST_ID } else { APP_ID }), gio::ApplicationFlags::HANDLES_COMMAND_LINE);
     let action = gio::SimpleAction::new("command", Some(glib::VariantTy::STRING));
     {
@@ -46,6 +65,8 @@ fn main() -> glib::ExitCode {
     app.connect_startup(|app| {
         // resident: stays up with no window open
         std::mem::forget(app.hold());
+        // load the OCR pipeline in the background so the first text capture is quick
+        glib::idle_add_local_once(ocr::prewarm);
     });
     app.connect_command_line(|app, cl| {
         let words: Vec<String> = cl.arguments().iter().skip(1).map(|a| a.to_string_lossy().to_string()).collect();
@@ -92,6 +113,7 @@ fn command(app: &gtk::Application, words: &str) -> bool {
             }
             record::toggle(app, output, audio)
         }
+        Some("ocr") => text::start(app),
         Some("quit") => {
             app.quit();
             true
