@@ -37,7 +37,7 @@ format_alt = "%d %B W%V %Y"          # middle click
 # on_right = "omarchy-launch-floating-terminal-with-presentation omarchy-tz-select"
 
 [modules.workspaces]
-persistent = 8
+persistent = 9
 active = ""                           # glyph for the active one; "" = its number
 per_monitor = false
 # names = { 1 = "web", 2 = "code" }

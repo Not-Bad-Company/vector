@@ -60,7 +60,7 @@ impl Workspaces {
             }
         }
         let inner = Rc::new(Inner {
-            persistent: o.num("persistent", 8.0) as i64,
+            persistent: o.num("persistent", 9.0) as i64,
             active_glyph: o.str("active", ""),
             per_monitor: o.bool("per_monitor", false),
             labels,
