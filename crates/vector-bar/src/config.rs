@@ -99,7 +99,7 @@ impl Default for Config {
             warn: None,
             crit: None,
             left: v(&["mode", "workspaces", "agents"]),
-            center: v(&["media", "indicators"]),
+            center: v(&["indicators"]),
             right: v(&[
                 "tray",
                 "phone",

@@ -19,7 +19,8 @@ opacity = 0.8
 # (`homelab` is optional and can be enabled via `bar.enable("homelab", ...)` in
 # init.lua; `bluetooth` includes Sony sonyctl and Nothing earctl headphone controls.)
 left = ["mode", "workspaces", "agents"]
-center = ["media", "indicators"]
+center = ["indicators"]
+# (media is still a module: add "media" here to show what is playing)
 # (clipboard history and notifications live in Vector Space: super+space, then ; or !;
 #  the clipboard and notifications modules still exist for anyone who wants them here)
 right = ["tray", "phone", "ai",

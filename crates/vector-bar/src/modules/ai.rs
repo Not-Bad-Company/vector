@@ -40,7 +40,7 @@ const CODEX: &str = "\u{f06a9}";
 const AGY: &str = "<span font_family='AntigravityMark'>\u{e000}</span>";
 const SPIN: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
 /// How long a finished agent stays on the bar line.
-const DONE_SHOWN: f64 = 120.0;
+const DONE_SHOWN: f64 = 60.0;
 const M_AGENT: mode::State = mode::State {
     key: "agent",
     label: "AGENT",
@@ -1538,7 +1538,7 @@ impl Inner {
     }
 
     /// The one agent the line is about: whoever needs you, else the busy one
-    /// that changed last, else one that finished in the last two minutes.
+    /// that changed last, else one that finished in the last minute.
     fn pick(a: &[Agent]) -> Option<&Agent> {
         fn latest<'a>(it: impl Iterator<Item = &'a Agent>) -> Option<&'a Agent> {
             it.max_by(|x, y| {
