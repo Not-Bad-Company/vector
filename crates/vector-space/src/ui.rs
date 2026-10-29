@@ -234,7 +234,7 @@ pub fn build(app: &gtk::Application) -> Rc<Ui> {
 // ── rows ─────────────────────────────────────────────────────────────────
 
 /// The bar's slanted block edge (◤), in the accent.
-fn slant() -> gtk::DrawingArea {
+pub fn slant() -> gtk::DrawingArea {
     let d = gtk::DrawingArea::new();
     d.set_content_width(14);
     d.set_valign(gtk::Align::Fill);

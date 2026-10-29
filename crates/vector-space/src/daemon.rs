@@ -23,6 +23,7 @@ mod emoji;
 mod item;
 mod notes;
 mod style;
+mod pick;
 mod start;
 mod ui;
 mod util;
@@ -78,7 +79,7 @@ fn main() -> glib::ExitCode {
             };
             return if clip::add_stdin(mime) { glib::ExitCode::SUCCESS } else { glib::ExitCode::FAILURE };
         }
-        Some(w) if w != "--service" && w != "close" && w != "quit" && w != "start" && Mode::parse(w).is_none() => {
+        Some(w) if w != "--service" && w != "close" && w != "quit" && w != "start" && w != "pick" && Mode::parse(w).is_none() => {
             eprintln!("{USAGE}");
             return glib::ExitCode::FAILURE;
         }
@@ -128,6 +129,7 @@ fn main() -> glib::ExitCode {
         let _ = app;
         match args.get(1).map(String::as_str) {
             Some("--service") => glib::ExitCode::SUCCESS,
+            Some("pick") => command(&format!("pick {}", args.get(2).map(String::as_str).unwrap_or(""))),
             Some(w) => command(w),
             None => command("apps"),
         }
@@ -150,6 +152,11 @@ fn command(word: &str) -> glib::ExitCode {
         "close" => {
             ui.hide();
             start::hide();
+        }
+        w if w.starts_with("pick ") => {
+            if let Some(app) = gio::Application::default().and_downcast::<gtk::Application>() {
+                pick::open(&app, &w[5..]);
+            }
         }
         "start" => match gio::Application::default().and_downcast::<gtk::Application>() {
             Some(app) => start::toggle(&app),

@@ -210,6 +210,16 @@ button.start-tile:focus-visible {{ background: alpha({acc}, 0.14); border-bottom
 button.start-tile:hover .start-tile-glyph, button.start-tile:focus-visible .start-tile-glyph {{ color: {acc}; }}
 .start-tile-label {{ font-size: 11px; }}
 
+/* the dmenu picker (pick.rs) */
+.card.pick {{ animation: card-in 120ms cubic-bezier(0.2, 0.9, 0.3, 1); }}
+.pick-list {{ background: transparent; padding: 4px 0 6px 0; }}
+row.pick-row {{
+  padding: 0 18px; min-height: 38px; background: transparent;
+  border-left: 2px solid transparent; color: {fg}; font-size: 13px;
+}}
+row.pick-row:hover {{ background: alpha({fg}, 0.05); }}
+row.pick-row:selected {{ background: alpha({acc}, 0.14); border-left-color: {acc}; color: {fg}; }}
+
 /* power, level with the search */
 .start-power {{ min-height: 50px; border-top: 1px solid alpha({fg}, 0.09); background: alpha({fg}, 0.045); }}
 button.start-pow {{
