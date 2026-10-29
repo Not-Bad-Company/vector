@@ -268,7 +268,7 @@ impl ErrorMark {
         let e = err.to_string();
         s.tooltip(move || {
             let sh = ui::sheet();
-            sh.append(&ui::head("vector bar", "config error").0);
+            sh.append(&ui::head("VectorOS", "bar config error").0);
             let l = ui::text(&e, &["crit"]);
             l.set_wrap(true);
             l.set_max_width_chars(60);

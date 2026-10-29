@@ -251,7 +251,7 @@ fn menu_panel(p: &Panel, t: &Rc<Theme>) -> gtk::Widget {
     }
     b.append(&glass.root);
 
-    b.append(&ui::section("system"));
+    b.append(&ui::section("VectorOS"));
     b.append(&action_row(p, "󰚰", "update", "", "omarchy-launch-floating-terminal-with-presentation omarchy-update"));
     b.append(&action_row(p, "", "setup", "", "omarchy-menu setup"));
     let more = ui::vbox(0, &[]);
