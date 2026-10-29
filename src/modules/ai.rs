@@ -955,6 +955,8 @@ fn usage_block(acc: &Account, mark: &str, t: &Theme) -> gtk::Widget {
         }
     }
     b.append(&head);
+    // one label column per account, as wide as its longest label (antigravity's are long)
+    let kw = acc.windows.iter().map(|w| w.name.chars().count()).max().unwrap_or(4).max(6) as i32;
     for w in &acc.windows {
         let mut detail = String::new();
         if let Some(r) = w.reset {
@@ -963,7 +965,11 @@ fn usage_block(acc: &Account, mark: &str, t: &Theme) -> gtk::Widget {
         if let (Some(p), true) = (w.pace(), w.span > 86400.0) {
             detail += &format!(" · {}{:.0}", if p >= 0.0 { "+" } else { "−" }, p.abs());
         }
-        b.append(&ui::meter_row(&w.name, w.pct / 100.0, &format!("{:.0}%", w.pct), &detail, ui::pct_class(w.pct)));
+        let row = ui::meter_row(&w.name, w.pct / 100.0, &format!("{:.0}%", w.pct), &detail, ui::pct_class(w.pct));
+        if let Some(k) = row.first_child().and_downcast::<gtk::Label>() {
+            k.set_width_chars(kw);
+        }
+        b.append(&row);
     }
     if let Some(e) = &acc.extra {
         b.append(&ui::kv("extra", e).0);
