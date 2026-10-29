@@ -1,0 +1,24 @@
+[package]
+name = "vector-bar"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Vector Bar: the Vector OS top bar (GTK4 + layer shell)"
+
+[dependencies]
+gtk = { package = "gtk4", version = "0.11", features = ["v4_20"] }
+glib = "0.22"
+gio = { version = "0.22", features = ["v2_80"] }
+gtk4-layer-shell = "0.8"
+async-channel = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
+libc = "0.2"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+mlua = { version = "0.12", features = ["lua54", "vendored", "serialize"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
