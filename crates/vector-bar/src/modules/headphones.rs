@@ -261,7 +261,7 @@ impl Inner {
             } else {
                 "noise_cancelling".into()
             }),
-            low_sent: RefCell::default(),
+            low_sent: RefCell::new(load_low(kind)),
             _sub: RefCell::default(),
         });
         // a device connecting shows up at once
@@ -458,11 +458,14 @@ impl Inner {
             )],
         };
         let mut sent = self.low_sent.borrow_mut();
+        let before = sent.clone();
         for (side, pct, chg) in sides {
             let Some(p) = pct else { continue };
-            if chg || p > 20 {
+            // warn once at 20%; only charging or a real recharge (over 30%)
+            // re-arms it, so a level wobbling around 20 stays quiet
+            if chg || p > 30 {
                 sent.retain(|x| x != &side);
-            } else if !sent.contains(&side) {
+            } else if p <= 20 && !sent.contains(&side) {
                 sent.push(side.clone());
                 let body = if self.kind == Kind::Earbuds {
                     format!("{} bud at {p}%", side)
@@ -481,6 +484,9 @@ impl Inner {
                     &body,
                 ]);
             }
+        }
+        if *sent != before {
+            save_low(self.kind, &sent);
         }
     }
 
@@ -1022,4 +1028,20 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
         }
     }));
     card.root.upcast()
+}
+
+/// Which sides were already warned about, kept in the runtime dir so a bar
+/// restart or a monitor change (both rebuild the modules) doesn't warn again.
+fn low_file(kind: Kind) -> std::path::PathBuf {
+    util::runtime_dir().join(format!("vector-bar-{}-low", kind.name()))
+}
+
+fn load_low(kind: Kind) -> Vec<String> {
+    std::fs::read_to_string(low_file(kind))
+        .map(|t| t.split_whitespace().map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
+fn save_low(kind: Kind, sent: &[String]) {
+    let _ = std::fs::write(low_file(kind), sent.join(" "));
 }
