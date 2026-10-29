@@ -495,34 +495,23 @@ impl PInner {
         *self.current.borrow_mut() = cur;
     }
 
+    /// Through power-profiles-daemon: it remembers the choice across reboots and
+    /// writes the platform profile itself (asusctl changes it, but nothing saves it).
     fn set(&self, p: &str) {
-        if self.asus {
-            // asusctl names: Quiet / Balanced / Performance
-            let mut name = p.to_string();
-            if let Some(f) = name.get_mut(0..1) {
-                f.make_ascii_uppercase();
-            }
-            util::spawn(&["asusctl", "profile", "set", &name]);
-        } else {
-            let map = match p {
-                "quiet" | "low-power" => "power-saver",
-                other => other,
-            };
-            util::spawn(&["powerprofilesctl", "set", map]);
-        }
+        let ppd = match p {
+            "quiet" | "low-power" => "power-saver",
+            other => other,
+        };
+        util::spawn(&["powerprofilesctl", "set", ppd]);
     }
 
     fn cycle(self: &Rc<Self>) {
-        if self.asus {
-            util::spawn(&["asusctl", "profile", "next"]);
-        } else {
-            let next = match self.current.borrow().as_str() {
-                "quiet" | "low-power" => "balanced",
-                "balanced" => "performance",
-                _ => "quiet",
-            };
-            self.set(next);
-        }
+        let next = match self.current.borrow().as_str() {
+            "quiet" | "low-power" => "balanced",
+            "balanced" => "performance",
+            _ => "quiet",
+        };
+        self.set(next);
         util::after(400, self, |i| i.poll());
     }
 

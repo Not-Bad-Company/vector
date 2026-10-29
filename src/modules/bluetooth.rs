@@ -193,7 +193,7 @@ impl Inner {
         }
         self.slot.set_visible(true);
         let conn = s.devs.iter().filter(|d| d.connected).count();
-        let (icon, cls) = if !s.powered { ("󰂲", "dim") } else if conn > 0 { ("󰂱", "") } else { ("", "") };
+        let (icon, cls) = if !s.powered { ("󰂲", "dim") } else if conn > 0 { ("󰂱", "") } else { ("\u{f294}", "") };
         self.slot.set_markup(icon);
         self.slot.set_classes(&[cls]);
         self.slot.bump();
