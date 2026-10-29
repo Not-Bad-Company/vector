@@ -13,6 +13,8 @@ pub struct Config {
     pub height: i32,
     pub font: String,
     pub font_size: f64,
+    /// Bar background opacity in glass mode (desktop-glass): 1 = solid.
+    pub opacity: f64,
     /// Bar colour for warm/low states (theme yellow is often too loud on a bar).
     pub warn: Option<String>,
     pub crit: Option<String>,
@@ -92,6 +94,8 @@ impl Default for Config {
             height: 26,
             font: "JetBrainsMonoNL Nerd Font".into(),
             font_size: 12.0,
+            // a light blur leaves bright wallpaper details as specks through a thin bar
+            opacity: 0.8,
             warn: None,
             crit: None,
             left: v(&["mode", "workspaces", "agents"]),

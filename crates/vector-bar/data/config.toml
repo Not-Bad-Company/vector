@@ -5,6 +5,8 @@
 height = 26
 font = "JetBrainsMonoNL Nerd Font"
 font_size = 12
+# bar background opacity when desktop-glass blurs the bar (1 = solid)
+opacity = 0.8
 # bar colours for "needs attention" / "bad" (default: theme or #d08770 / #a55555)
 # warn = "#d08770"
 # crit = "#a55555"

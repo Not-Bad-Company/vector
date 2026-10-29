@@ -255,7 +255,7 @@ fn reload(app: &gtk::Application) {
     css.connect_parsing_error(|_, sec, err| {
         eprintln!("vector-bar: built-in css {}: {err}", sec.to_str())
     });
-    css.load_from_string(&theme.css(&cfg.font, cfg.font_size, cfg.height));
+    css.load_from_string(&theme.css(&cfg.font, cfg.font_size, cfg.height, cfg.opacity));
     let user = gtk::CssProvider::new();
     if let Some(text) = util::read(config::user_css()) {
         let e = Rc::new(RefCell::new(None::<String>));

@@ -122,7 +122,8 @@ impl Theme {
     }
 
     /// The whole built-in stylesheet. User CSS is loaded on top of it.
-    pub fn css(&self, font: &str, font_size: f64, height: i32) -> String {
+    /// `opacity`: the bar background in glass mode (1 = solid).
+    pub fn css(&self, font: &str, font_size: f64, height: i32, opacity: f64) -> String {
         let Theme {
             background: bg,
             foreground: fg,
@@ -134,14 +135,13 @@ impl Theme {
             crit,
             ..
         } = self;
-        let bar_bg = if self.glass {
-            // a light blur leaves small bright wallpaper details as specks through a thin
-            // bar: mostly opaque, the blur only tints it
-            format!("alpha({bg}, 0.8)")
+        let see_through = self.glass && opacity < 1.0;
+        let bar_bg = if see_through {
+            format!("alpha({bg}, {:.2})", opacity.max(0.0))
         } else {
             bg.clone()
         };
-        let bar_edge = if self.glass {
+        let bar_edge = if see_through {
             format!("border-bottom: 1px solid alpha({fg}, 0.08);")
         } else {
             String::new()
@@ -427,7 +427,7 @@ button.nmore:hover {{ color: {fg}; border-color: alpha({acc}, 0.45); }}
             osd_val = font_size + 2.0,
             kcol = (font_size * 6.2) as i32,
             // the glass edge is 1px of the bar's height, not extra
-            inner = if self.glass { height - 1 } else { height },
+            inner = if see_through { height - 1 } else { height },
         ) + &self.mode_css()
     }
 
@@ -445,5 +445,26 @@ button.nmore:hover {{ color: {fg}; border-color: alpha({acc}, 0.45); }}
             );
         }
         css
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn glass_bar_opacity() {
+        let t = Theme {
+            glass: true,
+            ..Theme::default()
+        };
+        let bar = |css: String| {
+            css.lines()
+                .find(|l| l.starts_with("window.vbar {"))
+                .unwrap_or_default()
+                .to_string()
+        };
+        assert!(!bar(t.css("f", 12.0, 26, 1.0)).contains("alpha("));
+        assert!(bar(t.css("f", 12.0, 26, 0.8)).contains("0.80)"));
     }
 }
