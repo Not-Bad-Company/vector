@@ -189,7 +189,13 @@ fn image_data(v: &glib::Variant) -> Option<gtk::gdk::Texture> {
         return None;
     }
     let bytes = data.data_as_bytes();
-    if bytes.len() < (stride as usize) * (h as usize - 1) + (w as usize) * (channels as usize) {
+    // a stride shorter than a row (or negative) would read past the data
+    let (h_, row) = (h as usize, w as usize * channels as usize);
+    let stride = usize::try_from(stride).ok().filter(|&s| s >= row)?;
+    let need = stride
+        .checked_mul(h_ - 1)
+        .and_then(|n| n.checked_add(row))?;
+    if bytes.len() < need {
         return None;
     }
     let fmt = if alpha {
@@ -197,7 +203,7 @@ fn image_data(v: &glib::Variant) -> Option<gtk::gdk::Texture> {
     } else {
         gtk::gdk::MemoryFormat::R8g8b8
     };
-    Some(gtk::gdk::MemoryTexture::new(w, h, fmt, &bytes, stride as usize).upcast())
+    Some(gtk::gdk::MemoryTexture::new(w, h, fmt, &bytes, stride).upcast())
 }
 
 /// A path, a file:// URI, or nothing (an icon name).

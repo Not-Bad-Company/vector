@@ -135,7 +135,9 @@ impl Theme {
             ..
         } = self;
         let bar_bg = if self.glass {
-            format!("alpha({bg}, 0.35)")
+            // a light blur leaves small bright wallpaper details as specks through a thin
+            // bar: mostly opaque, the blur only tints it
+            format!("alpha({bg}, 0.8)")
         } else {
             bg.clone()
         };

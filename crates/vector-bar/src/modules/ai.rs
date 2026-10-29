@@ -389,10 +389,6 @@ pub fn agents() -> Vec<Agent> {
     out
 }
 
-/// pid -> cpu ticks at the last poll (Antigravity: busy = using cpu)
-static TICKS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<u32, (u64, f64)>>> =
-    std::sync::LazyLock::new(Default::default);
-
 fn boot_time() -> f64 {
     util::read("/proc/stat")
         .and_then(|s| {
@@ -404,13 +400,11 @@ fn boot_time() -> f64 {
         .unwrap_or(0.0)
 }
 
-/// (start time, cpu ticks) of a process
-fn proc_times(pid: u32) -> Option<(f64, u64)> {
+/// Start time of a process
+fn proc_started(pid: u32) -> Option<f64> {
     let s = util::read(format!("/proc/{pid}/stat"))?;
     let f: Vec<&str> = s.rsplit_once(')')?.1.split_whitespace().collect();
-    let ticks = f.get(11)?.parse::<u64>().ok()? + f.get(12)?.parse::<u64>().ok()?;
-    let start = f.get(19)?.parse::<f64>().ok()? / 100.0 + boot_time();
-    Some((start, ticks))
+    Some(f.get(19)?.parse::<f64>().ok()? / 100.0 + boot_time())
 }
 
 fn proc_env(pid: u32, key: &str) -> Option<String> {
@@ -428,7 +422,6 @@ fn cli_agents() -> Vec<Agent> {
         return out;
     };
     let now = util::now();
-    let mut seen = Vec::new();
     for e in rd.flatten() {
         let Some(pid) = e.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else {
             continue;
@@ -450,13 +443,12 @@ fn cli_agents() -> Vec<Agent> {
         if parent_same {
             continue;
         }
-        let Some((started, ticks)) = proc_times(pid) else {
+        let Some(started) = proc_started(pid) else {
             continue;
         };
         let cwd = std::fs::read_link(format!("/proc/{pid}/cwd"))
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
-        seen.push(pid);
         if comm == "codex" {
             let home = proc_env(pid, "CODEX_HOME")
                 .map(PathBuf::from)
@@ -487,18 +479,8 @@ fn cli_agents() -> Vec<Agent> {
                 subs: Vec::new(),
             });
         } else {
-            let cpu_busy = {
-                let mut m = TICKS.lock().ok();
-                let prev = m.as_ref().and_then(|m| m.get(&pid).copied());
-                if let Some(m) = m.as_mut() {
-                    m.insert(pid, (ticks, now));
-                }
-                prev.is_some_and(|(t, at)| {
-                    now > at && (ticks.saturating_sub(t)) as f64 / 100.0 / (now - at) > 0.03
-                })
-            };
-            let (doing, prompt, in_turn, waiting, since, changed) = agy_session(pid, started, now);
-            let busy = in_turn || cpu_busy;
+            // busy only from the transcript: an idle agy still burns cpu (quota polls, monitors)
+            let (doing, prompt, busy, waiting, since, changed) = agy_session(pid, started, now);
             out.push(Agent {
                 pid,
                 sid: format!("agy-{pid}"),
@@ -526,9 +508,6 @@ fn cli_agents() -> Vec<Agent> {
                 subs: Vec::new(),
             });
         }
-    }
-    if let Ok(mut m) = TICKS.lock() {
-        m.retain(|pid, _| seen.contains(pid));
     }
     out
 }
@@ -621,7 +600,64 @@ fn describe_agy_tool(name: &Value, args: &Value) -> String {
     .unwrap_or_else(|| name.replace('_', " ").to_lowercase())
 }
 
+/// When the agy process last ended a turn on its own: a model error (quota, network)
+/// or a stopped stream. Those land only in its glog file, never in the transcript.
+fn agy_turn_ended(pid: u32) -> f64 {
+    let base = util::home().join(".gemini/antigravity-cli/log");
+    let log = std::fs::read_dir(format!("/proc/{pid}/fd"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| std::fs::read_link(e.path()).ok())
+        .find(|t| t.starts_with(&base) && t.extension().is_some_and(|x| x == "log"))
+        .or_else(|| std::fs::canonicalize(base.with_file_name("cli.log")).ok());
+    let Some(log) = log else {
+        return 0.0;
+    };
+    use std::io::{Read, Seek, SeekFrom};
+    let mut buf = Vec::new();
+    if let Ok(mut f) = std::fs::File::open(&log) {
+        let len = f.seek(SeekFrom::End(0)).unwrap_or(0);
+        let _ = f.seek(SeekFrom::Start(len.saturating_sub(64_000)));
+        let _ = f.read_to_end(&mut buf);
+    }
+    glog_turn_end(
+        &String::from_utf8_lossy(&buf),
+        &util::local(util::now(), "%Y"),
+    )
+}
+
+/// Time of the newest turn-ending line in an agy glog tail.
+fn glog_turn_end(text: &str, year: &str) -> f64 {
+    text.lines()
+        .rev()
+        .filter(|l| {
+            l.contains("agent executor error")
+                || l.contains("Stopping conversation stream")
+                || l.contains("Stream completed")
+        })
+        .find_map(|l| {
+            // glog: "E1029 15:25:13.336031 ..." in local time, no year
+            let stamp = l.get(1..21)?;
+            let t = chrono::NaiveDateTime::parse_from_str(
+                &format!("{year}{stamp}"),
+                "%Y%m%d %H:%M:%S%.f",
+            )
+            .ok()?;
+            use chrono::TimeZone;
+            chrono::Local
+                .from_local_datetime(&t)
+                .earliest()
+                .map(|d| d.timestamp_millis() as f64 / 1000.0)
+        })
+        .unwrap_or(0.0)
+}
+
 fn agy_session(pid: u32, started: f64, now: f64) -> AgyMeta {
+    // a turn is over once agy logs its end, or nothing happened for a while
+    let live = |in_turn: bool, changed: f64| {
+        in_turn && now - changed < 300.0 && agy_turn_ended(pid) < changed
+    };
     let Some(path) = agy_transcript_path(pid, started) else {
         return (String::new(), String::new(), false, None, started, started);
     };
@@ -633,8 +669,14 @@ fn agy_session(pid: u32, started: f64, now: f64) -> AgyMeta {
         && let Some((_, _, m)) = c.get(&path).filter(|(s, t, _)| *s == size && *t == mtime)
     {
         let (doing, prompt, in_turn, waiting, since, changed) = m.clone();
-        let active = in_turn && now - changed < 900.0;
-        return (doing, prompt, active, waiting, since, changed);
+        return (
+            doing,
+            prompt,
+            live(in_turn, changed),
+            waiting,
+            since,
+            changed,
+        );
     }
     use std::io::{Read, Seek, SeekFrom};
     let mut buf = Vec::new();
@@ -713,7 +755,7 @@ fn agy_session(pid: u32, started: f64, now: f64) -> AgyMeta {
         }
         c.insert(path, (size, mtime, res.clone()));
     }
-    let active = res.2 && now - res.5 < 900.0;
+    let active = live(res.2, res.5);
     (res.0, res.1, active, res.3, res.4, res.5)
 }
 
@@ -2010,4 +2052,24 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
     card.foot_add(&ui::spacer());
     card.foot_add(&ui::text("click an agent to jump to it", &["key"]));
     card.root.upcast()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn glog_turn_end_finds_newest_marker() {
+        let log = "\
+I1029 15:24:00.000000  1 llm_monitor.go:486] LLM Monitor: Evaluation complete
+E1029 15:25:13.336031  114898 errorreport.go:224] agent executor error: RESOURCE_EXHAUSTED (code 429)
+I1029 15:26:00.000000  1 llm_monitor.go:486] LLM Monitor: Evaluation complete
+";
+        let t = glog_turn_end(log, "2026");
+        assert_eq!(util::local(t, "%m%d %H:%M:%S"), "1029 15:25:13");
+        assert_eq!(
+            glog_turn_end("I1029 15:24:00.0 1 x.go:1] nothing\n", "2026"),
+            0.0
+        );
+    }
 }
