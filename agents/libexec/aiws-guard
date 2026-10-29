@@ -125,11 +125,65 @@ def block(why, instead):
     sys.exit(2)
 
 
+ROOT_LIST = re.compile(r"aiws/aisudo\.py|bin/aisudo(-install)?(?![\w-])|/etc/sudoers")
+WRITERS = {"sed", "tee", "cp", "mv", "install", "ln", "chmod", "chown", "rm", "truncate", "dd", "python",
+           "python3", "perl", "ruby", "patch", "rsync"}
+PATTERN_FIRST = {"grep", "rg", "egrep", "fgrep", "ag", "ack", "awk"}
+TEXT_ONLY = {"echo", "printf", "git", "crew", "agentbus", "aiws"}  # their arguments are text, not files to act on
+
+
+def commands(cmd):
+    """(program, args) for every simple command in a shell line. Heredoc bodies,
+    quoted strings and the pattern argument of grep-like tools are text, not commands,
+    so words inside them never count."""
+    body = re.sub(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n.*?\n\s*\2\s*(\n|$)", "\n", cmd, flags=re.S)
+    out = []
+    for line in body.split("\n"):
+        try:
+            lex = shlex.shlex(line, posix=True, punctuation_chars=";&|()")
+            lex.whitespace_split = True
+            lex.commenters = "#"
+            words = list(lex)
+        except ValueError:
+            continue
+        cur = []
+        for w in words + [";"]:
+            if w and set(w) <= set(";&|()"):
+                if cur:
+                    out.append(cur)
+                cur = []
+            else:
+                cur.append(w)
+    result = []
+    for words in out:
+        while words and (words[0] in ("sudo", "aisudo", "env", "command", "nice", "time", "exec", "timeout",
+                                      "nohup", "setsid") or re.fullmatch(r"\w+=.*", words[0])):
+            words = words[1:]
+        if words:
+            result.append((os.path.basename(words[0]), words[1:]))
+    return result
+
+
+def file_words(prog, args):
+    """The arguments of a command that can be files it acts on."""
+    if prog in TEXT_ONLY:
+        return []
+    plain = [a for a in args if not a.startswith("-")]
+    if prog in PATTERN_FIRST and plain:
+        plain = plain[1:]
+    return plain
+
+
+def writes_root_list_bash(cmd):
+    if re.search(r">\s*\S*(aisudo|sudoers)", cmd):
+        return True
+    return any(prog in WRITERS and any(ROOT_LIST.search(a) for a in args) for prog, args in commands(cmd))
+
+
 def private_path(p):
     if AI_BROWSER in p:
         return None
-    if re.search(r"aiws/aisudo\.py|bin/aisudo(-install)?\b|sudoers", p) and tool != "Read" and \
-            not (tool == "Bash" and not re.search(r"(>|sed\s+-i|tee|cp|mv|install|chmod|python3?\s+-)", p)):
+    if tool in ("Edit", "Write", "NotebookEdit") and ROOT_LIST.search(p):
         return ("that changes what agents may run as root", "Only the owner changes the aisudo allowlist.")
     if CLIP_STORE.search(p):
         return ("that is the owner's clipboard history", "Test with synthetic data in a sandbox (`aiws env`).")
@@ -148,37 +202,46 @@ if tool == "Bash":
     private_bus = "aiws env" in cmd or "DBUS_SESSION_BUS_ADDRESS=" in cmd or "AIWS_SANDBOX" in cmd
     nested = "aiws nest" in cmd or re.search(r"WAYLAND_DISPLAY=\S", cmd)
     protect(cmd, ev.get("cwd") or os.getcwd())
-    hit = private_path(cmd)
-    if hit:
-        block(*hit)
-    if re.search(r"\b(wl-paste|wl-copy|cliphist|clipse|xclip|xsel)\b", cmd) and not nested:
-        block("that touches the owner's real clipboard",
-              "To test clipboard features use the nested compositor (`aiws nest`), which has its own clipboard.")
-    if not private_bus:
-        if re.search(r"\bmakoctl\s+(history|list)\b", cmd) or re.search(
-                r"org\.(vectoros|freedesktop)\.Notifications|fr\.emersion\.Mako", cmd):
-            block("that reads or drives the owner's real notifications",
-                  'Run test instances on a private bus: `eval "$(aiws env)"` in the same command.')
-        if re.search(r"\bnotify-send\b", cmd):
-            block("notify-send would pop up on the owner's screen",
-                  'Send test notifications on a private bus: `eval "$(aiws env)"` in the same command.')
-    m = re.search(r"\bpkill\s+(?:-\w+\s+)*-f\s+(?:-\w+\s+)*(['\"]?)([^'\"\s]+)", cmd)
-    if m and "[" not in m.group(2):
-        block("`pkill -f PATTERN` also matches the shell running this very command (its command line contains "
-              "PATTERN), so it kills itself (exit 144) and whatever came after never runs",
-              f"Write the pattern so it can't match itself, e.g. `pkill -f '[{m.group(2)[0]}]{m.group(2)[1:]}'`, "
-              "or kill by exact name (`pkill -x node`) or by PID.")
-    if re.search(r"\bxdg-open\b|\bgio\s+open\b|\bomarchy-launch-|\buwsm(-app|\s+app)\b", cmd):
-        block("that opens something on the owner's screen (or in an app they have open)",
-              "Start it on the AI workspace with `aiws run CMD`; for URLs use `aiws browser URL`.")
-    for m in re.finditer(r"dispatch\s+([a-z]+)([^;&|\n]*)", cmd):
-        d, rest = m.group(1), m.group(2)
-        if d == "exec" and not re.search(r"workspace\s+10\b", rest):
-            block("hyprctl dispatch exec opens windows on the owner's screen", "Use `aiws run CMD`.")
-        if d in ("workspace", "focuswindow", "focusmonitor", "killactive", "togglespecialworkspace",
-                 "fullscreen", "movefocus", "swapactiveworkspaces"):
-            block(f"`dispatch {d}` changes what the owner sees or closes their window",
-                  "Work on the AI workspace with aiws (run, key, type, close, shot) instead.")
+    if writes_root_list_bash(cmd):
+        block("that changes what agents may run as root", "Only the owner changes the aisudo allowlist.")
+    for prog, args in commands(cmd):
+        for a in file_words(prog, args):
+            hit = private_path(a)
+            if hit:
+                block(*hit)
+        if prog in ("wl-paste", "wl-copy", "cliphist", "clipse", "xclip", "xsel") and not nested:
+            block("that touches the owner's real clipboard",
+                  "To test clipboard features use the nested compositor (`aiws nest`), which has its own clipboard.")
+        if not private_bus:
+            if (prog == "makoctl" and args[:1] in (["history"], ["list"])) or (
+                    prog in ("busctl", "gdbus", "dbus-send", "qdbus") and any(
+                        re.search(r"org\.(vectoros|freedesktop)\.Notifications|fr\.emersion\.Mako", a) for a in args)):
+                block("that reads or drives the owner's real notifications",
+                      'Run test instances on a private bus: `eval "$(aiws env)"` in the same command.')
+            if prog == "notify-send":
+                block("notify-send would pop up on the owner's screen",
+                      'Send test notifications on a private bus: `eval "$(aiws env)"` in the same command.')
+        if prog == "pkill" and "-f" in args:
+            pat = next((a for a in args if not a.startswith("-")), "")
+            if pat and "[" not in pat:
+                block("`pkill -f PATTERN` also matches the shell running this very command (its command line "
+                      "contains PATTERN), so it kills itself (exit 144) and whatever came after never runs",
+                      f"Write the pattern so it can't match itself, e.g. `pkill -f '[{pat[0]}]{pat[1:]}'`, "
+                      "or kill by exact name (`pkill -x node`) or by PID.")
+        if prog in ("xdg-open", "uwsm-app") or prog.startswith("omarchy-launch-") or \
+                (prog == "gio" and args[:1] == ["open"]) or (prog == "uwsm" and args[:1] == ["app"]):
+            block("that opens something on the owner's screen (or in an app they have open)",
+                  "Start it on the AI workspace with `aiws run CMD`; for URLs use `aiws browser URL`.")
+        if prog == "hyprctl":
+            text = " ".join(args)
+            for m in re.finditer(r"dispatch\s+([a-z]+)([^;]*)", text):
+                d, rest = m.group(1), m.group(2)
+                if d == "exec" and not re.search(r"workspace\s+10\b", rest):
+                    block("hyprctl dispatch exec opens windows on the owner's screen", "Use `aiws run CMD`.")
+                if d in ("workspace", "focuswindow", "focusmonitor", "killactive", "togglespecialworkspace",
+                         "fullscreen", "movefocus", "swapactiveworkspaces"):
+                    block(f"`dispatch {d}` changes what the owner sees or closes their window",
+                          "Work on the AI workspace with aiws (run, key, type, close, shot) instead.")
 elif tool.startswith("mcp__claude-in-chrome__"):
     print("aiws-guard blocked this: Claude in Chrome is replaced by the AI browser. Run `aiws browser` and use "
           "the ai-browser MCP tools (mcp__ai-browser__browser_navigate, browser_snapshot, browser_click...); "
