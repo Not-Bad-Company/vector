@@ -4,6 +4,7 @@ pub mod archive;
 pub mod bookmarks;
 pub mod command;
 pub mod details;
+pub mod dircache;
 pub mod du;
 pub mod edit;
 pub mod entry;

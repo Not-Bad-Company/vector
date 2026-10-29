@@ -9,6 +9,7 @@ use std::time::Instant;
 
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
+use vector_core::dircache::{self, DirCache};
 use vector_core::entry::Entry;
 use vector_core::git::Badge;
 use vector_core::listing::{self, DirChange, ListEvent, Listing, Watcher};
@@ -43,6 +44,18 @@ pub enum PaneEvent {
     OpenTab(PathBuf),
 }
 
+/// A folder as it was when left: its rows, selection and scroll position.
+struct CachedDir {
+    entries: Vec<Entry>,
+    hidden: std::collections::HashSet<String>,
+    selection: Selection,
+    measured: std::collections::HashSet<String>,
+    scroll: f64,
+}
+
+/// How many left folders each pane keeps for going back.
+const DIR_CACHE_SIZE: usize = 4;
+
 pub struct Pane {
     pub root: gtk::Box,
     header: gtk::Box,
@@ -61,6 +74,12 @@ pub struct Pane {
     watcher: RefCell<Option<Watcher>>,
     back: RefCell<Vec<PathBuf>>,
     forward: RefCell<Vec<PathBuf>>,
+    /// Folders navigated away from, shown at once when going back to them.
+    dir_cache: RefCell<DirCache<CachedDir>>,
+    /// Scroll position to put back once the rows of a cached folder are shown.
+    restore_scroll: Cell<Option<f64>>,
+    /// The rows came from the cache and the folder is being listed again to check them.
+    revalidating: Cell<bool>,
     git: RefCell<HashMap<String, Badge>>,
     /// The git branch this folder is on, for the statusline.
     pub branch: RefCell<Option<String>>,
@@ -145,6 +164,9 @@ impl Pane {
             watcher: RefCell::new(None),
             back: RefCell::default(),
             forward: RefCell::default(),
+            dir_cache: RefCell::new(DirCache::new(DIR_CACHE_SIZE)),
+            restore_scroll: Cell::new(None),
+            revalidating: Cell::new(false),
             git: RefCell::default(),
             branch: RefCell::default(),
             measured: RefCell::default(),
@@ -371,9 +393,12 @@ impl Pane {
 
     /// Opens `dir`, remembering the current folder for `back`.
     pub fn open_dir(self: &Rc<Self>, dir: &Path) {
+        let cur = self.dir();
+        if cur != dir {
+            self.remember_current();
+        }
         self.flat.set(false);
         self.leave_biggest();
-        let cur = self.dir();
         if cur != dir && self.store.n_items() > 0 || self.loading.get() {
             self.back.borrow_mut().push(cur);
             self.forward.borrow_mut().clear();
@@ -573,6 +598,7 @@ impl Pane {
     pub fn go_back(self: &Rc<Self>) {
         let prev = self.back.borrow_mut().pop();
         if let Some(prev) = prev {
+            self.remember_current();
             self.forward.borrow_mut().push(self.dir());
             self.load(&prev);
         }
@@ -581,9 +607,37 @@ impl Pane {
     pub fn go_forward(self: &Rc<Self>) {
         let next = self.forward.borrow_mut().pop();
         if let Some(next) = next {
+            self.remember_current();
             self.back.borrow_mut().push(self.dir());
             self.load(&next);
         }
+    }
+
+    /// Keeps the folder being left (rows, selection, scroll) so going back to it is instant.
+    /// Flat and partial listings, archives and folders that could not be read are not kept.
+    fn remember_current(&self) {
+        if self.is_flat()
+            || self.in_archive.get()
+            || self.error.borrow().is_some()
+            || (self.loading.get() && !self.revalidating.get())
+        {
+            return;
+        }
+        let dir = self.dir();
+        let Some(mtime) = dircache::mtime(&dir) else {
+            return;
+        };
+        let snapshot = {
+            let model = self.model.borrow();
+            CachedDir {
+                entries: model.all().to_vec(),
+                hidden: model.hidden_names().clone(),
+                selection: self.selection.borrow().clone(),
+                measured: self.measured.borrow().clone(),
+                scroll: self.active_vadjustment().map(|a| a.value()).unwrap_or(0.0),
+            }
+        };
+        self.dir_cache.borrow_mut().put(&dir, mtime, snapshot);
     }
 
     pub fn reload(self: &Rc<Self>) {
@@ -642,6 +696,26 @@ impl Pane {
         *self.error.borrow_mut() = None;
         *self.want_cursor.borrow_mut() = None;
         self.store.remove_all();
+        // a folder navigated to again shows what it held when left, at once; it is listed
+        // again below to check it (reload and flat views always list from scratch)
+        let cached = if self.dir() != dir && !self.is_flat() {
+            self.dir_cache.borrow_mut().take(dir)
+        } else {
+            None
+        };
+        let hit = cached.is_some();
+        if let Some(c) = cached {
+            {
+                let mut model = self.model.borrow_mut();
+                model.set_hidden_names(c.hidden);
+                model.extend(c.entries);
+            }
+            *self.selection.borrow_mut() = c.selection;
+            *self.measured.borrow_mut() = c.measured;
+            self.restore_scroll.set(Some(c.scroll));
+            self.revalidating.set(true);
+            self.refresh();
+        }
         self.loading.set(true);
         // column titles follow the sort and the folder ("trashed" in the Trash)
         self.build_header();
@@ -678,6 +752,9 @@ impl Pane {
         let rx = l.events.clone();
         self.listing.replace(Some(l));
         let started = Instant::now();
+        // with cached rows, the names the listing finds; the others are gone and get dropped
+        let mut seen: Option<std::collections::HashSet<String>> =
+            hit.then(std::collections::HashSet::new);
         self.timing.set((None, None));
         let weak = Rc::downgrade(self);
         let dir = dir.to_path_buf();
@@ -702,6 +779,9 @@ impl Pane {
                 for ev in events {
                     match ev {
                         ListEvent::Batch(mut batch) => {
+                            if let Some(seen) = seen.as_mut() {
+                                seen.extend(batch.iter().map(|e| e.name.clone()));
+                            }
                             // folders show (and sort by) their last known size at once, not
                             // after the listing is done
                             for e in batch.iter_mut().filter(|e| e.is_dir() && !e.symlink) {
@@ -737,6 +817,10 @@ impl Pane {
                 match end {
                     Some(ListEvent::Done) => {
                         p.loading.set(false);
+                        p.revalidating.set(false);
+                        if let Some(seen) = seen.take() {
+                            p.model.borrow_mut().retain(|e| seen.contains(&e.name));
+                        }
                         let t = p.timing.get();
                         p.timing
                             .set((t.0, Some(started.elapsed().as_secs_f64() * 1000.0)));
@@ -756,6 +840,7 @@ impl Pane {
                             *p.error.borrow_mut() = Some(e.clone());
                         }
                         p.loading.set(false);
+                        p.revalidating.set(false);
                         p.listing.replace(None);
                         p.refresh();
                         (p.on_event)(PaneEvent::Error(e));
@@ -963,7 +1048,10 @@ impl Pane {
         {
             suffix += 1;
         }
-        let saved_scroll = self.active_vadjustment().map(|a| a.value()).unwrap_or(0.0);
+        let saved_scroll = self
+            .restore_scroll
+            .take()
+            .unwrap_or_else(|| self.active_vadjustment().map(|a| a.value()).unwrap_or(0.0));
         if prefix == old_len && old_len == new_len {
             self.rebind_realized();
         } else {

@@ -1386,7 +1386,25 @@ impl Win {
             Action::Back => pane.go_back(),
             Action::Forward => pane.go_forward(),
             Action::Yank | Action::Cut => {
-                let paths: Vec<PathBuf> = pane.targets().into_iter().map(|e| e.path).collect();
+                // after a yank or cut the selection is cleared and the cursor stays on those
+                // files: then the whole pending set is taken again, not just the cursor row
+                let cursor = pane.cursor_entry().map(|e| e.path);
+                let pending = self
+                    .register
+                    .borrow()
+                    .as_ref()
+                    .map(|r| r.paths.clone())
+                    .filter(|set| {
+                        vector_core::selection::on_pending_set(
+                            pane.selection.borrow().has_selection(),
+                            cursor.as_deref(),
+                            set,
+                        )
+                    });
+                let paths: Vec<PathBuf> = match pending {
+                    Some(set) => set,
+                    None => pane.targets().into_iter().map(|e| e.path).collect(),
+                };
                 if paths.is_empty() {
                     return;
                 }

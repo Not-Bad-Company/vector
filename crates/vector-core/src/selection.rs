@@ -2,6 +2,7 @@
 //! entries appearing or disappearing.
 
 use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 
 use crate::entry::Entry;
 use crate::model::DirModel;
@@ -140,6 +141,13 @@ impl Selection {
     }
 }
 
+/// Whether a yank or cut acts on the set it last took (`pending`) rather than the cursor row
+/// alone. A yank or cut clears the selection, so with nothing selected and the cursor on one of
+/// those files the set is what the user means: cut then ctrl+c copies the whole cut set.
+pub fn on_pending_set(has_selection: bool, cursor: Option<&Path>, pending: &[PathBuf]) -> bool {
+    !has_selection && cursor.is_some_and(|c| pending.iter().any(|p| p == c))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,5 +227,17 @@ mod tests {
         m.remove("f1");
         s.prune(&m);
         assert!(!s.has_selection());
+    }
+
+    #[test]
+    fn pending_set_applies_only_with_nothing_selected_and_cursor_on_it() {
+        let set = vec![PathBuf::from("/d/a"), PathBuf::from("/d/b")];
+        assert!(on_pending_set(false, Some(Path::new("/d/b")), &set));
+        // a selection of its own wins
+        assert!(!on_pending_set(true, Some(Path::new("/d/b")), &set));
+        // the cursor moved to a file that was not part of it
+        assert!(!on_pending_set(false, Some(Path::new("/d/c")), &set));
+        assert!(!on_pending_set(false, None, &set));
+        assert!(!on_pending_set(false, Some(Path::new("/d/a")), &[]));
     }
 }

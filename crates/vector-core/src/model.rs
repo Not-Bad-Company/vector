@@ -227,6 +227,20 @@ impl DirModel {
         }
     }
 
+    /// Drops every entry for which `keep` is false.
+    pub fn retain(&mut self, keep: impl Fn(&Entry) -> bool) {
+        let before = self.all.len();
+        self.all.retain(|e| keep(e));
+        if self.all.len() != before {
+            self.refilter();
+        }
+    }
+
+    /// Names from the folder's `.hidden` file.
+    pub fn hidden_names(&self) -> &std::collections::HashSet<String> {
+        &self.hidden_names
+    }
+
     pub fn clear(&mut self) {
         self.all.clear();
         self.shown.clear();
