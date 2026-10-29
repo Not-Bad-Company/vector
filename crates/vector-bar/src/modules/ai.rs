@@ -443,6 +443,19 @@ fn cli_agents() -> Vec<Agent> {
         if parent_same {
             continue;
         }
+        // not a session: the usage probes (`agy -p /usage`, ours or another
+        // bar's) would otherwise show up as an agent that just finished
+        let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+        let probe = cmdline.split(|b| *b == 0).any(|a| a == b"/usage");
+        let ours = util::read(format!("/proc/{pid}/stat"))
+            .and_then(|s| {
+                s.rsplit_once(')')
+                    .and_then(|r| r.1.split_whitespace().nth(1).and_then(|p| p.parse::<u32>().ok()))
+            })
+            .is_some_and(|pp| pp == std::process::id());
+        if probe || ours {
+            continue;
+        }
         let Some(started) = proc_started(pid) else {
             continue;
         };
