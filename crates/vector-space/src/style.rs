@@ -129,3 +129,52 @@ scrollbar slider {{ background: alpha({fg}, 0.18); min-width: 3px; }}
 "#
     )
 }
+
+/// The Start menu (start.rs): the card's two columns, rows, power buttons.
+pub fn start_css(t: &Theme) -> String {
+    let (bg, fg, acc) = (&t.background, &t.foreground, &t.accent);
+    format!(
+        r#"
+.start-backdrop {{ background: transparent; }}
+.card.start {{ animation: start-in 130ms cubic-bezier(0.2, 0.9, 0.3, 1); }}
+@keyframes start-in {{
+  from {{ opacity: 0; transform: translate(-6px, -6px) scale(0.985); }}
+  to {{ opacity: 1; transform: none; }}
+}}
+.start-left {{ padding: 10px 0 0 0; }}
+.start-right {{ background: alpha({fg}, 0.035); border-left: 1px solid alpha({fg}, 0.08); padding: 0 0 6px 0; }}
+.start-section {{
+  font-size: 11px; color: alpha({fg}, 0.42); letter-spacing: 1px;
+  padding: 12px 18px 4px 18px; text-transform: lowercase;
+}}
+.start-row {{ padding: 7px 18px; min-height: 26px; border-left: 2px solid transparent; }}
+.start-row:hover {{ background: alpha({fg}, 0.06); border-left-color: {acc}; }}
+.start-row:active {{ background: alpha({acc}, 0.18); }}
+.start-row label {{ font-size: 13px; }}
+.start-glyph {{ font-size: 16px; min-width: 22px; color: alpha({fg}, 0.75); }}
+.start-meta {{ color: alpha({fg}, 0.4); font-size: 12px; }}
+.start-empty {{ color: alpha({fg}, 0.35); font-size: 12px; padding: 4px 18px; }}
+.start-more {{ border-top: 1px solid alpha({fg}, 0.08); margin-top: 6px; }}
+.start-search, .start-search text {{
+  background: alpha({fg}, 0.04); border: none; border-top: 1px solid alpha({fg}, 0.08);
+  box-shadow: none; min-height: 46px; padding: 0 18px; font-size: 14px; color: {fg}; caret-color: {acc};
+}}
+.start-search:focus-within {{ border-top-color: {acc}; }}
+.start-user {{ padding: 16px 18px 12px 18px; border-bottom: 1px solid alpha({fg}, 0.08); }}
+.start-avatar {{
+  background: {acc}; color: {bg}; font-weight: bold; font-size: 18px;
+  min-width: 40px; min-height: 40px;
+}}
+.start-name {{ font-size: 15px; font-weight: bold; }}
+.start-host {{ font-size: 11px; color: alpha({fg}, 0.45); }}
+.start-power {{ border-top: 1px solid alpha({fg}, 0.08); background: alpha({fg}, 0.035); }}
+.start-pow {{
+  background: transparent; border: none; box-shadow: none; padding: 8px 14px; min-width: 20px;
+  color: alpha({fg}, 0.7);
+}}
+.start-pow:hover {{ background: alpha({fg}, 0.08); color: {fg}; }}
+.start-pow.armed {{ background: {red}; color: {bg}; }}
+"#,
+        red = t.color1
+    )
+}

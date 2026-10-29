@@ -1,7 +1,7 @@
 //! The mode block on the far left: the Vector mark and the system mode
 //! (NORMAL, REC, DICTATE, SILENT, AWAKE, VM; several join with ·), in the
-//! mode's colour. Click: the Vector menu (apps, capture, toggles, style,
-//! system, session). Right: terminal.
+//! mode's colour. Click: the Start menu (`vector-space start`; without Vector
+//! Space, the bar's own menu panel). Right: terminal.
 //! The rarer Omarchy submenus (install, remove, setup...) stay reachable under "more".
 
 use std::cell::{Cell, RefCell};
@@ -82,8 +82,13 @@ impl Menu {
             s.append(&ui::thint("click menu  ·  right terminal"));
             Some(s.upcast())
         });
-        let t2 = ctx.theme.clone();
-        slot.panel(move |p| menu_panel(p, &t2));
+        // the Start menu (Vector Space) when installed, else the bar's own panel
+        if util::which("vector-space") {
+            slot.on_left(|| util::spawn(&["vector-space", "start"]));
+        } else {
+            let t2 = ctx.theme.clone();
+            slot.panel(move |p| menu_panel(p, &t2));
+        }
         Menu {
             slot,
             _indicators,

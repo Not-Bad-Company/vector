@@ -638,7 +638,15 @@ impl Ui {
         self.show(mode);
     }
 
+    /// Open with a query already typed (the Start menu's search hands over here).
+    pub fn search(self: &Rc<Self>, text: &str) {
+        self.show(Mode::Apps);
+        self.entry.set_text(text);
+        self.entry.set_position(-1);
+    }
+
     pub fn show(self: &Rc<Self>, mode: Mode) {
+        crate::start::hide();
         let t = std::time::Instant::now();
         self.place();
         self.st.borrow_mut().wins = apps::windows();

@@ -23,6 +23,7 @@ mod emoji;
 mod item;
 mod notes;
 mod style;
+mod start;
 mod ui;
 mod util;
 mod web;
@@ -36,7 +37,7 @@ use crate::item::Mode;
 
 const APP_ID: &str = "org.vectoros.Space";
 const TEST_ID: &str = "org.vectoros.SpaceTest";
-const USAGE: &str = "usage: vector-space [apps|clipboard|notifications|emoji|web|calc] | --service | close | quit | clip-store | clip-add MIME | to FORMAT FILE...";
+const USAGE: &str = "usage: vector-space [start|apps|clipboard|notifications|emoji|web|calc] | --service | close | quit | clip-store | clip-add MIME | to FORMAT FILE...";
 
 thread_local! {
     static CSS: RefCell<Option<gtk::CssProvider>> = const { RefCell::new(None) };
@@ -77,7 +78,7 @@ fn main() -> glib::ExitCode {
             };
             return if clip::add_stdin(mime) { glib::ExitCode::SUCCESS } else { glib::ExitCode::FAILURE };
         }
-        Some(w) if w != "--service" && w != "close" && w != "quit" && Mode::parse(w).is_none() => {
+        Some(w) if w != "--service" && w != "close" && w != "quit" && w != "start" && Mode::parse(w).is_none() => {
             eprintln!("{USAGE}");
             return glib::ExitCode::FAILURE;
         }
@@ -145,7 +146,14 @@ fn command(word: &str) -> glib::ExitCode {
                 app.quit();
             }
         }
-        "close" => ui.hide(),
+        "close" => {
+            ui.hide();
+            start::hide();
+        }
+        "start" => match gio::Application::default().and_downcast::<gtk::Application>() {
+            Some(app) => start::toggle(&app),
+            None => eprintln!("vector-space: no application for the start menu"),
+        },
         w => match Mode::parse(w) {
             Some(m) => ui.toggle(m),
             None => return glib::ExitCode::FAILURE,
@@ -200,7 +208,7 @@ fn load_css() {
     let Some(display) = gtk::gdk::Display::default() else { return };
     let theme = vector_core::theme::Theme::load();
     let p = gtk::CssProvider::new();
-    p.load_from_string(&style::css(&theme));
+    p.load_from_string(&(style::css(&theme) + &style::start_css(&theme)));
     CSS.with(|c| {
         if let Some(old) = c.borrow_mut().replace(p.clone()) {
             gtk::style_context_remove_provider_for_display(&display, &old);

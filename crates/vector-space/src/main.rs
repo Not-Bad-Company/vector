@@ -31,7 +31,7 @@ use crate::item::Mode;
 
 const APP_ID: &str = "org.vectoros.Space";
 const TEST_ID: &str = "org.vectoros.SpaceTest";
-const USAGE: &str = "usage: vector-space [apps|clipboard|notifications|emoji|web|calc|convert] | close | quit | to FORMAT FILE... | clip-store | clip-add MIME";
+const USAGE: &str = "usage: vector-space [start|apps|clipboard|notifications|emoji|web|calc|convert] | close | quit | to FORMAT FILE... | clip-store | clip-add MIME";
 
 fn test() -> bool {
     std::env::var("VECTOR_SPACE_TEST").is_ok_and(|v| !v.is_empty() && v != "0")
@@ -69,7 +69,7 @@ fn main() -> std::process::ExitCode {
         }
         w => {
             let w = w.unwrap_or("apps");
-            if Mode::parse(w).is_none() {
+            if Mode::parse(w).is_none() && w != "start" {
                 eprintln!("{USAGE}");
                 return ok(false);
             }
