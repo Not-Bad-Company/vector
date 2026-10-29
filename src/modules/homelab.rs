@@ -260,11 +260,11 @@ impl Inner {
         let load = m["load_1m"].as_str().and_then(|x| x.parse::<f64>().ok()).or(m["load_1m"].as_f64()).unwrap_or(0.0);
         let cores = m["cores"].as_f64().unwrap_or(4.0);
         sh.append(&tmeter("cpu", load / cores, &format!("{load:.2} load"), &m["pi_temp"].as_i64().map(|t| format!("{t}°")).unwrap_or_default()));
-        sh.append(&tmeter("mem", kb(&m["ram_used_kb"]) as f64 / kb(&m["ram_total_kb"]).max(1) as f64, &format!("{} of {}", fmt_kb(kb(&m["ram_used_kb"])), fmt_kb(kb(&m["ram_total_kb"]))), ""));
+        sh.append(&tmeter("mem", kb(&m["ram_used_kb"]) as f64 / kb(&m["ram_total_kb"]).max(1) as f64, &util::used_of(kb(&m["ram_used_kb"]), kb(&m["ram_total_kb"])), ""));
         sh.append(&tmeter("root", m["root_pct"].as_f64().unwrap_or(0.0) / 100.0, &format!("{}%", m["root_pct"]), ""));
         sh.append(&ui::tsection("storage"));
         if kb(&m["nas_total_kb"]) > 0 {
-            sh.append(&tmeter("nas", m["nas_pct"].as_f64().unwrap_or(0.0) / 100.0, &format!("{} of {}", fmt_kb(kb(&m["nas_used_kb"])), fmt_kb(kb(&m["nas_total_kb"]))), ""));
+            sh.append(&tmeter("nas", m["nas_pct"].as_f64().unwrap_or(0.0) / 100.0, &util::used_of(kb(&m["nas_used_kb"]), kb(&m["nas_total_kb"])), ""));
         }
         let hdd = if m["hdd_status"] == "active" {
             format!("spinning {}  {}  {}°", util::dur(self.spin_secs()), ui::dim("·"), m["hdd_temp"])
@@ -333,23 +333,24 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
             let load = m["load_1m"].as_str().and_then(|x| x.parse::<f64>().ok()).or(m["load_1m"].as_f64()).unwrap_or(0.0);
             let cores = m["cores"].as_f64().unwrap_or(4.0);
             let loads = format!("{} {} {}", m["load_1m"].as_str().unwrap_or("-"), m["load_5m"].as_str().unwrap_or("-"), m["load_15m"].as_str().unwrap_or("-"));
-            body.append(&ui::meter_row("cpu", load / cores, &format!("{load:.2}"), &format!("load {loads} · {:.1} GHz", m["cpu_freq_mhz"].as_f64().unwrap_or(0.0) / 1000.0), ""));
+            body.append(&ui::meter_row("cpu", load / cores, &format!("{load:.2}"), &format!("{:.1} GHz", m["cpu_freq_mhz"].as_f64().unwrap_or(0.0) / 1000.0), ""));
+            body.append(&ui::kv("load", &loads).0);
             if let Some(t) = m["pi_temp"].as_i64() {
                 body.append(&ui::meter_row("temp", t as f64 / 85.0, &format!("{t}°"), "", if t >= 80 { "crit" } else if t >= 70 { "warn" } else { "" }));
             }
             let rp = m["ram_pct"].as_f64().unwrap_or(0.0);
-            body.append(&ui::meter_row("mem", rp / 100.0, &format!("{rp:.0}%"), &format!("{} of {}", fmt_kb(kb(&m["ram_used_kb"])), fmt_kb(kb(&m["ram_total_kb"]))), if rp >= 95.0 { "crit" } else if rp >= 85.0 { "warn" } else { "" }));
+            body.append(&ui::meter_row("mem", rp / 100.0, &format!("{rp:.0}%"), &util::used_of(kb(&m["ram_used_kb"]), kb(&m["ram_total_kb"])), if rp >= 95.0 { "crit" } else if rp >= 85.0 { "warn" } else { "" }));
             if kb(&m["swap_used_kb"]) > 0 {
                 let sp = m["swap_pct"].as_f64().unwrap_or(0.0);
-                body.append(&ui::meter_row("swap", sp / 100.0, &format!("{sp:.0}%"), &format!("{} of {}", fmt_kb(kb(&m["swap_used_kb"])), fmt_kb(kb(&m["swap_total_kb"]))), ""));
+                body.append(&ui::meter_row("swap", sp / 100.0, &format!("{sp:.0}%"), &util::used_of(kb(&m["swap_used_kb"]), kb(&m["swap_total_kb"])), ""));
             }
             let rp = m["root_pct"].as_f64().unwrap_or(0.0);
-            body.append(&ui::meter_row("root", rp / 100.0, &format!("{rp:.0}%"), &format!("{} of {}", fmt_kb(kb(&m["root_used_kb"])), fmt_kb(kb(&m["root_total_kb"]))), if rp >= 92.0 { "crit" } else if rp >= 80.0 { "warn" } else { "" }));
+            body.append(&ui::meter_row("root", rp / 100.0, &format!("{rp:.0}%"), &util::used_of(kb(&m["root_used_kb"]), kb(&m["root_total_kb"])), if rp >= 92.0 { "crit" } else if rp >= 80.0 { "warn" } else { "" }));
 
             body.append(&ui::section("nas"));
             if kb(&m["nas_total_kb"]) > 0 {
                 let np = m["nas_pct"].as_f64().unwrap_or(0.0);
-                body.append(&ui::meter_row("disk", np / 100.0, &format!("{np:.0}%"), &format!("{} of {}", fmt_kb(kb(&m["nas_used_kb"])), fmt_kb(kb(&m["nas_total_kb"]))), if np >= 92.0 { "crit" } else if np >= 80.0 { "warn" } else { "" }));
+                body.append(&ui::meter_row("disk", np / 100.0, &format!("{np:.0}%"), &util::used_of(kb(&m["nas_used_kb"]), kb(&m["nas_total_kb"])), if np >= 92.0 { "crit" } else if np >= 80.0 { "warn" } else { "" }));
             }
             let secs = i.spin_secs();
             let hdd = if m["hdd_status"] == "active" {

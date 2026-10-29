@@ -476,3 +476,18 @@ pub fn find_comms(names: &[&str]) -> Vec<Option<u32>> {
     }
     out
 }
+
+/// "2.6 / 7.9 GB": used and total in the total's unit (compact meter detail).
+pub fn used_of(used_kb: u64, total_kb: u64) -> String {
+    let t = size_kb(total_kb);
+    let unit = t.rsplit(' ').next().unwrap_or("GB").to_string();
+    let div = match unit.as_str() {
+        "TB" => 1_073_741_824.0,
+        "GB" => 1_048_576.0,
+        _ => 1024.0,
+    };
+    let u = used_kb as f64 / div;
+    let tn = total_kb as f64 / div;
+    let f = |x: f64| if x >= 100.0 { format!("{x:.0}") } else { format!("{x:.1}") };
+    format!("{} / {} {unit}", f(u), f(tn))
+}

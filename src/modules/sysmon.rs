@@ -351,9 +351,7 @@ impl Inner {
 }
 
 fn of(used: u64, total: u64) -> String {
-    let u = util::size_kb(used);
-    let num = u.split(' ').next().unwrap_or("").to_string();
-    format!("{num} {}", ui::dim(&format!("of {}", util::size_kb(total))))
+    util::used_of(used, total)
 }
 
 fn fans(f: &[i64]) -> String {
