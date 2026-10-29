@@ -934,6 +934,21 @@ def who_line(s):
     return f"{s['name']} ({', '.join(bits)})" + (f", task: {task}" if task else "")
 
 
+def building_in(repo):
+    """pid of a cargo/rustc process working inside repo, if any."""
+    for d in os.listdir("/proc"):
+        if not d.isdigit():
+            continue
+        try:
+            if open(f"/proc/{d}/comm").read().strip() not in ("cargo", "rustc"):
+                continue
+            if os.readlink(f"/proc/{d}/cwd").startswith(repo):
+                return int(d)
+        except OSError:
+            continue
+    return None
+
+
 def command_dir(cmd, cwd):
     m = re.search(r"\bgit\s+-C\s+(\S+)", cmd) or re.search(r"(?:^|&&|;)\s*cd\s+(\S+)", cmd)
     where = os.path.expanduser(m.group(1).strip("'\"")) if m else cwd or os.getcwd()
@@ -982,6 +997,13 @@ def pre_tool(con, sid, data):
         cmd = inp.get("command", "")
         if not data.get("agent_id"):
             bash_started(con, sid, data)
+        if re.search(r"\bcargo\s+clean\b", cmd):
+            repo = repo_root(command_dir(cmd, data.get("cwd")))
+            busy = repo and building_in(repo)
+            if busy and warn_once(con, sid, "cargo-clean:" + repo):
+                deny(f"crew: a build is running in {short(repo)} right now (pid {busy}), probably another agent's. "
+                     "`cargo clean` would delete its build files and force a full rebuild. Clean after it "
+                     "finishes (check with `crew who`), or repeat the command if you're sure.")
         risky = [why for rx, why in GIT_RISKY if re.search(rx, cmd)]
         if not risky:
             return
