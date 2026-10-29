@@ -160,7 +160,7 @@ impl Theme {
 @define-color vb_warn {warn};
 @define-color vb_crit {crit};
 
-window.vbar, window.vpanel, tooltip, popover {{
+window.vbar, window.vpanel, window.vnotify, window.vosd, tooltip, popover {{
   font-family: '{font}';
   font-size: {font_size}px;
   color: {fg};
@@ -353,6 +353,61 @@ spinner {{ color: {acc}; }}
 
 /* spark graphs */
 .spark {{ color: {acc}; padding: 0 20px; }}
+
+/* ── notifications ───────────────────────────────────── */
+window.vnotify, window.vosd {{ background: transparent; }}
+.item.unseen {{ color: {acc}; }}
+.ncard {{
+  box-shadow: none;
+  animation: ncard-in 170ms cubic-bezier(0.2, 0.9, 0.3, 1);
+  transition: border-color 140ms ease;
+}}
+@keyframes ncard-in {{
+  from {{ opacity: 0; transform: translateX(28px); }}
+  to {{ opacity: 1; transform: none; }}
+}}
+.ncard:hover {{ border-color: alpha({acc}, 0.45); }}
+.ncard .head {{ min-height: 26px; margin-bottom: 9px; padding: 0 2px 0 0; }}
+.ncard .htitle {{ background: {acc}; color: {bg}; padding: 0 10px; }}
+.ncard.low .htitle {{ background: alpha({fg}, 0.28); color: {fg}; }}
+.ncard.critical {{ border-color: alpha({red}, 0.75); }}
+.ncard.critical .htitle {{ background: {red}; color: {bg}; }}
+.ncard .ncount {{ color: {acc}; font-weight: bold; }}
+.ncard .npin {{ color: alpha({fg}, 0.4); }}
+.ncard button.nclose {{ opacity: 0; padding: 0 6px; }}
+.ncard:hover button.nclose {{ opacity: 0.55; }}
+.ncard:hover button.nclose:hover {{ opacity: 1; }}
+.ncontent {{ padding: 0 14px 12px 14px; }}
+.nsum {{ font-weight: bold; }}
+.nprogress {{ margin-top: 6px; }}
+.nthumb {{ border: 1px solid alpha({fg}, 0.12); }}
+.nbanner {{ margin: 0 14px 12px 14px; border: 1px solid alpha({fg}, 0.12); }}
+.nactions {{ padding: 0 8px 8px 8px; margin-top: -4px; }}
+.ndrain {{ background: alpha({fg}, 0.05); }}
+button.nmore {{
+  background: {card_bg}; border: 1px solid alpha({fg}, 0.18); border-radius: 0;
+  box-shadow: none; color: alpha({fg}, 0.6); padding: 4px 12px; min-height: 0;
+}}
+button.nmore:hover {{ color: {fg}; border-color: alpha({acc}, 0.45); }}
+.nrow.past {{ opacity: 0.82; }}
+
+/* ── on-screen display ───────────────────────────────── */
+.osd {{ box-shadow: none; animation: osd-in 140ms cubic-bezier(0.2, 0.9, 0.3, 1); }}
+@keyframes osd-in {{
+  from {{ opacity: 0; transform: translateY(10px); }}
+  to {{ opacity: 1; transform: none; }}
+}}
+.osd .head {{ margin-bottom: 0; min-height: 30px; padding-right: 14px; }}
+.osd .htitle {{ background: {acc}; color: {bg}; }}
+.osd.crit-block .htitle {{ background: {red}; }}
+.osd .oglyph {{ color: {acc}; }}
+.osd.crit-block .oglyph {{ color: {red}; }}
+.osd .otitle {{ font-weight: bold; }}
+.osd .ovalue {{ font-weight: bold; font-size: {big}px; }}
+.ometer {{ margin: 12px 14px 14px 14px; }}
+.olist {{ padding: 0 14px 12px 14px; }}
+.olist label {{ padding: 2px 0; }}
+.olist .ocur {{ color: {acc}; font-weight: bold; }}
 "#,
             small = (font_size - 2.0).max(8.0),
             big = font_size + 6.0,

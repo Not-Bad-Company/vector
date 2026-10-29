@@ -5,6 +5,7 @@
 //!   vector-bar toggle <panel>     open/close a panel (`clipboard@center` centres it)
 //!   vector-bar refresh [module]   re-read a module now (replaces `pkill -RTMIN+N waybar`)
 //!   vector-bar reload             re-read config, style and theme
+//!   vector-bar osd <args...>      on-screen display (swayosd-client compatible)
 //!   vector-bar close | modules | quit
 
 mod bar;
@@ -15,6 +16,8 @@ mod lua;
 mod mako;
 mod mode;
 mod modules;
+mod notify;
+mod osd;
 mod panel;
 mod sheet;
 mod slot;
@@ -36,7 +39,7 @@ use crate::theme::Theme;
 
 const APP_ID: &str = "org.vectoros.Bar";
 const TEST_ID: &str = "org.vectoros.BarTest";
-const USAGE: &str = "usage: vector-bar [--test] | toggle <panel>[@center] | refresh [module] | reload | close | modules | quit";
+const USAGE: &str = "usage: vector-bar [--test] | toggle <panel>[@center] | refresh [module] | reload | osd <args...> | close | modules | quit";
 
 #[derive(Default)]
 struct State {
@@ -44,6 +47,7 @@ struct State {
     bars: Vec<gtk::ApplicationWindow>,
     css: Option<gtk::CssProvider>,
     user_css: Option<gtk::CssProvider>,
+    lua: Option<Rc<lua::Runtime>>,
     error: Option<String>,
     reload_pending: bool,
 }
@@ -123,8 +127,8 @@ fn main() -> glib::ExitCode {
     app.run()
 }
 
-/// Does a bar own its D-Bus name? (Asked without registering ourselves.)
-fn running(id: &str) -> bool {
+/// Does a D-Bus name have an owner? (Asked without registering ourselves.)
+pub(crate) fn running(id: &str) -> bool {
     let Ok(c) = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE) else {
         return false;
     };
@@ -192,6 +196,7 @@ fn command(words: &[&str]) -> String {
             v.sort();
             v.join("\n")
         }),
+        ["osd", rest @ ..] => osd::request(rest),
         _ => USAGE.into(),
     }
 }
@@ -284,6 +289,9 @@ fn reload(app: &gtk::Application) {
     // modules (dropping the old ones stops their timers)
     let theme_rc = Rc::new(theme);
     panel::set_theme(theme_rc.clone());
+    notify::configure(&cfg.notifications, app);
+    osd::init(app, &cfg.osd);
+    notify::popup::restyle();
     let lua = lua::load();
     if let Some(rt) = &lua {
         let errs = rt.errors.borrow().join("\n");
@@ -297,9 +305,13 @@ fn reload(app: &gtk::Application) {
     let ctx = Ctx {
         cfg: Rc::new(cfg.clone()),
         theme: theme_rc.clone(),
-        lua,
+        lua: lua.clone(),
     };
-    let old = STATE.with(|s| std::mem::take(&mut s.borrow_mut().modules));
+    let old = STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        s.lua = lua;
+        std::mem::take(&mut s.modules)
+    });
     drop(old);
     mode::reset();
     let mut modules: HashMap<String, Rc<dyn Module>> = HashMap::new();

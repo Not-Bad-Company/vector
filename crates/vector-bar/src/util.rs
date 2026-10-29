@@ -350,6 +350,11 @@ pub fn which(prog: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Does a process with this comm name run?
+pub fn proc_running(comm: &str) -> bool {
+    find_comms(&[comm])[0].is_some()
+}
+
 /// A long-running command whose stdout lines are delivered on the GTK thread.
 /// Restarted after `restart` if it exits; killed when the returned handle drops.
 pub struct Stream {

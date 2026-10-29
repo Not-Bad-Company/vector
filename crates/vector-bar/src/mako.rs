@@ -1,5 +1,7 @@
-//! mako over D-Bus (`fr.emersion.Mako`): notifications on screen, history,
-//! modes (do-not-disturb), with change signals instead of `makoctl` polling.
+//! The notification client every module shares (bell, mode block, silence
+//! mark). With the built-in server (notify/) it reads the store directly;
+//! with `[notifications] enable = false` it talks to mako over D-Bus
+//! (`fr.emersion.Mako`), with change signals instead of `makoctl` polling.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -7,23 +9,14 @@ use std::rc::Rc;
 use gtk::gio;
 use gtk::prelude::*;
 
+pub use crate::notify::Note;
+use crate::notify::{self, Store};
 use crate::slot::Notify;
 
 const BUS: &str = "org.freedesktop.Notifications";
 const PATH: &str = "/fr/emersion/Mako";
 const IFACE: &str = "fr.emersion.Mako";
-pub const DND: &str = "do-not-disturb";
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Note {
-    pub id: u32,
-    pub app: String,
-    pub summary: String,
-    pub body: String,
-    pub urgency: u8,
-    pub icon: String,
-    pub actions: Vec<(String, String)>,
-}
+pub const DND: &str = notify::DND;
 
 #[derive(Default)]
 struct State {
@@ -33,6 +26,7 @@ struct State {
 
 pub struct Mako {
     conn: Option<gio::DBusConnection>,
+    local: Option<Rc<Store>>,
     state: RefCell<State>,
     pub changed: Notify,
 }
@@ -41,18 +35,32 @@ thread_local! {
     static MAKO: RefCell<Option<Rc<Mako>>> = const { RefCell::new(None) };
 }
 
-/// The shared client (one D-Bus subscription for every module).
-#[allow(deprecated)] // signal_subscribe: subscribe_to_signal would unsubscribe on drop
+/// The shared client (one subscription for every module).
+#[allow(deprecated)]
 pub fn get() -> Rc<Mako> {
     if let Some(m) = MAKO.with(|m| m.borrow().clone()) {
         return m;
     }
-    let conn = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE).ok();
+    let local = notify::enabled().then(notify::get);
+    let conn = if local.is_some() {
+        None
+    } else {
+        gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE).ok()
+    };
     let m = Rc::new(Mako {
         conn,
+        local,
         state: RefCell::default(),
         changed: Notify::default(),
     });
+    if let Some(s) = &m.local {
+        let w = Rc::downgrade(&m);
+        s.changed.connect(move || {
+            if let Some(m) = w.upgrade() {
+                m.refresh();
+            }
+        });
+    }
     if let Some(c) = &m.conn {
         let w = Rc::downgrade(&m);
         c.signal_subscribe(
@@ -133,14 +141,37 @@ pub fn parse_notes(v: &glib::Variant) -> Vec<Note> {
             body: dict_str(&d, "body"),
             urgency,
             icon: dict_str(&d, "app-icon"),
+            category: dict_str(&d, "category"),
+            desktop_entry: dict_str(&d, "desktop-entry"),
             actions,
+            ..Default::default()
         });
     }
     out
 }
 
 impl Mako {
+    /// The built-in store, when it serves.
+    pub fn store(&self) -> Option<&Rc<Store>> {
+        self.local.as_ref()
+    }
+
     pub fn refresh(self: &Rc<Self>) {
+        if let Some(s) = &self.local {
+            let (notes, modes) = (s.visible(), s.modes());
+            let changed = {
+                let st = self.state.borrow();
+                st.on_screen != notes || st.modes != modes
+            };
+            *self.state.borrow_mut() = State {
+                on_screen: notes,
+                modes,
+            };
+            // the store also changes for history-only reasons (seen, cleared)
+            let _ = changed;
+            self.changed.emit();
+            return;
+        }
         let Some(c) = self.conn.clone() else { return };
         let w = Rc::downgrade(self);
         glib::spawn_future_local(async move {
@@ -199,6 +230,9 @@ impl Mako {
 
     /// History (most recent first), fetched on demand.
     pub fn history(&self, done: impl FnOnce(Vec<Note>) + 'static) {
+        if let Some(s) = &self.local {
+            return done(s.history());
+        }
         let Some(c) = self.conn.clone() else {
             return done(Vec::new());
         };
@@ -241,6 +275,9 @@ impl Mako {
     }
 
     pub fn set_dnd(self: &Rc<Self>, on: bool) {
+        if let Some(s) = &self.local {
+            return s.set_dnd(on);
+        }
         let mut modes = self.state.borrow().modes.clone();
         modes.retain(|m| m != DND);
         if on {
@@ -253,22 +290,44 @@ impl Mako {
     }
 
     pub fn dismiss(self: &Rc<Self>, id: u32) {
+        if let Some(s) = &self.local {
+            return s.dismiss(id);
+        }
         let d = glib::VariantDict::new(None);
         d.insert("id", id);
-        self.call("DismissNotifications", Some((d.end(),).to_variant()));
+        self.call(
+            "DismissNotifications",
+            Some(glib::Variant::tuple_from_iter([d.end()])),
+        );
     }
 
     pub fn dismiss_all(self: &Rc<Self>) {
+        if let Some(s) = &self.local {
+            return s.dismiss_all();
+        }
         let d = glib::VariantDict::new(None);
         d.insert("all", true);
-        self.call("DismissNotifications", Some((d.end(),).to_variant()));
+        self.call(
+            "DismissNotifications",
+            Some(glib::Variant::tuple_from_iter([d.end()])),
+        );
     }
 
     pub fn invoke(self: &Rc<Self>, id: u32, action: &str) {
+        if let Some(s) = &self.local {
+            return if action == "default" {
+                s.activate(id)
+            } else {
+                s.invoke(id, action)
+            };
+        }
         self.call("InvokeAction", Some((id, action).to_variant()));
     }
 
     pub fn restore(self: &Rc<Self>) {
+        if let Some(s) = &self.local {
+            return s.restore();
+        }
         self.call("RestoreNotification", None);
     }
 }

@@ -71,6 +71,38 @@ max_length = 60
 # order of the small marks (the mode block shows REC/DICTATE/VM/SILENT/AWAKE instead)
 show = ["voxtype", "recording", "idle", "sleeplock", "win11", "dnd", "mic", "camera"]
 
+# Built-in notification server (org.freedesktop.Notifications + mako D-Bus API).
+[notifications]
+enable = true
+position = "top-right"               # top-right, top-left, top-center, bottom-*
+width = 400
+max_visible = 4
+max_history = 150
+timeout_low = 4000
+timeout = 6500
+timeout_critical = 0                 # 0 = stays until dismissed
+critical_in_dnd = true
+
+# Rules: patterns are case-insensitive substrings, a|b alternatives, ^ / $ anchors.
+# [[notifications.rules]]
+# app = "^spotify$"
+# hide = true
+# history = false
+#
+# [[notifications.rules]]
+# summary = "build finished"
+# title = "BUILD"
+# on_click = "xdg-open https://ci.example.com"
+# osd = false
+
+# On-screen display (`vector-bar osd`, swayosd-client compatible).
+[osd]
+timeout = 1600
+max_volume = 100
+step = 5
+margin = 72
+width = 400
+
 # Click overrides for any module: left / middle / right / scroll_up / scroll_down.
 # [bind.network]
 # right = "impala"

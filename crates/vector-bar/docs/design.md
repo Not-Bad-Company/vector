@@ -1,8 +1,9 @@
 # Vector Bar — design
 
-The top bar of Vector OS. Replaces Waybar, the `bar-panel` Python daemon and the
-~25 `~/.config/waybar/scripts/*` JSON printers with one native Rust + GTK4 program,
-in the same visual language as Vector Find and Vector View.
+The top bar of Vector OS. Replaces Waybar, the `bar-panel` Python daemon,
+mako, swayosd, and the ~25 `~/.config/waybar/scripts/*` JSON printers with one
+native Rust + GTK4 program, in the same visual language as Vector Find and
+Vector View.
 
 ## Why
 
@@ -61,6 +62,17 @@ in the same visual language as Vector Find and Vector View.
 - Shared "sheet" widgets (`ui.rs`): header, section, key/value row, meter,
   toggle row, list row, hint line. Same layout rules as `tooltip-lib.sh`
   (accent bold title, dim lowercase labels, colour only for attention).
+- Notification server (`src/notify/`): owns `org.freedesktop.Notifications` and
+  serves mako's `fr.emersion.Mako` D-Bus interface so `makoctl`, shortcuts, and
+  `notification-center` keep working. Cards use the statusline block header,
+  sideways swipe to dismiss, click to accept (or focus the app window), hover
+  to pause timeouts and expand text, persistent history in
+  `~/.local/state/vector-bar/notifications.json`, config rules and Lua
+  `bar.on_notification` hooks.
+- On-screen display (`src/osd.rs`): `vector-bar osd <swayosd-client args>` draws
+  a bottom statusline popup for volume, microphone, display brightness (with
+  night-light temperature), keyboard backlight levels, media track + position,
+  and audio output switching.
 
 ## Modules (parity checklist)
 

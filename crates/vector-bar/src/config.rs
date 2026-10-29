@@ -29,6 +29,10 @@ pub struct Config {
     pub bind: HashMap<String, Bind>,
     /// Waybar-style script modules.
     pub custom: Vec<Custom>,
+    /// Built-in notification server and rules.
+    pub notifications: crate::notify::Config,
+    /// On-screen display (volume, brightness, media keys).
+    pub osd: crate::osd::Config,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -114,6 +118,8 @@ impl Default for Config {
             modules: HashMap::new(),
             bind: HashMap::new(),
             custom: Vec::new(),
+            notifications: crate::notify::Config::default(),
+            osd: crate::osd::Config::default(),
         }
     }
 }

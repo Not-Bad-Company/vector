@@ -49,6 +49,7 @@ use crate::util;
 pub struct Runtime {
     lua: Lua,
     modules: RefCell<Vec<(String, RegistryKey)>>,
+    hooks: RefCell<Vec<RegistryKey>>,
     live: RefCell<Vec<(String, Weak<Inner>)>>,
     pub errors: RefCell<Vec<String>>,
 }
@@ -95,6 +96,7 @@ pub fn load() -> Option<Rc<Runtime>> {
     let rt = Rc::new(Runtime {
         lua,
         modules: RefCell::default(),
+        hooks: RefCell::default(),
         live: RefCell::default(),
         errors: RefCell::default(),
     });
@@ -116,12 +118,15 @@ pub fn load() -> Option<Rc<Runtime>> {
     // registrations made while the files ran
     let regs: Vec<(String, RegistryKey)> = PENDING.with(|p| p.borrow_mut().drain(..).collect());
     rt.modules.borrow_mut().extend(regs);
+    let hooks: Vec<RegistryKey> = PENDING_HOOKS.with(|p| p.borrow_mut().drain(..).collect());
+    rt.hooks.borrow_mut().extend(hooks);
     *rt.errors.borrow_mut() = errors;
     Some(rt)
 }
 
 thread_local! {
     static PENDING: RefCell<Vec<(String, RegistryKey)>> = const { RefCell::new(Vec::new()) };
+    static PENDING_HOOKS: RefCell<Vec<RegistryKey>> = const { RefCell::new(Vec::new()) };
 }
 
 fn install(lua: &Lua) -> mlua::Result<()> {
@@ -132,6 +137,14 @@ fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, (name, spec): (String, Table)| {
             let key = lua.create_registry_value(spec)?;
             PENDING.with(|p| p.borrow_mut().push((name, key)));
+            Ok(())
+        })?,
+    )?;
+    bar.set(
+        "on_notification",
+        lua.create_function(|lua, f: Function| {
+            let key = lua.create_registry_value(f)?;
+            PENDING_HOOKS.with(|p| p.borrow_mut().push(key));
             Ok(())
         })?,
     )?;
@@ -229,7 +242,52 @@ impl Runtime {
     pub fn has(&self, name: &str) -> bool {
         self.modules.borrow().iter().any(|(n, _)| n == name)
     }
+}
 
+/// Calls every `bar.on_notification` hook with `{app, summary, body, urgency, category, desktop_entry}`.
+pub fn notification_hook(
+    n: &crate::notify::Note,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let rt = rt()?;
+    let hooks = rt.hooks.borrow();
+    if hooks.is_empty() {
+        return None;
+    }
+    let mut out = serde_json::Map::new();
+    for key in hooks.iter() {
+        let Ok(f) = rt.lua.registry_value::<Function>(key) else {
+            continue;
+        };
+        let Ok(t) = rt.lua.create_table() else {
+            continue;
+        };
+        let urgency = match n.urgency {
+            0 => "low",
+            2 => "critical",
+            _ => "normal",
+        };
+        let _ = t.set("app", n.app.as_str());
+        let _ = t.set("summary", n.summary.as_str());
+        let _ = t.set("body", n.body.as_str());
+        let _ = t.set("urgency", urgency);
+        let _ = t.set("category", n.category.as_str());
+        let _ = t.set("desktop_entry", n.desktop_entry.as_str());
+        match f.call::<Value>(t) {
+            Ok(Value::Table(ret)) => {
+                if let Ok(serde_json::Value::Object(m)) =
+                    rt.lua.from_value::<serde_json::Value>(Value::Table(ret))
+                {
+                    out.extend(m);
+                }
+            }
+            Ok(_) => {}
+            Err(e) => eprintln!("vector-bar: on_notification: {}", err(e)),
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+impl Runtime {
     pub fn build(self: &Rc<Self>, name: &str, ctx: &Ctx) -> Option<Rc<dyn Module>> {
         let spec: Table = {
             let m = self.modules.borrow();
