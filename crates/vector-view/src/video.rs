@@ -53,7 +53,9 @@ impl Video {
                 ("config-dir", &config),
                 ("config", "yes"),
                 ("vo", "libmpv"),
-                ("hwdec", "auto-safe"),
+                // copy-back: frames land in memory, so a frame can be saved (mpv can't
+                // screenshot a VAAPI surface through the render API)
+                ("hwdec", "auto-copy-safe"),
                 ("keep-open", "yes"),
                 ("idle", "yes"),
                 ("input-default-bindings", "no"),
@@ -133,12 +135,15 @@ impl Video {
             if let Some(p) = again {
                 v.open(&p);
             }
-            let a = area.downgrade();
+            let (a, w) = (area.downgrade(), Rc::downgrade(&v));
             glib::spawn_future_local(async move {
                 while rx.recv().await.is_ok() {
-                    match a.upgrade() {
-                        Some(a) => a.queue_render(),
-                        None => break,
+                    let (Some(a), Some(v)) = (a.upgrade(), w.upgrade()) else {
+                        break;
+                    };
+                    a.make_current();
+                    if v.render.borrow().as_ref().is_none_or(|r| r.update()) {
+                        a.queue_render();
                     }
                 }
             });

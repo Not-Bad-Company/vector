@@ -432,7 +432,14 @@ impl Win {
                     s.grid,
                 )
             });
+        // a file picker's type filter holds in its new tabs too
+        let allow = self
+            .tabs
+            .borrow()
+            .first()
+            .and_then(|_| self.pane().model.borrow().allow().cloned());
         let pane = self.make_pane(dir, opts, grid);
+        pane.model.borrow_mut().set_allow(allow);
         let container = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         container.append(pane.widget());
         pane.widget().set_hexpand(true);
@@ -647,6 +654,7 @@ impl Win {
                 }
             }
             PaneEvent::Activate(e) => self.open_file(&e.path),
+            PaneEvent::OpenTab(dir) => self.new_tab(&dir),
             PaneEvent::Menu(w, x, y) => {
                 if !is_current {
                     self.focus_pane(pane);

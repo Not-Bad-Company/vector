@@ -54,15 +54,79 @@ pub enum Allow {
 impl Allow {
     fn matches(&self, e: &Entry) -> bool {
         match self {
-            Allow::Glob(g) => crate::filter::Filter::parse(g)
-                .map(|f| f.matches_name(&e.name))
-                .unwrap_or(false),
+            Allow::Glob(g) => {
+                let lower = |s: &str| s.to_lowercase().chars().collect::<Vec<_>>();
+                class_glob(&lower(g), &lower(&e.name))
+            }
             Allow::Mime(m) => match m.strip_suffix("/*") {
                 Some(top) => e.content_type.split('/').next() == Some(top),
                 None => e.content_type == *m || gio::content_type_is_a(&e.content_type, m),
             },
         }
     }
+}
+
+/// A shell glob (`*`, `?`, `[abc]`, `[a-z]`, `[!x]`) on lowercased text; an unclosed `[` is
+/// literal.
+fn class_glob(p: &[char], s: &[char]) -> bool {
+    // the pattern element at `pi`: (does it match `c`, its length)
+    let one = |pi: usize, c: char| -> (bool, usize) {
+        if p[pi] == '?' {
+            return (true, 1);
+        }
+        if p[pi] == '['
+            && let Some(end) = p[pi + 1..]
+                .iter()
+                .skip(1)
+                .position(|&x| x == ']')
+                .map(|i| pi + 2 + i)
+        {
+            let mut body = &p[pi + 1..end];
+            let negate = matches!(body.first(), Some('!' | '^'));
+            if negate {
+                body = &body[1..];
+            }
+            let mut hit = false;
+            let mut i = 0;
+            while i < body.len() {
+                if i + 2 < body.len() && body[i + 1] == '-' {
+                    hit |= (body[i]..=body[i + 2]).contains(&c);
+                    i += 3;
+                } else {
+                    hit |= body[i] == c;
+                    i += 1;
+                }
+            }
+            return (hit != negate, end + 1 - pi);
+        }
+        (p[pi] == c, 1)
+    };
+    let (mut pi, mut si) = (0, 0);
+    let mut star: Option<(usize, usize)> = None;
+    while si < s.len() {
+        if pi < p.len() && p[pi] == '*' {
+            star = Some((pi, si));
+            pi += 1;
+            continue;
+        }
+        if pi < p.len() {
+            let (ok, len) = one(pi, s[si]);
+            if ok {
+                pi += len;
+                si += 1;
+                continue;
+            }
+        }
+        match star {
+            Some((sp, ss)) => {
+                pi = sp + 1;
+                si = ss + 1;
+                star = Some((sp, ss + 1));
+            }
+            None => return false,
+        }
+    }
+    p[pi..].iter().all(|&c| c == '*')
 }
 
 impl DirModel {
@@ -235,6 +299,11 @@ impl DirModel {
             self.hidden_names = names;
             self.refilter();
         }
+    }
+
+    /// The file picker filter in force.
+    pub fn allow(&self) -> Option<&Vec<Allow>> {
+        self.allow.as_ref()
     }
 
     /// Restricts the files shown (file picker filters); `None` shows all.
@@ -419,6 +488,21 @@ mod tests {
         assert!(!Allow::Mime("video/*".into()).matches(&img));
         m.set_allow(None);
         assert_eq!(m.len(), 4);
+    }
+
+    #[test]
+    fn picker_globs_with_character_classes() {
+        // GTK and Chromium send case-insensitive suffixes as bracket classes
+        let png = entry("Photo.PNG", Kind::File, 1, 1);
+        assert!(Allow::Glob("*.[pP][nN][gG]".into()).matches(&png));
+        assert!(Allow::Glob("*.[a-z]ng".into()).matches(&png));
+        assert!(!Allow::Glob("*.[!p]ng".into()).matches(&png));
+        assert!(!Allow::Glob("*.[jJ][pP][gG]".into()).matches(&png));
+        assert!(Allow::Glob("*".into()).matches(&png));
+        assert!(Allow::Glob("photo.png".into()).matches(&png));
+        let odd = entry("a[1].txt", Kind::File, 1, 1);
+        assert!(Allow::Glob("a?1?.txt".into()).matches(&odd));
+        assert!(Allow::Glob("*[".into()).matches(&entry("x[", Kind::File, 1, 1)));
     }
 
     #[test]

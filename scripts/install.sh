@@ -39,6 +39,13 @@ if [ "$which" != view ]; then
   pkill -f -- "$BIN --portal" 2>/dev/null || true
   pkill -f -- "$BIN --service" 2>/dev/null || true
   pkill -f -- "$HOME/.local/bin/vector-fm --" 2>/dev/null || true
+  # open windows keep the old binary (new windows join the running instance)
+  for pid in $(pgrep -x vector-find || true); do
+    if [ "$(readlink /proc/$pid/exe 2>/dev/null)" = "$BIN (deleted)" ]; then
+      echo "note: Vector Find is still running the old version; close all its windows to load the new one"
+      break
+    fi
+  done
   if [ ! -f /usr/share/xdg-desktop-portal/portals/vector.portal ]; then
     echo "to use Vector Find as the file picker, run once:"
     echo "  sudo install -Dm644 $PWD/data/vector.portal /usr/share/xdg-desktop-portal/portals/vector.portal && systemctl --user restart xdg-desktop-portal"

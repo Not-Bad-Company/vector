@@ -85,6 +85,7 @@ unsafe extern "C" {
         d: *mut c_void,
     );
     fn mpv_render_context_render(ctx: *mut RenderContext, params: *mut RenderParam) -> c_int;
+    fn mpv_render_context_update(ctx: *mut RenderContext) -> u64;
     fn mpv_render_context_free(ctx: *mut RenderContext);
 }
 
@@ -344,6 +345,14 @@ pub struct Render {
 }
 
 impl Render {
+    /// Runs the work mpv queued for the render thread (screenshots wait on it) and tells
+    /// whether a new frame is ready. Call with the GL context current, after each update.
+    pub fn update(&self) -> bool {
+        const UPDATE_FRAME: u64 = 1;
+        // SAFETY: the context is alive.
+        unsafe { mpv_render_context_update(self.ctx) & UPDATE_FRAME != 0 }
+    }
+
     /// Draws the current frame into the bound framebuffer, `w`×`h` device pixels.
     pub fn draw(&self, w: i32, h: i32) {
         let mut fbo: c_int = 0;

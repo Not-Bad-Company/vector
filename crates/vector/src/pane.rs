@@ -39,6 +39,8 @@ pub enum PaneEvent {
     Error(String),
     /// A column header was clicked: sort by it (again: reverse).
     SortBy(vector_core::sort::SortKey),
+    /// Middle click on a folder (or archive): open it in a new tab.
+    OpenTab(PathBuf),
 }
 
 pub struct Pane {
@@ -618,7 +620,10 @@ impl Pane {
             }
             _ => {}
         }
+        // a file picker's type filter holds in every folder it visits
+        let allow = self.model.borrow().allow().cloned();
         *self.model.borrow_mut() = DirModel::new(dir, opts);
+        self.model.borrow_mut().set_allow(allow);
         self.in_archive
             .set(vector_core::archive::split(dir).is_some());
         self.model
@@ -1580,6 +1585,23 @@ fn common_setup(w: &gtk::Widget, item: &gtk::ListItem, pane: &Weak<Pane>) {
         }
     });
     w.add_controller(menu);
+
+    let middle = gtk::GestureClick::builder()
+        .button(gdk::BUTTON_MIDDLE)
+        .build();
+    let (p, it) = (pane.clone(), item.downgrade());
+    middle.connect_released(move |g, _, _, _| {
+        let (Some(pane), Some(item)) = (p.upgrade(), it.upgrade()) else {
+            return;
+        };
+        if let Some(e) = entry_of(&item)
+            && (e.is_dir() || vector_core::archive::is_archive_name(&e.path))
+        {
+            g.set_state(gtk::EventSequenceState::Claimed);
+            (pane.on_event)(PaneEvent::OpenTab(e.path.clone()));
+        }
+    });
+    w.add_controller(middle);
 }
 
 fn list_item_of(w: &gtk::Widget) -> Option<gtk::ListItem> {
