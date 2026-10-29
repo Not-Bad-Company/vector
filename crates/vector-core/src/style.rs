@@ -260,6 +260,7 @@ paned > separator {{ background: alpha({fg}, 0.08); background-image: none; min-
         ("rename", red),
         ("zoom", yellow),
         ("gallery", cyan),
+        ("edit", green),
     ] {
         css += &format!(
             ".statusline.m-{mode} .mode, .statusline.m-{mode} .zone {{ background: {colour}; }}\n\

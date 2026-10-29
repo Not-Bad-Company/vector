@@ -104,12 +104,21 @@ button.link.danger-hover:hover {{ color: {red}; }}
 .pdf .page {{ background: white; box-shadow: 0 2px 14px alpha(black, 0.35); }}
 .info-panel {{ border-left: 1px solid alpha({fg}, 0.08); padding: 14px 16px; min-width: 328px; }}
 .info-panel .details-section {{ margin-bottom: 10px; }}
+.edit-bar {{ background: alpha({fg}, 0.045); border-top: 1px solid alpha({fg}, 0.08); padding: 2px 10px; min-height: 28px; }}
+.edit-bar button.link {{ padding: 3px 10px; opacity: 0.82; }}
+.edit-bar button.link:hover {{ opacity: 1; background: alpha({fg}, 0.08); }}
+.edit-bar button.link.primary {{ color: {acc}; font-weight: bold; opacity: 1; background: alpha({acc}, 0.12); }}
+.save-backdrop {{ background: alpha(black, 0.55); }}
+.save-dialog {{ min-width: 380px; padding: 16px 18px 14px 18px; border-left: 2px solid {acc}; }}
+.save-dialog button.link.save-choice {{ padding: 7px 14px; border: 1px solid alpha({fg}, 0.16); opacity: 0.9; }}
+.save-dialog button.link.save-choice:hover {{ opacity: 1; border-color: {acc}; background: alpha({acc}, 0.10); }}
+.save-dialog button.link.save-choice.primary {{ border-color: {acc}; background: alpha({acc}, 0.14); color: {acc}; font-weight: bold; opacity: 1; }}
 .tile {{ padding: 2px; }}
 .tile .big-icon {{ font-size: 40px; }}
 .empty {{ font-size: 13px; }}
 .notice {{ background: {bg}; }}
 /* fullscreen: the bars float over the picture */
-.floating .header, .floating .statusline, .floating .timeline {{ background-color: alpha({bg}, 0.94); }}
+.floating .header, .floating .statusline, .floating .timeline, .floating .edit-bar {{ background-color: alpha({bg}, 0.94); }}
 "#
     )
 }

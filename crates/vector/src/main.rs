@@ -94,8 +94,6 @@ fn parse_args() -> Result<Args, String> {
 }
 
 fn main() -> glib::ExitCode {
-    // copies of files viewed inside archives last run are not needed any more
-    std::thread::spawn(vector_core::archive::clear_cache);
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
@@ -103,6 +101,15 @@ fn main() -> glib::ExitCode {
             return glib::ExitCode::FAILURE;
         }
     };
+    if args.portal {
+        // xdg-desktop-portal starts us and waits for our bus name, so GTK
+        // calling back into the portal at startup deadlocks both for 25s
+        // (and everything else asking the portal then, like waybar, times out)
+        // SAFETY: no other threads exist yet
+        unsafe { std::env::set_var("GDK_DEBUG", "no-portals") };
+    }
+    // copies of files viewed inside archives last run are not needed any more
+    std::thread::spawn(vector_core::archive::clear_cache);
     let app = gtk::Application::new(Some(APP_ID), gio::ApplicationFlags::NON_UNIQUE);
     let args = Rc::new(args);
     let keep: Rc<RefCell<Vec<Rc<window::Win>>>> = Rc::default();

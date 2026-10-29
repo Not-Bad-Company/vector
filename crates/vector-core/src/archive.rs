@@ -16,6 +16,8 @@ use crate::entry::{Entry, Kind};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Format {
     Zip,
+    Rar,
+    SevenZ,
     Tar,
     TarGz,
     TarXz,
@@ -29,6 +31,10 @@ fn format(path: &Path) -> Option<Format> {
     // (.jar, .cbz and friends are zips too, but they belong to their own apps)
     Some(if ends(&[".zip"]) {
         Format::Zip
+    } else if ends(&[".rar"]) {
+        Format::Rar
+    } else if ends(&[".7z"]) {
+        Format::SevenZ
     } else if ends(&[".tar.gz", ".tgz"]) {
         Format::TarGz
     } else if ends(&[".tar.xz", ".txz"]) {
@@ -73,7 +79,7 @@ pub fn stem(path: &Path) -> String {
     let lower = name.to_lowercase();
     for ext in [
         ".tar.gz", ".tar.xz", ".tar.zst", ".tar.bz2", ".tgz", ".txz", ".tzst", ".tbz2", ".tbz",
-        ".tar", ".zip",
+        ".tar", ".zip", ".rar", ".7z",
     ] {
         if lower.ends_with(ext) && lower.len() > ext.len() {
             return name[..name.len() - ext.len()].to_string();
@@ -166,6 +172,9 @@ impl Index {
                     })?;
                 }
             }
+            Format::Rar | Format::SevenZ => {
+                read_external_index(path, &mut index)?;
+            }
             _ => {
                 let mut t = tar::Archive::new(tar_reader(path)?);
                 for entry in t.entries()? {
@@ -222,6 +231,275 @@ fn zip_time(t: zip::DateTime) -> i64 {
         t.second() as f64,
     )
     .map_or(0, |d| d.to_unix())
+}
+
+fn parse_iso_local_time(s: &str) -> i64 {
+    // "YYYY-MM-DD HH:MM:SS" (optionally with fractional seconds)
+    let s = s.trim();
+    if s.len() < 16 {
+        return 0;
+    }
+    let year = s.get(0..4).and_then(|v| v.parse::<i32>().ok()).unwrap_or(0);
+    let month = s.get(5..7).and_then(|v| v.parse::<i32>().ok()).unwrap_or(0);
+    let day = s
+        .get(8..10)
+        .and_then(|v| v.parse::<i32>().ok())
+        .unwrap_or(0);
+    let hour = s
+        .get(11..13)
+        .and_then(|v| v.parse::<i32>().ok())
+        .unwrap_or(0);
+    let min = s
+        .get(14..16)
+        .and_then(|v| v.parse::<i32>().ok())
+        .unwrap_or(0);
+    let sec = s
+        .get(17..19)
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(0.0);
+    if year == 0 || month == 0 || day == 0 {
+        return 0;
+    }
+    glib::DateTime::from_local(year, month, day, hour, min, sec).map_or(0, |d| d.to_unix())
+}
+
+fn parse_rwx_mode(attr: &str, dir: bool) -> u32 {
+    for tok in attr.split_whitespace() {
+        let b = tok.as_bytes();
+        if b.len() == 10 && matches!(b[0], b'-' | b'd' | b'l') {
+            let mut mode = 0u32;
+            let flags = [
+                (1, b'r', 0o400),
+                (2, b'w', 0o200),
+                (3, b'x', 0o100),
+                (4, b'r', 0o040),
+                (5, b'w', 0o020),
+                (6, b'x', 0o010),
+                (7, b'r', 0o004),
+                (8, b'w', 0o002),
+                (9, b'x', 0o001),
+            ];
+            for (idx, ch, bit) in flags {
+                if b[idx] == ch {
+                    mode |= bit;
+                }
+            }
+            if b[3] == b's' {
+                mode |= 0o100;
+            }
+            if b[6] == b's' {
+                mode |= 0o010;
+            }
+            if b[9] == b't' {
+                mode |= 0o001;
+            }
+            return mode;
+        }
+    }
+    if dir { 0o755 } else { 0o644 }
+}
+
+fn read_external_index(path: &Path, index: &mut Index) -> io::Result<()> {
+    let out = std::process::Command::new("7z")
+        .args(["l", "-slt", "-ba", "-bsp0", "-bd", "--"])
+        .arg(path)
+        .output();
+    if let Ok(out) = out
+        && out.status.success()
+    {
+        let text = String::from_utf8_lossy(&out.stdout);
+        let mut raw_path: Option<String> = None;
+        let mut dir = false;
+        let mut symlink = false;
+        let mut size = 0u64;
+        let mut modified = 0i64;
+        let mut attr = String::new();
+        let flush = |raw_path: &mut Option<String>,
+                     dir: &mut bool,
+                     symlink: &mut bool,
+                     size: &mut u64,
+                     modified: &mut i64,
+                     attr: &mut String,
+                     index: &mut Index|
+         -> io::Result<()> {
+            if let Some(rp) = raw_path.take()
+                && !*symlink
+                && let Some(p) = clean(Path::new(&rp))
+            {
+                let is_dir = *dir
+                    || attr
+                        .split_whitespace()
+                        .next()
+                        .is_some_and(|t| t.contains('D') || t.starts_with('d'));
+                let is_link = attr
+                    .split_whitespace()
+                    .any(|t| t.starts_with('l') || t.contains('L'));
+                if !is_link {
+                    let mode = parse_rwx_mode(attr, is_dir);
+                    index.add(Item {
+                        path: p,
+                        dir: is_dir,
+                        size: *size,
+                        modified: *modified,
+                        mode,
+                    })?;
+                }
+            }
+            *dir = false;
+            *symlink = false;
+            *size = 0;
+            *modified = 0;
+            attr.clear();
+            Ok(())
+        };
+        for line in text.lines() {
+            let line = line.trim_end_matches('\r');
+            if line.trim().is_empty() {
+                flush(
+                    &mut raw_path,
+                    &mut dir,
+                    &mut symlink,
+                    &mut size,
+                    &mut modified,
+                    &mut attr,
+                    index,
+                )?;
+                continue;
+            }
+            let Some((k, v)) = line.split_once(" = ") else {
+                continue;
+            };
+            match k.trim() {
+                "Path" => {
+                    if raw_path.is_some() {
+                        flush(
+                            &mut raw_path,
+                            &mut dir,
+                            &mut symlink,
+                            &mut size,
+                            &mut modified,
+                            &mut attr,
+                            index,
+                        )?;
+                    }
+                    raw_path = Some(v.to_string());
+                }
+                "Folder" => {
+                    if v.trim() == "+" {
+                        dir = true;
+                    }
+                }
+                "Size" => {
+                    size = v.trim().parse::<u64>().unwrap_or(0);
+                }
+                "Modified" => {
+                    modified = parse_iso_local_time(v);
+                }
+                "Attributes" => {
+                    attr = v.trim().to_string();
+                }
+                "Symbolic Link" if !v.trim().is_empty() => {
+                    symlink = true;
+                }
+                _ => {}
+            }
+        }
+        flush(
+            &mut raw_path,
+            &mut dir,
+            &mut symlink,
+            &mut size,
+            &mut modified,
+            &mut attr,
+            index,
+        )?;
+        return Ok(());
+    }
+    // Fallback to unrar for .rar archives if 7z could not open it
+    let out = std::process::Command::new("unrar")
+        .args(["lt", "-c-", "--"])
+        .arg(path)
+        .output()
+        .map_err(|e| io::Error::other(format!("7z/unrar not available: {e}")))?;
+    if !out.status.success() {
+        return Err(io::Error::other("could not read archive"));
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut raw_path: Option<String> = None;
+    let mut dir = false;
+    let mut symlink = false;
+    let mut size = 0u64;
+    let mut modified = 0i64;
+    let mut attr = String::new();
+    let flush = |raw_path: &mut Option<String>,
+                 dir: &mut bool,
+                 symlink: &mut bool,
+                 size: &mut u64,
+                 modified: &mut i64,
+                 attr: &mut String,
+                 index: &mut Index|
+     -> io::Result<()> {
+        if let Some(rp) = raw_path.take()
+            && !*symlink
+            && let Some(p) = clean(Path::new(&rp))
+        {
+            let mode = parse_rwx_mode(attr, *dir);
+            index.add(Item {
+                path: p,
+                dir: *dir,
+                size: *size,
+                modified: *modified,
+                mode,
+            })?;
+        }
+        *dir = false;
+        *symlink = false;
+        *size = 0;
+        *modified = 0;
+        attr.clear();
+        Ok(())
+    };
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            flush(
+                &mut raw_path,
+                &mut dir,
+                &mut symlink,
+                &mut size,
+                &mut modified,
+                &mut attr,
+                index,
+            )?;
+            continue;
+        }
+        if let Some((k, v)) = line.split_once(':') {
+            let v = v.trim();
+            match k.trim() {
+                "Name" => raw_path = Some(v.to_string()),
+                "Type" => {
+                    dir = v.eq_ignore_ascii_case("Directory");
+                    if v.to_lowercase().contains("link") {
+                        symlink = true;
+                    }
+                }
+                "Size" => size = v.parse::<u64>().unwrap_or(0),
+                "mtime" => modified = parse_iso_local_time(v),
+                "Attributes" => attr = v.to_string(),
+                _ => {}
+            }
+        }
+    }
+    flush(
+        &mut raw_path,
+        &mut dir,
+        &mut symlink,
+        &mut size,
+        &mut modified,
+        &mut attr,
+        index,
+    )?;
+    Ok(())
 }
 
 type Cached = (PathBuf, i64, u64, Arc<Index>);
@@ -390,6 +668,80 @@ pub fn extract(
                     break;
                 }
             }
+        }
+        Format::Rar | Format::SevenZ => {
+            static STAGE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let n = STAGE_ID.fetch_add(1, Ordering::Relaxed);
+            let stage = cache_dir().join(format!(".stage-{}-{n}", std::process::id()));
+            std::fs::create_dir_all(&stage)?;
+            let run_7z = || -> io::Result<bool> {
+                let mut cmd = std::process::Command::new("7z");
+                cmd.args(["x", "-y", "-bd", "-bsp0"]);
+                cmd.arg(format!("-o{}", stage.display()));
+                cmd.arg("--").arg(archive);
+                if !from.as_os_str().is_empty() {
+                    cmd.arg(from);
+                }
+                let out = cmd.output()?;
+                Ok(out.status.success())
+            };
+            let ok = run_7z().unwrap_or(false) || {
+                let mut cmd = std::process::Command::new("unrar");
+                cmd.args(["x", "-y", "-idq", "--"]).arg(archive);
+                if !from.as_os_str().is_empty() {
+                    cmd.arg(from);
+                }
+                cmd.arg(format!("{}/", stage.display()));
+                cmd.output().is_ok_and(|o| o.status.success())
+            };
+            if !ok {
+                let _ = std::fs::remove_dir_all(&stage);
+                return Err(io::Error::other("could not extract archive"));
+            }
+            let mut stack = vec![stage.clone()];
+            while let Some(cur) = stack.pop() {
+                if cancel.load(Ordering::Relaxed) || done.get() {
+                    break;
+                }
+                let Ok(rd) = std::fs::read_dir(&cur) else {
+                    continue;
+                };
+                let mut entries: Vec<_> = rd.flatten().collect();
+                entries.sort_by_key(|e| e.file_name());
+                for entry in entries {
+                    if cancel.load(Ordering::Relaxed) || done.get() {
+                        break;
+                    }
+                    let full = entry.path();
+                    let Ok(rel) = full.strip_prefix(&stage) else {
+                        continue;
+                    };
+                    let Some(p) = clean(rel) else {
+                        left_out += 1;
+                        continue;
+                    };
+                    let Ok(meta) = std::fs::symlink_metadata(&full) else {
+                        continue;
+                    };
+                    let ft = meta.file_type();
+                    if ft.is_symlink() {
+                        left_out += 1;
+                        continue;
+                    }
+                    if ft.is_dir() {
+                        stack.push(full);
+                        if wanted(&p) {
+                            write(&p, true, 0o755, &mut io::empty())?;
+                        }
+                    } else if ft.is_file() && wanted(&p) {
+                        use std::os::unix::fs::PermissionsExt;
+                        let mode = meta.permissions().mode();
+                        let mut f = File::open(&full)?;
+                        write(&p, false, mode, &mut f)?;
+                    }
+                }
+            }
+            let _ = std::fs::remove_dir_all(&stage);
         }
         _ => {
             let mut t = tar::Archive::new(tar_reader(archive)?);
@@ -592,11 +944,63 @@ mod tests {
     #[test]
     fn kinds_and_stems() {
         assert!(is_archive_name(Path::new("a.ZIP")));
+        assert!(is_archive_name(Path::new("a.RAR")));
+        assert!(is_archive_name(Path::new("a.7z")));
         assert!(is_archive_name(Path::new("a.tar.zst")));
         assert!(!is_archive_name(Path::new("a.gz")));
         assert!(!is_archive_name(Path::new(".zip")));
         assert_eq!(stem(Path::new("/x/photos.tar.gz")), "photos");
         assert_eq!(stem(Path::new("Report.ZIP")), "Report");
+        assert_eq!(stem(Path::new("Backup.rar")), "Backup");
+        assert_eq!(stem(Path::new("Backup.7z")), "Backup");
+    }
+
+    #[test]
+    fn lists_and_extracts_7z_and_rar() {
+        let d = tempfile::tempdir().unwrap();
+        let src = d.path().join("src");
+        std::fs::create_dir_all(src.join("docs")).unwrap();
+        std::fs::write(src.join("readme.txt"), b"hello 7z").unwrap();
+        std::fs::write(src.join("docs/a.md"), b"# heading").unwrap();
+        let archive_7z = d.path().join("pack.7z");
+        let status = std::process::Command::new("7z")
+            .args(["a", "-bd", "-y"])
+            .arg(&archive_7z)
+            .arg(".")
+            .current_dir(&src)
+            .output();
+        if let Ok(out) = status
+            && out.status.success()
+        {
+            let top = list(&archive_7z, Path::new("")).unwrap();
+            assert_eq!(names(&top), ["docs", "readme.txt"]);
+            assert_eq!(
+                names(&list(&archive_7z, Path::new("docs")).unwrap()),
+                ["a.md"]
+            );
+            let viewed = extract_one(&archive_7z, Path::new("docs/a.md")).unwrap();
+            assert_eq!(std::fs::read(&viewed).unwrap(), b"# heading");
+            // Also verify the exact same archive renamed to .rar works seamlessly via 7z
+            let archive_rar = d.path().join("pack.rar");
+            std::fs::copy(&archive_7z, &archive_rar).unwrap();
+            let top_rar = list(&archive_rar, Path::new("")).unwrap();
+            assert_eq!(names(&top_rar), ["docs", "readme.txt"]);
+            let out_dir = d.path().join("extracted");
+            std::fs::create_dir_all(&out_dir).unwrap();
+            let r = extract(
+                &archive_rar,
+                Path::new(""),
+                Path::new(""),
+                &out_dir,
+                &Default::default(),
+            )
+            .unwrap();
+            assert_eq!(r.written, 2);
+            assert_eq!(
+                std::fs::read(out_dir.join("docs/a.md")).unwrap(),
+                b"# heading"
+            );
+        }
     }
 
     #[test]

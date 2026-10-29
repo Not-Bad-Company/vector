@@ -427,10 +427,27 @@ impl Sidebar {
         if parent == &self.bookmark_rows {
             self.make_draggable(&row, &path);
         }
-        let click = gtk::GestureClick::new();
+        let click = gtk::GestureClick::builder()
+            .button(gtk::gdk::BUTTON_PRIMARY)
+            .build();
         let callback = self.on_open.clone();
         let target = path.clone();
-        click.connect_released(move |_, _, _, _| callback(target.clone()));
+        if parent == &self.bookmark_rows {
+            click.connect_released(move |_, _, _, _| callback(target.clone()));
+        } else {
+            let r = row.downgrade();
+            click.connect_pressed(move |g, _, x, y| {
+                if let Some(row) = r.upgrade()
+                    && let Some(hit) = row.pick(x, y, gtk::PickFlags::DEFAULT)
+                    && (hit.has_css_class("x")
+                        || hit.parent().is_some_and(|p| p.has_css_class("x")))
+                {
+                    return;
+                }
+                g.set_state(gtk::EventSequenceState::Claimed);
+                callback(target.clone());
+            });
+        }
         row.add_controller(click);
         if *self.current.borrow() == path {
             row.add_css_class("active");
@@ -848,21 +865,43 @@ impl Sidebar {
                 label.set_ellipsize(gtk::pango::EllipsizeMode::End);
                 row.append(&label);
                 let callback = self.on_open.clone();
-                let click = gtk::GestureClick::new();
-                click.connect_released(move |_, _, _, _| {
+                let click = gtk::GestureClick::builder()
+                    .button(gtk::gdk::BUTTON_PRIMARY)
+                    .build();
+                let mounting = Rc::new(std::cell::Cell::new(false));
+                let lbl = label.downgrade();
+                click.connect_pressed(move |g, _, _, _| {
+                    g.set_state(gtk::EventSequenceState::Claimed);
+                    if let Some(path) = volume_mount.get_mount().and_then(|m| m.root().path()) {
+                        callback(path);
+                        return;
+                    }
+                    if mounting.replace(true) {
+                        return;
+                    }
+                    if let Some(l) = lbl.upgrade() {
+                        l.set_text(&format!("{name}…"));
+                    }
                     let volume = volume_mount.clone();
                     let callback = callback.clone();
                     let mounted_volume = volume.clone();
+                    let mounting = mounting.clone();
+                    let lbl = lbl.clone();
+                    let orig_name = name.clone();
                     volume.mount(
                         gio::MountMountFlags::NONE,
                         None::<&gio::MountOperation>,
                         None::<&gio::Cancellable>,
                         move |result| {
-                            if result.is_ok()
-                                && let Some(path) =
-                                    mounted_volume.get_mount().and_then(|m| m.root().path())
+                            mounting.set(false);
+                            if let Some(path) =
+                                mounted_volume.get_mount().and_then(|m| m.root().path())
                             {
                                 callback(path);
+                            } else if result.is_err()
+                                && let Some(l) = lbl.upgrade()
+                            {
+                                l.set_text(&orig_name);
                             }
                         },
                     );
@@ -876,14 +915,9 @@ impl Sidebar {
     }
 
     fn load_bookmarks(self: &Rc<Self>) {
-        let this = self.clone();
-        let file = gio::File::for_path(bookmarks::default_path());
-        glib::MainContext::default().spawn_local(async move {
-            if let Ok((bytes, _)) = file.load_contents_future().await {
-                let text = String::from_utf8_lossy(&bytes);
-                this.show_bookmarks(&text);
-            }
-        });
+        if let Ok(text) = std::fs::read_to_string(bookmarks::default_path()) {
+            self.show_bookmarks(&text);
+        }
     }
 
     fn show_bookmarks(&self, text: &str) {

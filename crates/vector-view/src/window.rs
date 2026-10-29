@@ -12,7 +12,7 @@ use gtk::{gdk, gio, glib};
 use vector_core::keymap::Key;
 use vector_core::theme::Theme;
 
-use crate::canvas::Canvas;
+use crate::canvas::{Canvas, CropDrag};
 use crate::pdf::PdfView;
 use crate::playlist::{self, Item, Kind, Order};
 use crate::video::Video;
@@ -30,6 +30,14 @@ mod icon {
     pub const FORWARD: &str = "\u{F11F8}";
     pub const COPY: &str = "\u{F018F}";
     pub const CAMERA: &str = "\u{F0D5D}";
+    pub const EDIT: &str = "\u{F03EB}";
+    pub const CROP: &str = "\u{F019E}";
+    pub const ROT_L: &str = "\u{F0465}";
+    pub const ROT_R: &str = "\u{F0467}";
+    pub const FLIP_H: &str = "\u{F09E9}";
+    pub const FLIP_V: &str = "\u{F09EA}";
+    pub const UNDO: &str = "\u{F054C}";
+    pub const SAVE: &str = "\u{F0193}";
     pub const OPEN: &str = "\u{F03CC}";
     pub const FIT: &str = "\u{F18F5}";
     pub const INFO: &str = "\u{F02FD}";
@@ -49,6 +57,8 @@ const THUMB_CACHE: usize = 1500;
 
 /// Our own desktop id: left out of "open with".
 const SELF_ID: &str = "io.github.not_bad_company.VectorView.desktop";
+
+type CropDragState = (CropDrag, (f64, f64), Option<(f64, f64, f64, f64)>);
 
 fn kind_icon(item: &Item) -> &'static str {
     match item.kind {
@@ -154,6 +164,15 @@ pub struct Win {
     play: gtk::Button,
     time: gtk::Label,
     timeline: gtk::DrawingArea,
+    edit_bar: gtk::CenterBox,
+    edit_hint: gtk::Label,
+    crop_btn: gtk::Button,
+    undo_btn: gtk::Button,
+    reset_btn: gtk::Button,
+    save_edit_btn: gtk::Button,
+    save_overlay: gtk::Box,
+    save_details: gtk::Label,
+    edit_btn: gtk::Button,
     open_btn: gtk::Button,
     grid_btn: gtk::Button,
     info_btn: gtk::Button,
@@ -175,6 +194,7 @@ pub struct Win {
     open_app: RefCell<Option<gio::AppInfo>>,
     pointer: Cell<(f64, f64)>,
     drag_last: Cell<(f64, f64)>,
+    crop_drag: Cell<Option<CropDragState>>,
     seeking: Cell<bool>,
     timeline_hover: Cell<Option<f64>>,
 }
@@ -207,6 +227,9 @@ impl Win {
 
         // ── stage ──
         let canvas = Canvas::default();
+        if let Ok(acc) = gdk::RGBA::parse(&theme.accent) {
+            canvas.set_accent(acc);
+        }
         let bg = theme.background.clone();
         let video = Video::new(&bg);
         let pdf = PdfView::new();
@@ -265,16 +288,115 @@ impl Win {
         let help = crate::help::HelpPanel::new(
             "Vector View",
             vector_core::help::VIEW,
-            "zoom, gallery, frame, copy, trash",
+            "zoom, edit, crop, gallery, frame, copy, trash",
         );
         help.root.set_visible(false);
         overlay.add_overlay(&help.root);
 
-        // ── timeline and statusline ──
+        // ── save edited image popup ──
+        let save_overlay = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        save_overlay.add_css_class("save-backdrop");
+        save_overlay.set_hexpand(true);
+        save_overlay.set_vexpand(true);
+        save_overlay.set_halign(gtk::Align::Fill);
+        save_overlay.set_valign(gtk::Align::Fill);
+        save_overlay.set_visible(false);
+        let save_card = gtk::Box::new(gtk::Orientation::Vertical, 10);
+        save_card.add_css_class("card");
+        save_card.add_css_class("save-dialog");
+        save_card.set_halign(gtk::Align::Center);
+        save_card.set_valign(gtk::Align::Center);
+        save_card.set_vexpand(true);
+        let save_title = label("Save edited image", &["title"]);
+        save_title.set_xalign(0.0);
+        let save_details = label(
+            "Choose whether to save as a new copy or overwrite the original file.",
+            &["dim"],
+        );
+        save_details.set_xalign(0.0);
+        save_details.set_wrap(true);
+        save_details.set_max_width_chars(52);
+        let save_btns = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        save_btns.set_margin_top(6);
+        let save_copy_btn =
+            gtk::Button::with_label(&format!("{}  Save as a copy (Enter / c)", icon::COPY));
+        save_copy_btn.add_css_class("link");
+        save_copy_btn.add_css_class("save-choice");
+        save_copy_btn.add_css_class("primary");
+        let save_over_btn =
+            gtk::Button::with_label(&format!("{}  Overwrite original (o)", icon::SAVE));
+        save_over_btn.add_css_class("link");
+        save_over_btn.add_css_class("save-choice");
+        let save_cancel_btn = gtk::Button::with_label("Cancel (Esc)");
+        save_cancel_btn.add_css_class("link");
+        save_cancel_btn.add_css_class("save-choice");
+        save_btns.append(&save_copy_btn);
+        save_btns.append(&save_over_btn);
+        save_btns.append(&save_cancel_btn);
+        save_card.append(&save_title);
+        save_card.append(&save_details);
+        save_card.append(&save_btns);
+        save_overlay.append(&save_card);
+        overlay.add_overlay(&save_overlay);
+
+        // ── timeline, edit bar and statusline ──
         let timeline = gtk::DrawingArea::new();
         timeline.add_css_class("timeline");
         timeline.set_content_height(9);
         timeline.set_visible(false);
+
+        let edit_bar = gtk::CenterBox::new();
+        edit_bar.add_css_class("edit-bar");
+        edit_bar.set_visible(false);
+        let edit_hint = label("drag on image to crop  ·  r/R rotate  ·  s save", &["dim"]);
+        edit_hint.set_xalign(0.0);
+        let edit_tools = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        let make_tool = |glyph: &str, text: &str, tip: &str| {
+            let b = gtk::Button::with_label(&format!("{glyph} {text}"));
+            b.add_css_class("link");
+            b.set_tooltip_text(Some(tip));
+            b.set_focus_on_click(false);
+            b.set_can_focus(false);
+            b
+        };
+        let crop_btn = make_tool(icon::CROP, "crop", "select or apply crop  ·  c / enter");
+        let rot_l_btn = make_tool(icon::ROT_L, "90° left", "rotate counter-clockwise  ·  R");
+        let rot_r_btn = make_tool(icon::ROT_R, "90° right", "rotate clockwise  ·  r");
+        let flip_h_btn = make_tool(icon::FLIP_H, "flip H", "flip horizontally  ·  H");
+        let flip_v_btn = make_tool(icon::FLIP_V, "flip V", "flip vertically  ·  V");
+        let undo_btn = make_tool(icon::UNDO, "undo", "undo last edit  ·  u / ctrl+z");
+        let reset_btn = gtk::Button::with_label("reset");
+        reset_btn.add_css_class("link");
+        reset_btn.set_tooltip_text(Some("restore original image  ·  U"));
+        reset_btn.set_focus_on_click(false);
+        reset_btn.set_can_focus(false);
+        for w in [
+            &crop_btn,
+            &rot_l_btn,
+            &rot_r_btn,
+            &flip_h_btn,
+            &flip_v_btn,
+            &undo_btn,
+            &reset_btn,
+        ] {
+            edit_tools.append(w);
+        }
+        let edit_end = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        let save_edit_btn = make_tool(
+            icon::SAVE,
+            "save…",
+            "save as copy or overwrite  ·  s / ctrl+s",
+        );
+        let done_edit_btn = gtk::Button::with_label("done");
+        done_edit_btn.add_css_class("link");
+        done_edit_btn.set_tooltip_text(Some("leave edit mode  ·  esc"));
+        done_edit_btn.set_focus_on_click(false);
+        done_edit_btn.set_can_focus(false);
+        edit_end.append(&save_edit_btn);
+        edit_end.append(&done_edit_btn);
+        edit_bar.set_start_widget(Some(&edit_hint));
+        edit_bar.set_center_widget(Some(&edit_tools));
+        edit_bar.set_end_widget(Some(&edit_end));
 
         let mode = label("NORMAL", &["mode"]);
         let start = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -306,6 +428,7 @@ impl Win {
         center.append(&time);
 
         let end = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let edit_btn = button(icon::EDIT, "edit image (crop, rotate, flip)  ·  c");
         let copy_btn = button(icon::COPY, "copy  ·  ctrl+c");
         let open_btn = button(icon::OPEN, "open in…  ·  e");
         let fit_btn = button(icon::FIT, "fit to window  ·  0");
@@ -314,7 +437,7 @@ impl Win {
         trash_btn.add_css_class("danger-hover");
         let full_btn = button(icon::FULL, "fullscreen  ·  f");
         for w in [
-            &copy_btn, &open_btn, &fit_btn, &info_btn, &trash_btn, &full_btn,
+            &edit_btn, &copy_btn, &open_btn, &fit_btn, &info_btn, &trash_btn, &full_btn,
         ] {
             end.append(w);
         }
@@ -337,6 +460,7 @@ impl Win {
         top_bar.set_child(Some(&header));
         let bottom = gtk::Box::new(gtk::Orientation::Vertical, 0);
         bottom.append(&timeline);
+        bottom.append(&edit_bar);
         bottom.append(&statusline);
         let bottom_bar = gtk::Revealer::new();
         bottom_bar.set_transition_type(gtk::RevealerTransitionType::SlideUp);
@@ -399,6 +523,15 @@ impl Win {
             play,
             time,
             timeline,
+            edit_bar,
+            edit_hint,
+            crop_btn,
+            undo_btn,
+            reset_btn,
+            save_edit_btn,
+            save_overlay,
+            save_details,
+            edit_btn,
             open_btn,
             grid_btn,
             info_btn,
@@ -417,6 +550,7 @@ impl Win {
             open_app: RefCell::default(),
             pointer: Cell::new((0.0, 0.0)),
             drag_last: Cell::new((0.0, 0.0)),
+            crop_drag: Cell::new(None),
             seeking: Cell::new(false),
             timeline_hover: Cell::new(None),
         });
@@ -438,6 +572,19 @@ impl Win {
         on(&back, |w| w.video.seek(-5.0));
         on(&fwd, |w| w.video.seek(5.0));
         on(&win.play, |w| w.video.toggle_pause());
+        on(&win.edit_btn, |w| w.toggle_edit());
+        on(&win.crop_btn, |w| w.crop_action());
+        on(&rot_l_btn, |w| w.rotate_image(false));
+        on(&rot_r_btn, |w| w.rotate_image(true));
+        on(&flip_h_btn, |w| w.flip_image(true));
+        on(&flip_v_btn, |w| w.flip_image(false));
+        on(&win.undo_btn, |w| w.undo_edit());
+        on(&win.reset_btn, |w| w.reset_edit());
+        on(&win.save_edit_btn, |w| w.prompt_save());
+        on(&done_edit_btn, |w| w.leave_edit());
+        on(&save_copy_btn, |w| w.save_edited(true));
+        on(&save_over_btn, |w| w.save_edited(false));
+        on(&save_cancel_btn, |w| w.close_save_dialog());
         on(&win.copy_btn, |w| w.copy());
         on(&win.open_btn, |w| w.open_default());
         on(&win.fit_btn, |w| w.fit());
@@ -617,6 +764,8 @@ impl Win {
         let g = self.generation.get() + 1;
         self.generation.set(g);
         self.delete_armed.set(None);
+        self.canvas.set_editing(false);
+        self.save_overlay.set_visible(false);
         if item.kind != Kind::Video {
             self.video.stop();
         }
@@ -707,10 +856,15 @@ impl Win {
                 w.set_visible(false);
             }
             self.timeline.set_visible(false);
+            self.edit_bar.set_visible(false);
+            self.edit_btn.set_visible(false);
             return;
         };
+        let image = item.kind == Kind::Image;
         let video = item.kind == Kind::Video;
         let paged = matches!(item.kind, Kind::Pdf | Kind::Office);
+        let editing = image && self.canvas.is_editing();
+        let dirty = image && self.canvas.is_dirty();
         self.kind.set_text(kind_icon(&item));
         // the file kind's colour, as in vector-find's list
         for c in ["k-image", "k-video", "k-doc"] {
@@ -721,9 +875,14 @@ impl Win {
             Kind::Video => "k-video",
             Kind::Pdf | Kind::Office => "k-doc",
         });
-        self.name.set_text(&item.name());
+        let display_name = if dirty {
+            format!("{} *", item.name())
+        } else {
+            item.name()
+        };
+        self.name.set_text(&display_name);
         self.window
-            .set_title(Some(&format!("{} — Vector View", item.name())));
+            .set_title(Some(&format!("{display_name} — Vector View")));
         let count = self.items.borrow().len();
         self.meta
             .set_text(&format!("  ·  by {}", self.order.get().label()));
@@ -735,6 +894,9 @@ impl Win {
             Kind::Image => {
                 if let Some(t) = self.canvas.texture() {
                     facts.push(format!("{}×{}", t.width(), t.height()));
+                }
+                if dirty {
+                    facts.push("edited".into());
                 }
                 !self.canvas.is_fitted()
             }
@@ -777,13 +939,15 @@ impl Win {
         let gallery = self.stack.visible_child_name().as_deref() == Some("grid");
         let (text, class) = if gallery {
             ("GALLERY", "m-gallery")
+        } else if editing {
+            ("EDIT", "m-edit")
         } else if lock {
             ("ZOOM", "m-zoom")
         } else {
             ("NORMAL", "m-normal")
         };
         self.mode.set_text(text);
-        for c in ["m-normal", "m-zoom", "m-gallery"] {
+        for c in ["m-normal", "m-zoom", "m-gallery", "m-edit"] {
             self.statusline.remove_css_class(c);
         }
         self.statusline.add_css_class(class);
@@ -796,6 +960,30 @@ impl Win {
         }
         let bars = self.header.is_visible();
         self.timeline.set_visible(video && bars);
+        self.edit_bar.set_visible(editing && bars && !gallery);
+        self.edit_btn.set_visible(image);
+        if editing {
+            if let Some((cw, ch)) = self.canvas.crop_dimensions() {
+                self.edit_hint
+                    .set_text(&format!("crop {cw}×{ch}  ·  Enter/c apply  ·  Esc clear"));
+                self.crop_btn
+                    .set_label(&format!("{} apply crop", icon::CROP));
+                self.crop_btn.add_css_class("primary");
+            } else {
+                self.edit_hint
+                    .set_text("drag on image to crop  ·  r/R rotate  ·  s save");
+                self.crop_btn.set_label(&format!("{} crop", icon::CROP));
+                self.crop_btn.remove_css_class("primary");
+            }
+            let has_edits = dirty || self.canvas.crop().is_some();
+            self.undo_btn.set_sensitive(self.canvas.can_undo());
+            self.reset_btn.set_sensitive(has_edits);
+            if has_edits {
+                self.save_edit_btn.add_css_class("primary");
+            } else {
+                self.save_edit_btn.remove_css_class("primary");
+            }
+        }
         if video {
             let s = self.video.state.get();
             self.play
@@ -824,6 +1012,7 @@ impl Win {
         }));
         let grid = self.stack.visible_child_name().as_deref() == Some("grid");
         for (b, on) in [
+            (&self.edit_btn, editing || dirty),
             (&self.fit_btn, zoomed),
             (&self.grid_btn, grid),
             (&self.info_btn, self.info.reveals_child()),
@@ -860,7 +1049,22 @@ impl Win {
     }
 
     fn update_cursor(&self) {
-        let name = if self.drag_last.get() != (0.0, 0.0) && self.canvas.can_pan() {
+        let name = if self.canvas.is_editing() && self.kind() == Some(Kind::Image) {
+            let (px, py) = self.pointer.get();
+            let mode = self
+                .crop_drag
+                .get()
+                .map(|(m, _, _)| m)
+                .unwrap_or_else(|| self.canvas.hit_crop(px, py));
+            match mode {
+                CropDrag::NW | CropDrag::SE => "nwse-resize",
+                CropDrag::NE | CropDrag::SW => "nesw-resize",
+                CropDrag::N | CropDrag::S => "ns-resize",
+                CropDrag::E | CropDrag::W => "ew-resize",
+                CropDrag::Move => "move",
+                CropDrag::New => "crosshair",
+            }
+        } else if self.drag_last.get() != (0.0, 0.0) && self.canvas.can_pan() {
             "grabbing"
         } else if self.canvas.can_pan() {
             "grab"
@@ -982,6 +1186,7 @@ impl Win {
         self.help.root.set_visible(show);
         if show {
             let topic = match self.current().map(|c| c.kind) {
+                Some(Kind::Image) if self.canvas.is_editing() => "edit",
                 Some(Kind::Video) => "video",
                 Some(Kind::Pdf | Kind::Office) => "documents",
                 _ => "start",
@@ -1264,6 +1469,9 @@ impl Win {
             move |_, x, y| {
                 if let Some(me) = me.upgrade() {
                     me.pointer.set((x, y));
+                    if me.canvas.is_editing() {
+                        me.update_cursor();
+                    }
                 }
             }
         ));
@@ -1328,14 +1536,21 @@ impl Win {
         ));
         self.stack.add_controller(pinch);
 
-        // drag to pan (images and videos)
+        // drag to pan (images and videos) or crop (when editing an image)
         let drag = gtk::GestureDrag::new();
         drag.set_button(1);
         drag.connect_drag_begin(glib::clone!(
             #[strong]
             me,
-            move |_, _, _| {
+            move |_, x, y| {
                 if let Some(me) = me.upgrade() {
+                    if me.kind() == Some(Kind::Image) && me.canvas.is_editing() {
+                        let mode = me.canvas.hit_crop(x, y);
+                        let pt = me.canvas.widget_to_image(x, y);
+                        me.crop_drag.set(Some((mode, pt, me.canvas.crop())));
+                        me.update_cursor();
+                        return;
+                    }
                     me.drag_last.set((0.0001, 0.0001));
                     me.update_cursor();
                 }
@@ -1344,8 +1559,68 @@ impl Win {
         drag.connect_drag_update(glib::clone!(
             #[strong]
             me,
-            move |_, ox, oy| {
+            move |g, ox, oy| {
                 let Some(me) = me.upgrade() else { return };
+                if me.kind() == Some(Kind::Image)
+                    && me.canvas.is_editing()
+                    && let Some((mode, (sx, sy), orig)) = me.crop_drag.get()
+                    && let Some((x0, y0)) = g.start_point()
+                {
+                    let (ix, iy) = me.canvas.widget_to_image(x0 + ox, y0 + oy);
+                    let min_s = 0.02;
+                    let rect = match (mode, orig) {
+                        (CropDrag::New, _) | (_, None) => {
+                            let x1 = sx.min(ix);
+                            let y1 = sy.min(iy);
+                            let w = (sx - ix).abs().max(min_s).min(1.0 - x1);
+                            let h = (sy - iy).abs().max(min_s).min(1.0 - y1);
+                            (x1, y1, w, h)
+                        }
+                        (CropDrag::Move, Some((cx, cy, cw, ch))) => {
+                            let nx = (cx + (ix - sx)).clamp(0.0, (1.0 - cw).max(0.0));
+                            let ny = (cy + (iy - sy)).clamp(0.0, (1.0 - ch).max(0.0));
+                            (nx, ny, cw, ch)
+                        }
+                        (m, Some((cx, cy, cw, ch))) => {
+                            let (mut l, mut t, mut r, mut b) = (cx, cy, cx + cw, cy + ch);
+                            match m {
+                                CropDrag::NW => {
+                                    l = ix.clamp(0.0, r - min_s);
+                                    t = iy.clamp(0.0, b - min_s);
+                                }
+                                CropDrag::NE => {
+                                    r = ix.clamp(l + min_s, 1.0);
+                                    t = iy.clamp(0.0, b - min_s);
+                                }
+                                CropDrag::SW => {
+                                    l = ix.clamp(0.0, r - min_s);
+                                    b = iy.clamp(t + min_s, 1.0);
+                                }
+                                CropDrag::SE => {
+                                    r = ix.clamp(l + min_s, 1.0);
+                                    b = iy.clamp(t + min_s, 1.0);
+                                }
+                                CropDrag::N => {
+                                    t = iy.clamp(0.0, b - min_s);
+                                }
+                                CropDrag::S => {
+                                    b = iy.clamp(t + min_s, 1.0);
+                                }
+                                CropDrag::W => {
+                                    l = ix.clamp(0.0, r - min_s);
+                                }
+                                CropDrag::E => {
+                                    r = ix.clamp(l + min_s, 1.0);
+                                }
+                                _ => {}
+                            }
+                            (l, t, r - l, b - t)
+                        }
+                    };
+                    me.canvas.set_crop(Some(rect));
+                    me.update_chrome();
+                    return;
+                }
                 let (lx, ly) = me.drag_last.get();
                 let (dx, dy) = (ox - lx, oy - ly);
                 me.drag_last.set((ox, oy));
@@ -1364,6 +1639,7 @@ impl Win {
             me,
             move |_, _, _| {
                 if let Some(me) = me.upgrade() {
+                    me.crop_drag.set(None);
                     me.drag_last.set((0.0, 0.0));
                     me.update_chrome();
                 }
@@ -1442,7 +1718,7 @@ impl Win {
         ));
         self.pdf.widget.add_controller(pdrag);
 
-        // clicks: double = fullscreen, middle = fit, right = menu
+        // clicks: double = fullscreen (or apply crop in edit mode), middle = fit, right = menu
         let click = gtk::GestureClick::new();
         click.set_button(0);
         click.connect_pressed(glib::clone!(
@@ -1451,6 +1727,11 @@ impl Win {
             move |g, n, x, y| {
                 let Some(me) = me.upgrade() else { return };
                 match g.current_button() {
+                    1 if n == 2 && me.canvas.is_editing() => {
+                        if me.canvas.crop().is_some() {
+                            me.crop_action();
+                        }
+                    }
                     // (not in the gallery: there the first click already opened a file)
                     1 if n == 2 && me.kind().is_some() => me.toggle_fullscreen(),
                     2 => me.fit(),
@@ -1724,9 +2005,16 @@ impl Win {
         }
     }
 
-    /// `s`: videos save the frame to Pictures/Screenshots (and copy it); the rest copies.
+    /// `s`: edited images open the save dialog; videos save the frame to Pictures/Screenshots;
+    /// the rest copies.
     fn save(&self) {
         let Some(item) = self.current() else { return };
+        if item.kind == Kind::Image
+            && (self.canvas.is_editing() || self.canvas.is_dirty() || self.canvas.crop().is_some())
+        {
+            self.prompt_save();
+            return;
+        }
         if item.kind != Kind::Video {
             return self.copy();
         }
@@ -1773,6 +2061,213 @@ impl Win {
                 None => me.notify_error("can't take a frame"),
             }
         });
+    }
+
+    // ── image editing ───────────────────────────────────────────────────────
+
+    fn toggle_edit(&self) {
+        if self.kind() != Some(Kind::Image) || self.canvas.texture().is_none() {
+            return;
+        }
+        let next = !self.canvas.is_editing();
+        self.canvas.set_editing(next);
+        if next && self.canvas.crop().is_none() {
+            self.canvas.init_default_crop();
+        }
+        if !next {
+            self.save_overlay.set_visible(false);
+        }
+        self.update_chrome();
+    }
+
+    fn leave_edit(&self) {
+        self.save_overlay.set_visible(false);
+        self.canvas.set_editing(false);
+        self.update_chrome();
+    }
+
+    fn crop_action(&self) {
+        if self.kind() != Some(Kind::Image) || self.canvas.texture().is_none() {
+            return;
+        }
+        if !self.canvas.is_editing() {
+            self.canvas.set_editing(true);
+            self.canvas.init_default_crop();
+            self.update_chrome();
+            return;
+        }
+        if self.canvas.crop().is_some() {
+            if self.canvas.apply_crop()
+                && let Some(t) = self.canvas.texture()
+            {
+                self.notify(&format!("cropped to {}×{}", t.width(), t.height()));
+            }
+        } else {
+            self.canvas.init_default_crop();
+        }
+        self.update_chrome();
+    }
+
+    fn rotate_image(&self, cw: bool) {
+        if self.kind() != Some(Kind::Image) || self.canvas.texture().is_none() {
+            return;
+        }
+        if self.canvas.rotate(cw) {
+            self.notify(if cw {
+                "rotated 90° →"
+            } else {
+                "rotated 90° ←"
+            });
+            self.update_chrome();
+        }
+    }
+
+    fn flip_image(&self, horizontal: bool) {
+        if self.kind() != Some(Kind::Image) || self.canvas.texture().is_none() {
+            return;
+        }
+        if self.canvas.flip(horizontal) {
+            self.notify(if horizontal {
+                "flipped horizontally"
+            } else {
+                "flipped vertically"
+            });
+            self.update_chrome();
+        }
+    }
+
+    fn undo_edit(&self) {
+        if self.kind() != Some(Kind::Image) {
+            return;
+        }
+        if self.canvas.undo() {
+            self.notify("undone");
+            self.update_chrome();
+        } else {
+            self.notify("nothing to undo");
+        }
+    }
+
+    fn reset_edit(&self) {
+        if self.kind() != Some(Kind::Image) {
+            return;
+        }
+        if self.canvas.crop().is_some() && !self.canvas.is_dirty() {
+            self.canvas.set_crop(None);
+            self.update_chrome();
+            return;
+        }
+        if self.canvas.reset_edits() {
+            self.notify("restored original image");
+            self.update_chrome();
+        }
+    }
+
+    fn free_copy_path(orig: &Path) -> PathBuf {
+        let dir = orig.parent().unwrap_or_else(|| Path::new("."));
+        let stem = orig
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "image".into());
+        let ext = orig
+            .extension()
+            .map(|e| e.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "png".into());
+        let save_ext = match ext.to_ascii_lowercase().as_str() {
+            "png" | "jpg" | "jpeg" | "tiff" | "tif" | "bmp" => ext,
+            _ => "png".into(),
+        };
+        (1..10000)
+            .map(|n| {
+                if n == 1 {
+                    dir.join(format!("{stem}-edited.{save_ext}"))
+                } else {
+                    dir.join(format!("{stem}-edited-{n}.{save_ext}"))
+                }
+            })
+            .find(|p| !p.exists())
+            .unwrap_or_else(|| dir.join(format!("{stem}-edited.{save_ext}")))
+    }
+
+    fn prompt_save(&self) {
+        let Some(item) = self.current() else { return };
+        if item.kind != Kind::Image {
+            return;
+        }
+        if self.canvas.crop().is_some() {
+            self.canvas.apply_crop();
+            self.update_chrome();
+        }
+        if !self.canvas.is_dirty() {
+            self.notify("no edits to save");
+            return;
+        }
+        let copy_path = Self::free_copy_path(&item.path);
+        let copy_name = copy_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        self.save_details.set_text(&format!(
+            "Save as copy creates \"{copy_name}\" in the same folder.\nOverwrite replaces \"{}\" in place.",
+            item.name()
+        ));
+        self.save_overlay.set_visible(true);
+    }
+
+    fn close_save_dialog(&self) {
+        self.save_overlay.set_visible(false);
+    }
+
+    fn save_edited(&self, as_copy: bool) {
+        let Some(item) = self.current() else { return };
+        if item.kind != Kind::Image {
+            return;
+        }
+        if self.canvas.crop().is_some() {
+            self.canvas.apply_crop();
+        }
+        let target = if as_copy {
+            Self::free_copy_path(&item.path)
+        } else {
+            item.path.clone()
+        };
+        match self.canvas.save_to_path(&target) {
+            Ok(()) => {
+                self.canvas.mark_saved();
+                self.save_overlay.set_visible(false);
+                self.canvas.set_editing(false);
+                self.thumbs.borrow_mut().remove(&target);
+                if as_copy {
+                    if let Some(new_item) = Item::new(target.clone()) {
+                        let mut items = self.items.borrow_mut();
+                        let insert_at = (self.index.get() + 1).min(items.len());
+                        items.insert(insert_at, new_item);
+                        drop(items);
+                        self.index.set(insert_at);
+                    }
+                    let name = target
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    self.notify(&format!("saved copy: {name}"));
+                } else {
+                    if let Some(updated) = Item::new(target.clone())
+                        && let Some(slot) = self.items.borrow_mut().get_mut(self.index.get())
+                    {
+                        *slot = updated;
+                    }
+                    self.notify(&format!("saved {}", item.name()));
+                }
+                if self.info.reveals_child() {
+                    self.load_info();
+                }
+                self.update_chrome();
+            }
+            Err(e) => {
+                self.save_overlay.set_visible(false);
+                self.notify_error(&e);
+            }
+        }
     }
 
     /// Moves the file to the trash. From the keyboard it takes two presses within 2 s.
@@ -1901,6 +2396,14 @@ impl Win {
         add("show-folder", |w| w.show_in_folder());
         add("copy", |w| w.copy());
         add("save", |w| w.save());
+        add("edit", |w| w.toggle_edit());
+        add("crop", |w| w.crop_action());
+        add("rotate-cw", |w| w.rotate_image(true));
+        add("rotate-ccw", |w| w.rotate_image(false));
+        add("flip-h", |w| w.flip_image(true));
+        add("flip-v", |w| w.flip_image(false));
+        add("undo", |w| w.undo_edit());
+        add("reset", |w| w.reset_edit());
         add("gallery", |w| w.toggle_grid());
         add("info", |w| w.toggle_info());
         add("fullscreen", |w| w.toggle_fullscreen());
@@ -1967,6 +2470,16 @@ impl Win {
             edit.append(Some("save frame"), Some("view.save"));
             edit.append(Some("copy frame"), Some("view.copy"));
         } else if item.kind == Kind::Image {
+            edit.append(Some("edit image (crop / rotate)"), Some("view.edit"));
+            edit.append(Some("rotate 90° right"), Some("view.rotate-cw"));
+            edit.append(Some("rotate 90° left"), Some("view.rotate-ccw"));
+            edit.append(Some("flip horizontally"), Some("view.flip-h"));
+            edit.append(Some("flip vertically"), Some("view.flip-v"));
+            if self.canvas.is_dirty() || self.canvas.crop().is_some() {
+                edit.append(Some("save edited image…"), Some("view.save"));
+                edit.append(Some("undo edit"), Some("view.undo"));
+                edit.append(Some("reset edits"), Some("view.reset"));
+            }
             edit.append(Some("copy image"), Some("view.copy"));
         } else {
             edit.append(Some("copy page"), Some("view.copy"));
@@ -2095,6 +2608,15 @@ impl Win {
 
     /// Runs one key. Returns false when it isn't ours (the grid's arrows, for example).
     pub fn handle_key(&self, key: Key) -> bool {
+        if self.save_overlay.is_visible() {
+            match key {
+                Key::Enter | Key::Char('c') => self.save_edited(true),
+                Key::Char('o') => self.save_edited(false),
+                Key::Esc | Key::Char('q') => self.close_save_dialog(),
+                _ => {}
+            }
+            return true;
+        }
         if self.help.root.is_visible() {
             // typing goes to the help's search; tab changes topic, esc closes
             match key {
@@ -2117,6 +2639,7 @@ impl Win {
             return true;
         }
         let kind = self.current().map(|c| c.kind);
+        let image = kind == Some(Kind::Image);
         let paged = matches!(kind, Some(Kind::Pdf | Kind::Office));
         let video = kind == Some(Kind::Video);
         match key {
@@ -2146,10 +2669,22 @@ impl Win {
             Key::Char('+') | Key::Char('=') => self.zoom(1.0),
             Key::Char('-') => self.zoom(-1.0),
             Key::Char('0') => self.fit(),
-            Key::Char('1') if kind == Some(Kind::Image) => {
+            Key::Char('1') if image => {
                 self.canvas.actual_size();
                 self.update_chrome();
             }
+            Key::Enter if image && self.canvas.is_editing() && self.canvas.crop().is_some() => {
+                self.crop_action()
+            }
+            Key::Char('c') if image => self.crop_action(),
+            Key::Char('E') if image => self.toggle_edit(),
+            Key::Char('r') if image => self.rotate_image(true),
+            Key::Char('R') if image => self.rotate_image(false),
+            Key::Char('H') if image => self.flip_image(true),
+            Key::Char('V') if image => self.flip_image(false),
+            Key::Char('u') | Key::Ctrl('z') if image => self.undo_edit(),
+            Key::Char('U') if image => self.reset_edit(),
+            Key::Ctrl('s') if image => self.prompt_save(),
             Key::Char('[') if video => self.video.seek(-5.0),
             Key::Char(']') if video => self.video.seek(5.0),
             Key::Char(',') if video => self.video.frame_step(true),
@@ -2169,7 +2704,14 @@ impl Win {
             Key::Delete => self.trash(false),
             Key::Tab => self.toggle_bars(),
             Key::Esc => {
-                if self.window.is_fullscreen() {
+                if self.canvas.is_editing() {
+                    if self.canvas.crop().is_some() {
+                        self.canvas.set_crop(None);
+                        self.update_chrome();
+                    } else {
+                        self.leave_edit();
+                    }
+                } else if self.window.is_fullscreen() {
                     self.window.unfullscreen();
                 } else if self.info.reveals_child() {
                     self.info.set_reveal_child(false);

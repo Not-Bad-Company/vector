@@ -317,7 +317,7 @@ pub const FIND: &[Topic] = &[
     },
     Topic {
         title: "archives",
-        intro: "Zip and tar files (also .tar.gz, .xz, .zst, .bz2) open like folders, without \
+        intro: "Zip, RAR, 7z and tar files (also .tar.gz, .xz, .zst, .bz2) open like folders, without \
                 extracting anything. Nothing inside is run, and nothing in them can be changed. \
                 To unzip / unpack / decompress: cursor on the archive, X.",
         lines: &[
@@ -458,6 +458,27 @@ pub const VIEW: &[Topic] = &[
             ("1", "actual size (one image pixel per screen pixel)"),
             ("drag  h j k l", "pan; also for a zoomed PDF"),
             ("z", "keep the zoom between files"),
+        ],
+    },
+    Topic {
+        title: "edit",
+        intro: "Images can be cropped, rotated and flipped directly inside Vector View, then \
+                saved either as a new copy or over the original file.",
+        lines: &[
+            ("c", "enter edit mode / start or apply a crop selection"),
+            (
+                "drag on image",
+                "draw or resize the crop box (in edit mode)",
+            ),
+            ("enter", "apply the selected crop"),
+            ("r  R", "rotate 90° clockwise, counter-clockwise"),
+            ("H  V", "flip horizontally, vertically"),
+            ("u  ctrl+z", "undo the last edit"),
+            ("U", "reset to the unedited image"),
+            (
+                "s  ctrl+s",
+                "save edited image (choose: save as a copy or overwrite original)",
+            ),
         ],
     },
     Topic {

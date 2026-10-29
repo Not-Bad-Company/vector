@@ -183,6 +183,11 @@ fn builtin_rules() -> Vec<Rule> {
             r.hide = Some(true);
             r.history = Some(false);
         }),
+        // clipboard copy toasts replace each other and don't clutter history
+        rule(|r| {
+            r.app = s("^clipboard$");
+            r.history = Some(false);
+        }),
         // this machine stays on Omarchy 3 on purpose
         rule(|r| {
             r.summary = s("upgrade to omarchy quattro");
@@ -682,6 +687,9 @@ impl Store {
 
     /// A Notify call. Returns the id the app gets back.
     pub fn notify(self: &Rc<Self>, mut n: Note, replaces: u32, requested_timeout: i32) -> u32 {
+        if n.app.eq_ignore_ascii_case("clipboard") && n.tag.is_empty() {
+            n.tag = "clipboard".into();
+        }
         let cfg = self.cfg();
         let fx = apply_rules(&cfg.rules, &mut n);
         let fx = lua_hook(&mut n, fx);

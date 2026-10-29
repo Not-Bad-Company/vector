@@ -459,7 +459,6 @@ impl Pane {
             match cached_size(&real) {
                 Some((n, age)) => {
                     self.model.borrow_mut().set_size(&name, n);
-                    self.objects.borrow_mut().remove(&name);
                     self.measured.borrow_mut().insert(name.clone());
                     if explicit || age > SIZE_FRESH_FOR || modified > now() - age {
                         todo.push((name, real));
@@ -504,7 +503,6 @@ impl Pane {
                 }
                 remember_size(&path, n);
                 p.model.borrow_mut().set_size(&name, n);
-                p.objects.borrow_mut().remove(&name);
                 p.measured.borrow_mut().insert(name);
                 p.schedule_refresh();
             }
@@ -831,7 +829,6 @@ impl Pane {
         sizes_changed(&self.dir());
         match change {
             DirChange::Upsert(e) => {
-                self.objects.borrow_mut().remove(&e.name);
                 self.model.borrow_mut().upsert(e);
             }
             DirChange::Remove(name) => {
@@ -888,26 +885,93 @@ impl Pane {
 
     // ── model → view ────────────────────────────────────────────────────────
 
+    fn active_vadjustment(&self) -> Option<gtk::Adjustment> {
+        let view: &gtk::Widget = if self.grid_mode.get() {
+            self.grid.upcast_ref()
+        } else {
+            self.list.upcast_ref()
+        };
+        view.parent()
+            .and_downcast::<gtk::ScrolledWindow>()
+            .map(|sw| sw.vadjustment())
+    }
+
+    fn sync_objects(&self) -> Vec<glib::BoxedAnyObject> {
+        let model = self.model.borrow();
+        let mut cache = self.objects.borrow_mut();
+        model
+            .iter()
+            .map(|e| match cache.get_mut(&e.name) {
+                Some(obj) => {
+                    if let Ok(mut slot) = obj.try_borrow_mut::<Entry>() {
+                        *slot = e.clone();
+                    }
+                    obj.clone()
+                }
+                None => {
+                    let obj = glib::BoxedAnyObject::new(e.clone());
+                    cache.insert(e.name.clone(), obj.clone());
+                    obj
+                }
+            })
+            .collect()
+    }
+
+    fn rebind_realized(&self) {
+        let mut row = self.list.first_child();
+        while let Some(r) = row {
+            if let Some(content) = r.first_child()
+                && let Some(item) = list_item_of(&content)
+            {
+                bind_row_item(self, &item);
+            }
+            row = r.next_sibling();
+        }
+        let mut tile = self.grid.first_child();
+        while let Some(r) = tile {
+            if let Some(content) = r.first_child()
+                && let Some(item) = list_item_of(&content)
+            {
+                bind_tile_item(self, &item);
+            }
+            tile = r.next_sibling();
+        }
+    }
+
     /// Mirrors the shown entries into the store, reusing objects of unchanged entries.
     pub fn refresh(&self) {
-        let objs: Vec<glib::BoxedAnyObject> = {
-            let model = self.model.borrow();
-            let mut cache = self.objects.borrow_mut();
-            model
-                .iter()
-                .map(|e| {
-                    cache
-                        .entry(e.name.clone())
-                        .or_insert_with(|| glib::BoxedAnyObject::new(e.clone()))
-                        .clone()
-                })
-                .collect()
-        };
-        self.syncing.set(true);
-        self.store.splice(0, self.store.n_items(), &objs);
-        self.syncing.set(false);
+        let objs = self.sync_objects();
+        let old_len = self.store.n_items() as usize;
+        let new_len = objs.len();
+        let mut prefix = 0usize;
+        while prefix < old_len
+            && prefix < new_len
+            && self.store.item(prefix as u32).as_ref() == Some(objs[prefix].upcast_ref())
+        {
+            prefix += 1;
+        }
+        let mut suffix = 0usize;
+        while suffix < (old_len - prefix)
+            && suffix < (new_len - prefix)
+            && self.store.item((old_len - 1 - suffix) as u32).as_ref()
+                == Some(objs[new_len - 1 - suffix].upcast_ref())
+        {
+            suffix += 1;
+        }
+        let saved_scroll = self.active_vadjustment().map(|a| a.value()).unwrap_or(0.0);
+        if prefix == old_len && old_len == new_len {
+            self.rebind_realized();
+        } else {
+            let remove_len = (old_len - prefix - suffix) as u32;
+            let insert_slice = &objs[prefix..new_len - suffix];
+            self.syncing.set(true);
+            self.store.splice(prefix as u32, remove_len, insert_slice);
+            self.syncing.set(false);
+            self.rebind_realized();
+        }
         self.selection.borrow_mut().prune(&self.model.borrow());
         let want = self.want_cursor.borrow().clone();
+        let mut resolved_want = false;
         if let Some(name) = want
             && self.model.borrow().index_of(&name).is_some()
         {
@@ -915,16 +979,32 @@ impl Pane {
                 .borrow_mut()
                 .set_cursor_name(&self.model.borrow(), &name);
             *self.want_cursor.borrow_mut() = None;
+            resolved_want = true;
         }
         self.update_stack();
-        self.push_selection(true);
+        self.push_selection(resolved_want);
+        if !resolved_want
+            && saved_scroll > 0.0
+            && let Some(adj) = self.active_vadjustment()
+        {
+            adj.set_value(saved_scroll);
+            let adj2 = adj.clone();
+            glib::idle_add_local_once(move || {
+                let max = (adj2.upper() - adj2.page_size()).max(0.0);
+                if (adj2.value() - saved_scroll).abs() > 1.0 && max > 0.0 {
+                    adj2.set_value(saved_scroll.min(max));
+                }
+            });
+        }
         (self.on_event)(PaneEvent::Cursor);
+        self.mark_cursor();
     }
 
     /// Re-binds every row (badges or folder sizes changed) without changing the order.
     pub fn rebind(&self) {
-        self.objects.borrow_mut().clear();
-        self.refresh();
+        self.sync_objects();
+        self.rebind_realized();
+        self.mark_cursor();
     }
 
     fn update_stack(&self) {
@@ -1072,7 +1152,13 @@ impl Pane {
         // narrow window: the rows drop the date column, but its two sort keys stay
         // reachable here under short names
         let compact = self.compact.get();
-        let modified = col(if compact { "mod" } else { "modified" }, SortKey::Modified, 0, 1.0, false);
+        let modified = col(
+            if compact { "mod" } else { "modified" },
+            SortKey::Modified,
+            0,
+            1.0,
+            false,
+        );
         let added = col(
             match (trash, compact) {
                 (true, _) => "trashed",
@@ -1208,6 +1294,7 @@ impl Pane {
             }
         }
         (self.on_event)(PaneEvent::Cursor);
+        self.mark_cursor();
     }
 
     fn focused_position(&self) -> Option<u32> {
@@ -1265,6 +1352,7 @@ impl Pane {
         }
         self.push_selection(true);
         (self.on_event)(PaneEvent::Cursor);
+        self.mark_cursor();
     }
 
     /// Rows that fit in the view, for page up/down.
@@ -1494,13 +1582,17 @@ fn common_setup(w: &gtk::Widget, item: &gtk::ListItem, pane: &Weak<Pane>) {
     w.add_controller(menu);
 }
 
+fn list_item_of(w: &gtk::Widget) -> Option<gtk::ListItem> {
+    // SAFETY: see common_setup
+    let item = unsafe { w.data::<glib::WeakRef<gtk::ListItem>>("vector-item") }?;
+    unsafe { item.as_ref() }.upgrade()
+}
+
 /// Where the row's item is in the list now. Asked of the list item itself: GTK moves rows
 /// to new positions (after a sort) without binding them again, so a remembered position
 /// goes stale and would light up the wrong row.
 fn position_of(w: &gtk::Widget) -> Option<u32> {
-    // SAFETY: see common_setup
-    let item = unsafe { w.data::<glib::WeakRef<gtk::ListItem>>("vector-item") }?;
-    let item = unsafe { item.as_ref() }.upgrade()?;
+    let item = list_item_of(w)?;
     let pos = item.position();
     (pos != gtk::INVALID_LIST_POSITION).then_some(pos)
 }
@@ -1633,79 +1725,84 @@ fn row_factory(pane: Weak<Pane>) -> gtk::SignalListItemFactory {
         let Some(item) = obj.downcast_ref::<gtk::ListItem>() else {
             return;
         };
-        let (Some(row), Some(e), Some(pane)) = (item.child(), entry_of(item), pane.upgrade())
-        else {
+        let Some(pane) = pane.upgrade() else {
             return;
         };
-        let labels: Vec<gtk::Label> =
-            std::iter::successors(row.first_child(), |w| w.next_sibling())
-                .filter_map(|w| w.downcast::<gtk::Label>().ok())
-                .collect();
-        let [lnum, icon, name, badge, size, dot, date] = labels.as_slice() else {
-            return;
-        };
-        lnum.set_visible(numbers());
-        pane.register_row(&row, item.position());
-        set_kind(&row, &e);
-        match crate::iconstore::get(&e.path) {
-            Some(g) => icon.set_text(&g),
-            None => icon.set_text(vector_core::icons::icon_for(&e.name, e.is_dir(), e.symlink)),
-        }
-        name.set_text(&e.name);
-        let (marked, cut) = {
-            let m = pane.marks.borrow();
-            (m.0.contains(&e.path), m.1)
-        };
-        for (class, on) in [("marked", marked), ("cut", marked && cut)] {
-            if on {
-                row.add_css_class(class);
-            } else {
-                row.remove_css_class(class);
-            }
-        }
-        if pane.model.borrow().is_hidden(&e) {
-            row.add_css_class("hidden-file");
-        } else {
-            row.remove_css_class("hidden-file");
-        }
-        let (b, class) = match pane.git_badge(&e.name) {
-            None if pane.model.borrow().is_pinned(&e.name) => ("\u{F0403}", "ok"),
-            g => badge_text(g),
-        };
-        badge.set_text(b);
-        for c in ["crit", "warn", "good", "dim", "ok"] {
-            badge.remove_css_class(c);
-        }
-        if !class.is_empty() {
-            badge.add_css_class(class);
-        }
-        let s = if e.is_dir() {
-            if pane.measured.borrow().contains(&e.name) {
-                fmt::size(e.size)
-            } else if pane.is_measuring() {
-                "…".into()
-            } else {
-                String::new()
-            }
-        } else if e.broken {
-            "broken".into()
-        } else {
-            fmt::size(e.size)
-        };
-        size.set_text(&s);
-        for c in ["sz-small", "sz-big", "sz-huge"] {
-            size.remove_css_class(c);
-        }
-        if let Some(c) = size_class(&e, &s) {
-            size.add_css_class(c);
-        }
-        // the date column shows the date the folder is sorted by
-        let by_added = pane.model.borrow().options().sort.key == vector_core::sort::SortKey::Added;
-        date.set_text(&fmt::date(if by_added { e.added } else { e.modified }));
-        date.set_visible(!pane.compact.get());
-        dot.set_visible(!pane.compact.get() && !s.is_empty() && e.modified > 0);
+        bind_row_item(&pane, item);
     });
     f
+}
+
+fn bind_row_item(pane: &Pane, item: &gtk::ListItem) {
+    let (Some(row), Some(e)) = (item.child(), entry_of(item)) else {
+        return;
+    };
+    let labels: Vec<gtk::Label> = std::iter::successors(row.first_child(), |w| w.next_sibling())
+        .filter_map(|w| w.downcast::<gtk::Label>().ok())
+        .collect();
+    let [lnum, icon, name, badge, size, dot, date] = labels.as_slice() else {
+        return;
+    };
+    lnum.set_visible(numbers());
+    pane.register_row(&row, item.position());
+    set_kind(&row, &e);
+    match crate::iconstore::get(&e.path) {
+        Some(g) => icon.set_text(&g),
+        None => icon.set_text(vector_core::icons::icon_for(&e.name, e.is_dir(), e.symlink)),
+    }
+    name.set_text(&e.name);
+    let (marked, cut) = {
+        let m = pane.marks.borrow();
+        (m.0.contains(&e.path), m.1)
+    };
+    for (class, on) in [("marked", marked), ("cut", marked && cut)] {
+        if on {
+            row.add_css_class(class);
+        } else {
+            row.remove_css_class(class);
+        }
+    }
+    if pane.model.borrow().is_hidden(&e) {
+        row.add_css_class("hidden-file");
+    } else {
+        row.remove_css_class("hidden-file");
+    }
+    let (b, class) = match pane.git_badge(&e.name) {
+        None if pane.model.borrow().is_pinned(&e.name) => ("\u{F0403}", "ok"),
+        g => badge_text(g),
+    };
+    badge.set_text(b);
+    for c in ["crit", "warn", "good", "dim", "ok"] {
+        badge.remove_css_class(c);
+    }
+    if !class.is_empty() {
+        badge.add_css_class(class);
+    }
+    let s = if e.is_dir() {
+        if pane.measured.borrow().contains(&e.name) {
+            fmt::size(e.size)
+        } else if pane.is_measuring() {
+            "…".into()
+        } else {
+            String::new()
+        }
+    } else if e.broken {
+        "broken".into()
+    } else {
+        fmt::size(e.size)
+    };
+    size.set_text(&s);
+    for c in ["sz-small", "sz-big", "sz-huge"] {
+        size.remove_css_class(c);
+    }
+    if let Some(c) = size_class(&e, &s) {
+        size.add_css_class(c);
+    }
+    // the date column shows the date the folder is sorted by
+    let by_added = pane.model.borrow().options().sort.key == vector_core::sort::SortKey::Added;
+    date.set_text(&fmt::date(if by_added { e.added } else { e.modified }));
+    date.set_visible(!pane.compact.get());
+    dot.set_visible(!pane.compact.get() && !s.is_empty() && e.modified > 0);
 }
 
 fn tile_factory(pane: Weak<Pane>) -> gtk::SignalListItemFactory {
@@ -1752,53 +1849,71 @@ fn tile_factory(pane: Weak<Pane>) -> gtk::SignalListItemFactory {
         let Some(item) = obj.downcast_ref::<gtk::ListItem>() else {
             return;
         };
-        let (Some(tile), Some(e)) = (item.child(), entry_of(item)) else {
+        let Some(p) = pane.upgrade() else {
             return;
         };
-        if let Some(p) = pane.upgrade() {
-            p.register_row(&tile, item.position());
-        }
-        let Some(pic_stack) = tile.first_child().and_downcast::<gtk::Stack>() else {
-            return;
-        };
-        let Some(name) = pic_stack.next_sibling().and_downcast::<gtk::Label>() else {
-            return;
-        };
-        let (Some(icon), Some(picture)) = (
-            pic_stack.child_by_name("icon").and_downcast::<gtk::Label>(),
-            pic_stack
-                .child_by_name("picture")
-                .and_then(|frame| frame.last_child())
-                .and_downcast::<gtk::Picture>(),
-        ) else {
-            return;
-        };
-        name.set_text(&e.name);
-        set_kind(&tile, &e);
-        icon.set_text(vector_core::icons::icon_for(&e.name, e.is_dir(), e.symlink));
-        pic_stack.set_visible_child_name("icon");
-        picture.set_paintable(None::<&gdk::Paintable>);
-        if e.content_type.starts_with("image/") && !e.broken {
-            let path = e.path.clone();
-            let want = path.clone();
-            let (ps, pic) = (pic_stack.downgrade(), picture.downgrade());
-            let it = item.downgrade();
-            let _ = pane.upgrade();
-            glib::spawn_future_local(async move {
-                let Ok(Some(tex)) = crate::thumbs::load(path, 192).await else {
-                    return;
-                };
-                let (Some(ps), Some(pic), Some(item)) = (ps.upgrade(), pic.upgrade(), it.upgrade())
-                else {
-                    return;
-                };
-                // the tile may show another file by now
-                if entry_of(&item).map(|e| e.path) == Some(want) {
-                    pic.set_paintable(Some(&tex));
-                    ps.set_visible_child_name("picture");
-                }
-            });
-        }
+        bind_tile_item(&p, item);
     });
     f
+}
+
+fn bind_tile_item(pane: &Pane, item: &gtk::ListItem) {
+    let (Some(tile), Some(e)) = (item.child(), entry_of(item)) else {
+        return;
+    };
+    pane.register_row(&tile, item.position());
+    let Some(pic_stack) = tile.first_child().and_downcast::<gtk::Stack>() else {
+        return;
+    };
+    let Some(name) = pic_stack.next_sibling().and_downcast::<gtk::Label>() else {
+        return;
+    };
+    let (Some(icon), Some(picture)) = (
+        pic_stack.child_by_name("icon").and_downcast::<gtk::Label>(),
+        pic_stack
+            .child_by_name("picture")
+            .and_then(|frame| frame.last_child())
+            .and_downcast::<gtk::Picture>(),
+    ) else {
+        return;
+    };
+    name.set_text(&e.name);
+    set_kind(&tile, &e);
+    let (marked, cut) = {
+        let m = pane.marks.borrow();
+        (m.0.contains(&e.path), m.1)
+    };
+    for (class, on) in [("marked", marked), ("cut", marked && cut)] {
+        if on {
+            tile.add_css_class(class);
+        } else {
+            tile.remove_css_class(class);
+        }
+    }
+    icon.set_text(vector_core::icons::icon_for(&e.name, e.is_dir(), e.symlink));
+    if picture.paintable().is_some() && e.content_type.starts_with("image/") && !e.broken {
+        return;
+    }
+    pic_stack.set_visible_child_name("icon");
+    picture.set_paintable(None::<&gdk::Paintable>);
+    if e.content_type.starts_with("image/") && !e.broken {
+        let path = e.path.clone();
+        let want = path.clone();
+        let (ps, pic) = (pic_stack.downgrade(), picture.downgrade());
+        let it = item.downgrade();
+        glib::spawn_future_local(async move {
+            let Ok(Some(tex)) = crate::thumbs::load(path, 192).await else {
+                return;
+            };
+            let (Some(ps), Some(pic), Some(item)) = (ps.upgrade(), pic.upgrade(), it.upgrade())
+            else {
+                return;
+            };
+            // the tile may show another file by now
+            if entry_of(&item).map(|e| e.path) == Some(want) {
+                pic.set_paintable(Some(&tex));
+                ps.set_visible_child_name("picture");
+            }
+        });
+    }
 }

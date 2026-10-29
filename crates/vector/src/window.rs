@@ -353,6 +353,12 @@ impl Win {
             }
         });
         win.sidebar.set_pinned(&crate::pinstore::global());
+        win.connect_keys();
+        win.connect_entries();
+        win.connect_actions();
+        win.watch_ops();
+        win.new_tab(start);
+        win.refresh_recent();
         #[cfg(feature = "terminal")]
         if win.settings.borrow().terminal {
             win.term.open(&win.pane().dir());
@@ -365,11 +371,6 @@ impl Win {
             }
             glib::Propagation::Proceed
         });
-        win.connect_keys();
-        win.connect_entries();
-        win.connect_actions();
-        win.watch_ops();
-        win.new_tab(start);
         win.load_scripts();
         win
     }
@@ -1169,9 +1170,6 @@ impl Win {
                         return;
                     }
                     pane.model.borrow_mut().set_filter(&text);
-                    pane.selection
-                        .borrow_mut()
-                        .set_cursor(&pane.model.borrow(), 0);
                     pane.refresh();
                 }
                 Mode::Command => {
