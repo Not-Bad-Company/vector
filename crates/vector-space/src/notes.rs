@@ -23,6 +23,8 @@ pub struct Note {
     pub unseen: bool,
     /// still on screen
     pub live: bool,
+    /// mirrored from the phone
+    pub phone: bool,
     pub actions: Vec<(String, String)>,
 }
 
@@ -57,6 +59,7 @@ fn parse(v: &glib::Variant) -> Vec<Note> {
                 count: u("count"),
                 unseen: b("unseen"),
                 live: b("live"),
+                phone: b("phone"),
                 actions: d
                     .lookup_value("actions", None)
                     .and_then(|v| v.get::<Vec<(String, String)>>())
@@ -151,9 +154,11 @@ pub fn query(s: &Snapshot, q: &str) -> Vec<Item> {
             Icon::Glyph(glyph(n))
         };
         let count = if n.count > 1 { format!(" ×{}", n.count) } else { String::new() };
+        let body = util::one_line(&n.body, 110);
+        let from = label(n).to_lowercase();
         let mut it = Item::new(title, icon, Action::Note(n.id))
-            .sub(util::one_line(&n.body, 110))
-            .meta(format!("{} · {}{count}", label(n).to_lowercase(), util::age(n.time)))
+            .sub(if body.is_empty() { from } else { format!("{from} · {body}") })
+            .meta(format!("{}{}{count}", if n.phone { "󰄜  " } else { "" }, util::age(n.time)))
             .hl(hl);
         if n.urgency >= 2 {
             it = it.class("critical");

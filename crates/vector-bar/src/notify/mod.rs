@@ -52,6 +52,8 @@ pub struct Note {
     pub count: u32,
     /// went by on its own, never looked at
     pub unseen: bool,
+    /// mirrored from the phone by phonectl (its `x-phonectl` hint)
+    pub phone: bool,
     #[serde(skip)]
     pub pixels: Option<gdk::Texture>,
     /// ms; 0 = stays until dismissed
@@ -544,7 +546,14 @@ pub fn configure(cfg: &Config, app: &gtk::Application) {
     }
     s.started.set(true);
     if let Some(saved) =
-        util::read(state_file()).and_then(|t| serde_json::from_str::<Saved>(&t).ok())
+        util::read(state_file())
+            .and_then(|t| serde_json::from_str::<Saved>(&t).ok())
+            .map(|mut s| {
+                for n in &mut s.history {
+                    n.phone |= n.icon.contains("/phonectl/") || n.image.contains("/phonectl/");
+                }
+                s
+            })
     {
         let mut st = s.st.borrow_mut();
         st.history = saved.history;

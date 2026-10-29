@@ -11,7 +11,6 @@ const USAGE: &str = "launches.json";
 pub struct App {
     pub id: String,
     pub name: String,
-    pub comment: String,
     /// generic name, keywords, executable: matched but not shown
     pub extra: String,
     pub icon: Option<gio::Icon>,
@@ -94,12 +93,15 @@ pub fn load() -> Vec<App> {
                 actions.push((a.to_string(), d.action_name(&a).to_string()));
             }
         }
+        // the description is matched, not shown
+        if let Some(d) = info.description() {
+            extra.push(d.to_string());
+        }
         if let Some(exe) = info.executable().file_name() {
             extra.push(exe.to_string_lossy().to_string());
         }
         out.push(App {
             name: info.display_name().to_string(),
-            comment: info.description().map(|s| s.to_string()).unwrap_or_default(),
             extra: extra.join(" "),
             icon: info.icon(),
             id,
@@ -130,7 +132,6 @@ pub fn query(apps: &[App], wins: &[Window], q: &str) -> Vec<Item> {
             .into_iter()
             .map(|a| {
                 Item::new(&a.name, icon(a), Action::Launch { id: a.id.clone(), action: None })
-                    .sub(util::one_line(&a.comment, 90))
             })
             .collect();
     }
@@ -153,14 +154,15 @@ pub fn query(apps: &[App], wins: &[Window], q: &str) -> Vec<Item> {
             3
         } else if nl.split(|c: char| !c.is_alphanumeric()).any(|w| w.starts_with(&ql)) {
             2
-        } else if nl.contains(&ql) || a.extra.to_lowercase().contains(&ql) {
+        } else if nl.contains(&ql)
+            || a.extra.to_lowercase().split(|c: char| !c.is_alphanumeric()).any(|w| w.starts_with(&ql))
+        {
             1
         } else {
             0
         };
         let boost = quality * 1000;
         let it = Item::new(&a.name, icon(a), Action::Launch { id: a.id.clone(), action: None })
-            .sub(util::one_line(&a.comment, 90))
             .hl(name.map(|n| n.1).unwrap_or_default());
         scored.push((best + boost + usage.bonus(&a.id), it));
         for (aid, label) in &a.actions {
@@ -169,7 +171,7 @@ pub fn query(apps: &[App], wins: &[Window], q: &str) -> Vec<Item> {
                 && s + 8 >= best
             {
                 let it = Item::new(full, icon(a), Action::Launch { id: a.id.clone(), action: Some(aid.clone()) })
-                    .sub("action")
+                    .meta("action")
                     .hl(hl);
                 let ll = label.to_lowercase();
                 let q2 = if ll.starts_with(&ql) { 2000 } else if ll.contains(&ql) { 1000 } else { 0 };
@@ -193,8 +195,7 @@ pub fn query(apps: &[App], wins: &[Window], q: &str) -> Vec<Item> {
         }
         let icon = app_for(apps, &w.class).map(icon).unwrap_or(Icon::Glyph("\u{f05b6}"));
         let it = Item::new(&w.title, icon, Action::Focus(w.address.clone()))
-            .sub(format!("{} · workspace {}", w.class.to_lowercase(), w.workspace))
-            .meta("window")
+            .meta(format!("workspace {}", w.workspace))
             .hl(hl);
         more.push((s + if hl_ok { 1000 } else { 0 }, it));
     }

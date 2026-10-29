@@ -376,6 +376,7 @@ window.vnotify, window.vosd {{ background: transparent; }}
 .ncard.critical .htitle {{ background: {red}; color: {bg}; }}
 .ncard .ncount {{ color: {acc}; font-weight: bold; }}
 .ncard .npin {{ color: alpha({fg}, 0.4); }}
+.ncard .nphone {{ color: {acc}; }}
 .ncard button.nclose {{ opacity: 0; padding: 0 6px; }}
 .ncard:hover button.nclose {{ opacity: 0.55; }}
 .ncard:hover button.nclose:hover {{ opacity: 1; }}

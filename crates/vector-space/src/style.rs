@@ -32,7 +32,7 @@ window.vspace {{
   background: transparent;
   color: {fg};
   font-family: 'JetBrainsMonoNL Nerd Font', 'JetBrainsMono Nerd Font', 'Symbols Nerd Font', monospace;
-  font-size: 12px;
+  font-size: 13px;
 }}
 window.vspace * {{ border-radius: 0; outline: none; -gtk-icon-shadow: none; }}
 .backdrop {{ background: alpha(black, 0.18); animation: fade-in 110ms ease-out; }}
@@ -49,14 +49,14 @@ window.vspace * {{ border-radius: 0; outline: none; -gtk-icon-shadow: none; }}
 }}
 
 /* header: the mode block, then the search */
-.head {{ min-height: 52px; border-bottom: 1px solid alpha({fg}, 0.07); }}
+.head {{ min-height: 52px; border-bottom: 1px solid alpha({fg}, 0.08); background: alpha({fg}, 0.03); }}
 .head .mode {{
-  background: {acc}; color: {bg}; font-weight: bold; font-size: 11px;
-  padding: 0 14px; margin: 12px 0 12px 12px; letter-spacing: 1px;
+  background: {acc}; color: {bg}; font-weight: bold; font-size: 12px;
+  padding: 0 16px 0 18px; letter-spacing: 1px;
 }}
 .head entry, .head text {{
   background: transparent; border: none; box-shadow: none; outline: none;
-  font-size: 15px; min-height: 50px; padding: 0 12px; color: {fg};
+  font-size: 16px; min-height: 50px; padding: 0 10px; color: {fg};
   caret-color: {acc};
 }}
 .head entry placeholder, .head text placeholder {{ color: alpha({fg}, 0.32); }}
@@ -70,11 +70,11 @@ gridview {{ padding: 8px; }}
 listview > row, gridview > child {{ padding: 0; background: transparent; outline: none; }}
 listview > row:focus, gridview > child:focus {{ outline: none; }}
 .section {{
-  color: alpha({fg}, 0.38); font-weight: bold; font-size: 10.5px; letter-spacing: 1px;
-  padding: 10px 12px 4px 12px;
+  color: alpha({fg}, 0.42); font-weight: bold; font-size: 11.5px;
+  padding: 12px 12px 4px 12px;
 }}
 .row {{
-  min-height: 30px; padding: 6px 12px 6px 10px;
+  min-height: 30px; padding: 7px 14px 7px 10px;
   border-left: 2px solid transparent;
   transition: background 80ms ease;
 }}
@@ -83,17 +83,17 @@ listview > row:selected {{ background: transparent; color: inherit; }}
 listview > row:selected .row {{ background: alpha({acc}, 0.13); border-left-color: {acc}; }}
 .row .icon {{ min-width: 24px; min-height: 24px; color: alpha({fg}, 0.62); }}
 listview > row:selected .row .icon.glyph {{ color: {acc}; }}
-.row .icon.glyph {{ font-size: 14px; }}
-.row .icon.emo {{ font-size: 18px; }}
+.row .icon.glyph {{ font-size: 16px; }}
+.row .icon.emo {{ font-size: 20px; }}
 .row .thumb {{ border: 1px solid alpha({fg}, 0.10); }}
-.row .title {{ font-size: 12.5px; }}
-.row .sub {{ color: alpha({fg}, 0.44); font-size: 11px; }}
-.row .meta {{ color: alpha({fg}, 0.34); margin-left: 12px; font-size: 11px; }}
+.row .title {{ font-size: 13.5px; }}
+.row .sub {{ color: alpha({fg}, 0.5); font-size: 12px; }}
+.row .meta {{ color: alpha({fg}, 0.4); margin-left: 12px; font-size: 12px; }}
 listview > row:selected .row .meta {{ color: alpha({fg}, 0.55); }}
 .row.recent .meta, .row.unseen .title {{ color: {acc}; }}
 .row.critical .icon, .row.critical .title {{ color: {red}; }}
 .row.pinned .icon {{ color: {acc}; }}
-.empty {{ color: alpha({fg}, 0.4); padding: 26px 22px; line-height: 1.5; }}
+.empty {{ color: alpha({fg}, 0.45); padding: 28px 24px; font-size: 13px; }}
 
 /* emoji grid */
 .emo-cell {{ min-width: 50px; min-height: 48px; transition: background 80ms ease; }}
@@ -104,10 +104,10 @@ gridview > child:selected .emo-cell {{ background: alpha({acc}, 0.2); box-shadow
 
 /* preview */
 .preview {{ border-left: 1px solid alpha({fg}, 0.07); background: alpha({fg}, 0.018); }}
-.preview .pbox {{ padding: 18px 20px; }}
-.preview .ptitle {{ font-weight: bold; font-size: 13px; }}
-.preview .pkv {{ color: alpha({fg}, 0.5); font-size: 11px; }}
-.preview .ptext {{ background: transparent; color: alpha({fg}, 0.9); font-size: 12px; }}
+.preview .pbox {{ padding: 20px 22px; }}
+.preview .ptitle {{ font-weight: bold; font-size: 14px; }}
+.preview .pkv {{ color: alpha({fg}, 0.5); font-size: 12px; }}
+.preview .ptext {{ background: transparent; color: alpha({fg}, 0.9); font-size: 13px; }}
 .preview .ptext text {{ background: transparent; }}
 .preview .pbig {{ font-size: 76px; font-family: 'Noto Color Emoji', sans-serif; }}
 .preview picture {{ border: 1px solid alpha({fg}, 0.10); }}
@@ -115,15 +115,15 @@ gridview > child:selected .emo-cell {{ background: alpha({acc}, 0.2); box-shadow
 .preview .pact {{ color: alpha({fg}, 0.75); }}
 
 /* footer: the modes, then the keys */
-.foot {{ min-height: 32px; border-top: 1px solid alpha({fg}, 0.07); background: alpha({fg}, 0.02); padding: 0 6px; }}
-.foot .tab {{ padding: 0 8px; color: alpha({fg}, 0.4); transition: color 80ms ease, box-shadow 80ms ease; }}
+.foot {{ min-height: 34px; border-top: 1px solid alpha({fg}, 0.08); background: alpha({fg}, 0.03); padding: 0 6px; }}
+.foot .tab {{ padding: 0 9px; color: alpha({fg}, 0.45); font-size: 12px; transition: color 80ms ease, box-shadow 80ms ease; }}
 .foot .tab:hover {{ color: alpha({fg}, 0.85); }}
 .foot .tab .k {{ color: alpha({fg}, 0.6); font-weight: bold; margin-right: 4px; }}
 .foot .tab.on {{ color: {fg}; box-shadow: inset 0 -2px {acc}; }}
 .foot .tab.on .k {{ color: {acc}; }}
-.foot .keys {{ color: alpha({fg}, 0.36); margin-right: 8px; font-size: 11px; }}
+.foot .keys {{ color: alpha({fg}, 0.42); margin-right: 10px; font-size: 12px; }}
 .foot .keys.warn {{ color: {red}; }}
-.foot .dnd {{ color: {acc}; margin-right: 12px; font-size: 11px; }}
+.foot .dnd {{ color: {acc}; margin-right: 12px; font-size: 12px; }}
 scrollbar {{ background: transparent; }}
 scrollbar slider {{ background: alpha({fg}, 0.18); min-width: 3px; }}
 "#

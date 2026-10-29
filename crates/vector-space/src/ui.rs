@@ -18,9 +18,9 @@ use crate::item::{Action, Icon, Item, Mode};
 use crate::notes::{self, Snapshot};
 use crate::{calc, convert, util, web};
 
-const WIDTH: i32 = 820;
-const HEIGHT: i32 = 520;
-const LIST_W: i32 = 400;
+const WIDTH: i32 = 860;
+const HEIGHT: i32 = 540;
+const LIST_W: i32 = 420;
 const GRID_COLS: u32 = 7;
 
 enum Row {
@@ -109,13 +109,14 @@ pub fn build(app: &gtk::Application) -> Rc<Ui> {
     head.add_css_class("head");
     let mode_lbl = gtk::Label::new(Some("APPS"));
     mode_lbl.add_css_class("mode");
+    mode_lbl.set_valign(gtk::Align::Fill);
     let entry = gtk::Entry::new();
     entry.set_hexpand(true);
     let count = gtk::Label::new(None);
     count.add_css_class("count");
     head.append(&mode_lbl);
+    head.append(&slant());
     head.append(&entry);
-    head.append(&count);
     card.append(&head);
 
     // body: list or grid, and the preview
@@ -127,9 +128,10 @@ pub fn build(app: &gtk::Application) -> Rc<Ui> {
     grid_sel.set_autoselect(false);
     grid_sel.set_can_unselect(true);
     let list = gtk::ListView::new(Some(list_sel.clone()), Some(row_factory()));
-    list.set_single_click_activate(true);
+    // a click opens; hovering only highlights (it must not move the keyboard selection)
+    list.set_single_click_activate(false);
     let grid = gtk::GridView::new(Some(grid_sel.clone()), Some(emoji_factory()));
-    grid.set_single_click_activate(true);
+    grid.set_single_click_activate(false);
     grid.set_min_columns(GRID_COLS);
     grid.set_max_columns(GRID_COLS);
     let scroll = |w: &gtk::Widget| {
@@ -225,6 +227,23 @@ pub fn build(app: &gtk::Application) -> Rc<Ui> {
 
 // ── rows ─────────────────────────────────────────────────────────────────
 
+/// The bar's slanted block edge (◤), in the accent.
+fn slant() -> gtk::DrawingArea {
+    let d = gtk::DrawingArea::new();
+    d.set_content_width(14);
+    d.set_valign(gtk::Align::Fill);
+    d.set_draw_func(|_, cr, w, h| {
+        let c = gdk::RGBA::parse(crate::style::accent()).unwrap_or(gdk::RGBA::WHITE);
+        cr.move_to(0.0, 0.0);
+        cr.line_to(w as f64, 0.0);
+        cr.line_to(0.0, h as f64);
+        cr.close_path();
+        cr.set_source_rgba(c.red() as f64, c.green() as f64, c.blue() as f64, 1.0);
+        let _ = cr.fill();
+    });
+    d
+}
+
 fn icon_widget(icon: &Icon, size: i32) -> gtk::Widget {
     match icon {
         Icon::Glyph(g) => {
@@ -286,11 +305,11 @@ fn row_widget(it: &Item) -> gtk::Widget {
         row.add_css_class(c);
     }
     // a fixed icon column, so glyphs, app icons and thumbnails line up
-    let ic = icon_widget(&it.icon, 24);
+    let ic = icon_widget(&it.icon, 26);
     ic.set_valign(gtk::Align::Center);
     ic.set_halign(gtk::Align::Center);
     let col = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    col.set_size_request(28, -1);
+    col.set_size_request(30, -1);
     col.set_valign(gtk::Align::Center);
     ic.set_hexpand(true);
     // explicit, or the icon's hexpand would spread to the row
@@ -340,7 +359,9 @@ fn row_factory() -> gtk::SignalListItemFactory {
                 li.set_activatable(false);
             }
             Row::Item(it) => {
-                li.set_child(Some(&row_widget(it)));
+                let w = row_widget(it);
+                click_opens(&w, li.position());
+                li.set_child(Some(&w));
                 li.set_selectable(true);
                 li.set_activatable(true);
             }
@@ -376,8 +397,35 @@ fn emoji_factory() -> gtk::SignalListItemFactory {
             }
             cell.set_tooltip_text(Some(&it.title));
         }
+        // the cell is reused: its click handler follows the position
+        unsafe { cell.set_data("pos", li.position()) };
+        if unsafe { cell.data::<bool>("clicks") }.is_none() {
+            unsafe { cell.set_data("clicks", true) };
+            let c = gtk::GestureClick::new();
+            let cw = cell.downgrade();
+            c.connect_released(move |_, _, _, _| {
+                let pos = cw.upgrade().and_then(|c| unsafe { c.data::<u32>("pos").map(|p| *p.as_ptr()) });
+                if let (Some(ui), Some(p)) = (get(), pos) {
+                    ui.st.borrow_mut().sel = Some(p);
+                    ui.activate(false);
+                }
+            });
+            cell.add_controller(c);
+        }
     });
     f
+}
+
+/// A click on a row opens it (the row at `pos` in the list).
+fn click_opens(w: &gtk::Widget, pos: u32) {
+    let c = gtk::GestureClick::new();
+    c.connect_released(move |_, _, _, _| {
+        if let Some(ui) = get() {
+            ui.st.borrow_mut().sel = Some(pos);
+            ui.activate(false);
+        }
+    });
+    w.add_controller(c);
 }
 
 // ── thumbnails ───────────────────────────────────────────────────────────
@@ -702,9 +750,9 @@ impl Ui {
     /// Footer key hints: the keys bright, what they do dim.
     fn hints(&self) -> String {
         let pairs: &[(&str, &str)] = match self.mode() {
-            Mode::Apps => &[("⏎", "open"), ("tab", "mode"), ("esc", "close")],
-            Mode::Clipboard => &[("⏎", "copy"), ("^⏎", "paste"), ("^p", "pin"), ("⇧del", "delete")],
-            Mode::Notes => &[("⏎", "open"), ("⇧del", "dismiss"), ("^d", "silence")],
+            Mode::Apps => &[("⏎", "open"), ("tab", "modes")],
+            Mode::Clipboard => &[("⏎", "copy"), ("^⏎", "paste"), ("^p", "pin")],
+            Mode::Notes => &[("⏎", "open"), ("⇧del", "dismiss")],
             Mode::Emoji => &[("⏎", "copy"), ("^⏎", "paste")],
             Mode::Web => &[("⏎", "search in zen")],
             Mode::Calc => &[("⏎", "copy")],
@@ -968,7 +1016,14 @@ impl Ui {
                         .and_then(|d| d.format("%a %d %b %H:%M").ok())
                         .map(|s| s.to_lowercase())
                         .unwrap_or_default();
-                    b.append(&kv(&notes::label(&n).to_lowercase(), &format!("{when} · {}{}", if n.live { "on screen" } else { "history" }, if n.count > 1 { format!(" · ×{}", n.count) } else { String::new() })));
+                    b.append(&kv(
+                        &notes::label(&n).to_lowercase(),
+                        &format!(
+                            "{when}{}{}",
+                            if n.phone { " · 󰄜 from your phone" } else { "" },
+                            if n.count > 1 { format!(" · ×{}", n.count) } else { String::new() }
+                        ),
+                    ));
                     if !n.body.is_empty() {
                         let body = gtk::Label::new(Some(&n.body));
                         body.add_css_class("pbody");
@@ -1413,14 +1468,11 @@ fn clip_items(clips: &[Clip], q: &str) -> Vec<Item> {
     let mut out: Vec<(u32, bool, Item)> = Vec::new();
     for c in clips {
         let (title, icon, sub) = match c.kind {
-            Kind::Text => (util::one_line(&c.text, 200), Icon::Glyph("\u{f0219}"), {
-                let n = c.text.lines().count();
-                if n > 1 { format!("{n} lines") } else { String::new() }
-            }),
+            Kind::Text => (util::one_line(&c.text, 200), Icon::Glyph("\u{f0219}"), String::new()),
             Kind::Image => (
-                format!("image {}×{}", c.w, c.h),
+                format!("image  {}×{}", c.w, c.h),
                 c.blob_path().map(Icon::File).unwrap_or(Icon::Glyph("\u{f02e9}")),
-                format!("{} · {}", c.mime.trim_start_matches("image/"), human(c.size)),
+                String::new(),
             ),
             Kind::Files => {
                 let f = c.files();
@@ -1431,13 +1483,10 @@ fn clip_items(clips: &[Clip], q: &str) -> Vec<Item> {
                     Some(p) if f.len() == 1 && VIDEO.contains(&ext_of(p).as_str()) => clip::thumb(p).map(Icon::File).unwrap_or(Icon::Glyph("\u{f0567}")),
                     _ => Icon::Glyph(if f.len() == 1 { "\u{f0214}" } else { "\u{f0222}" }),
                 };
-                (
-                    names.join(", "),
-                    icon,
-                    first.and_then(|p| p.parent().map(tilde)).unwrap_or_default(),
-                )
+                let _ = first;
+                (names.join(", "), icon, String::new())
             }
-            Kind::Data => (format!("data {}", c.mime), Icon::Glyph("\u{f0219}"), human(c.size)),
+            Kind::Data => (format!("data  {}", c.mime), Icon::Glyph("\u{f0219}"), String::new()),
         };
         let (score, hl) = if fz.empty {
             (0, vec![])

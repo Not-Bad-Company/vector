@@ -528,6 +528,12 @@ impl Popup {
         let age_l = ui::text(&age(n), &["hdetail"]);
         age_l.set_margin_start(if icon.is_some() { 6 } else { 4 });
         head.append(&age_l);
+        if n.phone {
+            let p = ui::text("󰄜 phone", &["hdetail", "nphone"]);
+            p.set_tooltip_text(Some("from your phone"));
+            p.set_margin_start(8);
+            head.append(&p);
+        }
         if n.count > 1 {
             let c = ui::text(&format!("×{}", n.count), &["ncount"]);
             c.set_margin_start(8);

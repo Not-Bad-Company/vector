@@ -313,6 +313,7 @@ fn fdo_call(
                     .and_then(|v| v.get::<i32>().or_else(|| v.get::<u32>().map(|u| u as i32)))
                     .map(|v| v.clamp(0, 100)),
                 transient: hint_bool(&hints, "transient"),
+                phone: hint_bool(&hints, "x-phonectl"),
                 resident: hint_bool(&hints, "resident"),
                 tag: hint_str(
                     &hints,
@@ -430,6 +431,7 @@ fn vec_dict(n: &Note, live: bool) -> glib::Variant {
     d.insert("count", n.count.max(1));
     d.insert("unseen", n.unseen);
     d.insert("live", live);
+    d.insert("phone", n.phone);
     let acts: Vec<(String, String)> = n.actions.clone();
     d.insert_value("actions", &acts.to_variant());
     d.end()
