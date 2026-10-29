@@ -3,12 +3,15 @@
 //! it when it is not running. Commands are words:
 //!
 //!   shot region|window|output [--view]
+//!   pick [hex|rgb|hsl]
 //!   --service        run resident (vector-capture.service)
 //!
 //! `VECTOR_CAPTURE_TEST=1` runs a separate test instance on its own D-Bus name.
 
 mod capture;
+mod color;
 mod overlay;
+mod pick;
 mod shot;
 mod util;
 
@@ -65,6 +68,15 @@ fn command(app: &gtk::Application, words: &str) -> bool {
                 return false;
             }
             shot::start(app, mode, view)
+        }
+        Some("pick") => {
+            let format = match it.next() {
+                Some("rgb") => Some(color::Format::Rgb),
+                Some("hsl") => Some(color::Format::Hsl),
+                Some("hex") => Some(color::Format::Hex),
+                _ => None,
+            };
+            pick::start(app, format)
         }
         Some("quit") => {
             app.quit();
