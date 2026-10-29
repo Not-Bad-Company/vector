@@ -369,6 +369,7 @@ window.vnotify, window.vosd {{ background: transparent; }}
   to {{ opacity: 1; transform: none; }}
 }}
 .ncard:hover {{ border-color: alpha({acc}, 0.45); }}
+.noanim .ncard {{ animation: none; }}
 .ncard .head {{ min-height: 26px; margin-bottom: 9px; padding: 0 2px 0 0; }}
 .ncard .htitle {{ background: {acc}; color: {bg}; padding: 0 10px; }}
 .ncard.low .htitle {{ background: alpha({fg}, 0.28); color: {fg}; }}
@@ -376,7 +377,7 @@ window.vnotify, window.vosd {{ background: transparent; }}
 .ncard.critical .htitle {{ background: {red}; color: {bg}; }}
 .ncard .ncount {{ color: {acc}; font-weight: bold; }}
 .ncard .npin {{ color: alpha({fg}, 0.4); }}
-.ncard .nphone {{ color: {acc}; }}
+.ncard .nphone {{ color: {acc}; border: 1px solid alpha({acc}, 0.5); padding: 0 5px; font-size: {small}px; }}
 .ncard button.nclose {{ opacity: 0; padding: 0 6px; }}
 .ncard:hover button.nclose {{ opacity: 0.55; }}
 .ncard:hover button.nclose:hover {{ opacity: 1; }}

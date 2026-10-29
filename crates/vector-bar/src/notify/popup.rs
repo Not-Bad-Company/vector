@@ -395,6 +395,8 @@ impl Popup {
                     // updated in place (progress, replaced text, one more of the same)
                     let old = self.cards.borrow()[i].swipe.clone();
                     let c = self.card(n);
+                    // same card, new content: no second slide-in
+                    c.swipe.add_css_class("noanim");
                     col.insert_child_after(&c.swipe, Some(&old));
                     col.remove(&old);
                     let w = c.swipe.clone();
@@ -529,7 +531,7 @@ impl Popup {
         age_l.set_margin_start(if icon.is_some() { 6 } else { 4 });
         head.append(&age_l);
         if n.phone {
-            let p = ui::text("󰄜 phone", &["hdetail", "nphone"]);
+            let p = ui::text("phone", &["hdetail", "nphone"]);
             p.set_tooltip_text(Some("from your phone"));
             p.set_margin_start(8);
             head.append(&p);

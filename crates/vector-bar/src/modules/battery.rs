@@ -94,7 +94,7 @@ struct Inner {
     theme: Rc<Theme>,
     /// the low-battery card on screen (0: none)
     card: Cell<u32>,
-    /// highest level shown this discharge: 0 none, 1 warning, 2 critical
+    /// the levels it shows at this discharge: 0 none yet, 1 since 15%, 2 since 5%
     stage: Cell<u8>,
 }
 
@@ -171,15 +171,15 @@ impl Inner {
         }
     }
 
-    /// One low-battery card for the whole discharge: shown at the warning
-    /// level, updated in place as the percentage drops, raised to critical at
-    /// the critical level, never timing out, closed when the charger is in.
-    /// Swiped away, it stays away until the next level is crossed.
+    /// One low-battery card from 15% down: the percentage updated in place
+    /// (nothing else, so it changes once per percent), never timing out,
+    /// closed when the charger is in. Swiped away, it comes back once at 5%.
     fn low_card(&self, b: &Bat, discharging: bool) {
+        const FIRST: i64 = 15;
+        const AGAIN: i64 = 5;
         let store = crate::notify::get();
-        let serving = crate::notify::enabled();
         let live = |id: u32| id != 0 && store.live().iter().any(|n| n.id == id);
-        if !discharging || b.capacity > self.warn {
+        if !discharging || b.capacity > FIRST {
             let id = self.card.replace(0);
             if live(id) {
                 store.close(id, 3);
@@ -189,57 +189,34 @@ impl Inner {
             }
             return;
         }
-        let want = if b.capacity <= self.crit { 2 } else { 1 };
+        let level = if b.capacity <= AGAIN { 2 } else { 1 };
         let id = self.card.get();
         let showing = live(id);
-        if !showing && want <= self.stage.get() {
+        if !showing && self.stage.get() >= level {
             return; // swiped away at this level
         }
-        let left = b
-            .hours()
-            .map(|h| format!(" · about {} left", hm(h)))
-            .unwrap_or_default();
-        let body = format!("{}%{left}", b.capacity);
-        if !serving {
+        let body = format!("{}% left, plug in soon", b.capacity);
+        if !crate::notify::enabled() {
             // another notification server: one plain notification per level
-            if want > self.stage.get() {
-                self.stage.set(want);
-                util::spawn(&[
-                    "notify-send",
-                    "-u",
-                    if want == 2 { "critical" } else { "normal" },
-                    "-a",
-                    "Battery",
-                    "-i",
-                    "battery-caution",
-                    "Battery low",
-                    &body,
-                ]);
-            }
+            self.stage.set(level);
+            util::spawn(&["notify-send", "-u", "critical", "-a", "Battery", "-i", "battery-caution", "Battery low", &body]);
             return;
         }
-        if showing
-            && store
-                .live()
-                .iter()
-                .any(|n| n.id == id && n.body == body && (n.urgency == 2) == (want == 2))
-        {
+        if showing && store.live().iter().any(|n| n.id == id && n.body == body) {
             return;
         }
-        let first = want > self.stage.get();
-        self.stage.set(self.stage.get().max(want));
+        let first = self.stage.replace(self.stage.get().max(level)) == 0;
         let note = crate::notify::Note {
             app: "Battery".into(),
-            summary: if want == 2 { "Battery almost empty".into() } else { "Battery low".into() },
+            summary: "Battery low".into(),
             body,
-            urgency: if want == 2 { 2 } else { 1 },
+            urgency: 2,
             icon: "battery-caution".into(),
             category: "device.warning".into(),
             ..Default::default()
         };
-        let new = store.notify(note, if showing { id } else { 0 }, 0);
-        self.card.set(new);
-        if first && !showing {
+        self.card.set(store.notify(note, if showing { id } else { 0 }, 0));
+        if first {
             util::spawn(&["omarchy-hook", "battery-low", &b.capacity.to_string()]);
         }
     }

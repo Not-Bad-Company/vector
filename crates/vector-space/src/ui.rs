@@ -1020,7 +1020,7 @@ impl Ui {
                         &notes::label(&n).to_lowercase(),
                         &format!(
                             "{when}{}{}",
-                            if n.phone { " · 󰄜 from your phone" } else { "" },
+                            if n.phone { " · from your phone" } else { "" },
                             if n.count > 1 { format!(" · ×{}", n.count) } else { String::new() }
                         ),
                     ));

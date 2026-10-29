@@ -158,7 +158,7 @@ pub fn query(s: &Snapshot, q: &str) -> Vec<Item> {
         let from = label(n).to_lowercase();
         let mut it = Item::new(title, icon, Action::Note(n.id))
             .sub(if body.is_empty() { from } else { format!("{from} · {body}") })
-            .meta(format!("{}{}{count}", if n.phone { "󰄜  " } else { "" }, util::age(n.time)))
+            .meta(format!("{}{}{count}", if n.phone { "phone · " } else { "" }, util::age(n.time)))
             .hl(hl);
         if n.urgency >= 2 {
             it = it.class("critical");
