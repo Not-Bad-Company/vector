@@ -42,8 +42,8 @@ const SPIN: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"]
 /// How long a finished agent stays on the bar line.
 const DONE_SHOWN: f64 = 120.0;
 /// The line shows in full this long after it changes (an agent starts,
-/// finishes, or the line moves to another agent), then folds to its icon and
-/// an arrow; hovering unfolds it.
+/// finishes, or the line moves to another agent), then folds to just its
+/// icon (the spinner, or the done tick); hovering unfolds it.
 const LINE_FULL: f64 = 5.0;
 const M_AGENT: mode::State = mode::State {
     key: "agent",
@@ -1609,7 +1609,7 @@ impl Inner {
             } else {
                 ui::dim("󰄬")
             };
-            format!("{icon} {}{more}", ui::dim("›"))
+            format!("{icon}{more}")
         } else if t.busy() {
             let what = t
                 .subs
