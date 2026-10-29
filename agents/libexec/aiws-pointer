@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+"""aiws-pointer: a virtual mouse for one Wayland compositor (the nested one of
+`aiws nest`), speaking zwlr_virtual_pointer_v1 over the raw wire protocol, so
+nothing outside the standard library is needed. Input goes only to the
+compositor on $WAYLAND_DISPLAY; the owner's own pointer never moves.
+
+  aiws-pointer move X Y           absolute, in pixels of the output
+  aiws-pointer click X Y [BUTTON] left (default), right or middle
+  aiws-pointer down X Y [BUTTON] / up X Y [BUTTON]
+  aiws-pointer drag X1 Y1 X2 Y2
+  aiws-pointer scroll X Y DY      DY in wheel steps, positive = down
+Needs the output size: --size WxH (aiws passes it).
+"""
+import os
+import socket
+import struct
+import sys
+import time
+
+BUTTONS = {"left": 0x110, "right": 0x111, "middle": 0x112}
+
+
+class Wl:
+    def __init__(self):
+        path = os.environ["WAYLAND_DISPLAY"]
+        if not path.startswith("/"):
+            path = os.path.join(os.environ["XDG_RUNTIME_DIR"], path)
+        self.s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.s.connect(path)
+        self.next = 1  # client ids start at 2, in order
+        self.buf = b""
+
+    def new(self):
+        self.next += 1
+        return self.next
+
+    def send(self, obj, op, payload=b""):
+        self.s.sendall(struct.pack("<II", obj, ((8 + len(payload)) << 16) | op) + payload)
+
+    @staticmethod
+    def string(t):
+        b = t.encode() + b"\0"
+        return struct.pack("<I", len(b)) + b + b"\0" * (-len(b) % 4)
+
+    def events(self):
+        while True:
+            while len(self.buf) < 8:
+                self.buf += self.s.recv(65536)
+            obj, so = struct.unpack("<II", self.buf[:8])
+            size, op = so >> 16, so & 0xFFFF
+            while len(self.buf) < size:
+                self.buf += self.s.recv(65536)
+            body, self.buf = self.buf[8:size], self.buf[size:]
+            yield obj, op, body
+
+    def roundtrip(self, on_event=None):
+        cb = self.new()
+        self.send(1, 0, struct.pack("<I", cb))  # wl_display.sync
+        for obj, op, body in self.events():
+            if obj == cb:
+                return
+            if obj == 1 and op == 0:  # wl_display.error
+                oid, code = struct.unpack("<II", body[:8])
+                raise SystemExit(f"wayland error {code} on object {oid}: {body[12:].split(b'\0')[0].decode()}")
+            if on_event:
+                on_event(obj, op, body)
+
+
+def main():
+    a = sys.argv[1:]
+    w, h = 1920, 1080
+    if "--size" in a:
+        i = a.index("--size")
+        w, h = (int(x) for x in a[i + 1].lower().split("x"))
+        del a[i:i + 2]
+    if not a:
+        sys.exit(__doc__.strip())
+    wl = Wl()
+    reg = wl.new()
+    wl.send(1, 1, struct.pack("<I", reg))  # wl_display.get_registry
+    found = {}
+
+    def on_global(obj, op, body):
+        if obj == reg and op == 0:
+            name = struct.unpack("<I", body[:4])[0]
+            ln = struct.unpack("<I", body[4:8])[0]
+            iface = body[8:8 + ln - 1].decode()
+            found[iface] = name
+
+    wl.roundtrip(on_global)
+    if "zwlr_virtual_pointer_manager_v1" not in found:
+        sys.exit("this compositor has no virtual pointer support")
+    mgr = wl.new()
+    wl.send(reg, 0, struct.pack("<I", found["zwlr_virtual_pointer_manager_v1"])
+            + wl.string("zwlr_virtual_pointer_manager_v1") + struct.pack("<II", 1, mgr))
+    vp = wl.new()
+    wl.send(mgr, 0, struct.pack("<II", 0, vp))  # create_virtual_pointer(seat=null)
+
+    def ms():
+        return int(time.monotonic() * 1000) & 0xFFFFFFFF
+
+    def move(x, y):
+        wl.send(vp, 1, struct.pack("<IIIII", ms(), max(0, min(int(x), w - 1)), max(0, min(int(y), h - 1)), w, h))
+        wl.send(vp, 4, struct.pack("<I", ms()))  # frame
+
+    def button(b, pressed):
+        wl.send(vp, 2, struct.pack("<III", ms(), BUTTONS.get(b, 0x110), 1 if pressed else 0))
+        wl.send(vp, 4, struct.pack("<I", ms()))
+
+    cmd = a[0]
+    btn = a[3] if len(a) > 3 and cmd in ("click", "down", "up") else "left"
+    if cmd == "move":
+        move(a[1], a[2])
+    elif cmd in ("click", "down", "up"):
+        move(a[1], a[2])
+        wl.roundtrip()
+        time.sleep(0.03)
+        if cmd in ("click", "down"):
+            button(btn, True)
+        if cmd == "click":
+            wl.roundtrip()
+            time.sleep(0.05)
+        if cmd in ("click", "up"):
+            button(btn, False)
+    elif cmd == "drag":
+        x1, y1, x2, y2 = (float(v) for v in a[1:5])
+        move(x1, y1)
+        wl.roundtrip()
+        button("left", True)
+        for i in range(1, 21):
+            wl.roundtrip()
+            time.sleep(0.015)
+            move(x1 + (x2 - x1) * i / 20, y1 + (y2 - y1) * i / 20)
+        wl.roundtrip()
+        button("left", False)
+    elif cmd == "scroll":
+        move(a[1], a[2])
+        steps = int(a[3])
+        for _ in range(abs(steps)):
+            v = 15 if steps > 0 else -15
+            wl.send(vp, 5, struct.pack("<I", 0))  # axis_source wheel
+            wl.send(vp, 7, struct.pack("<IIii", ms(), 0, v * 256, 1 if steps > 0 else -1))  # axis_discrete
+            wl.send(vp, 4, struct.pack("<I", ms()))
+            wl.roundtrip()
+            time.sleep(0.02)
+    else:
+        sys.exit(__doc__.strip())
+    wl.roundtrip()
+    wl.send(vp, 8)  # destroy
+    wl.roundtrip()
+
+
+if __name__ == "__main__":
+    main()

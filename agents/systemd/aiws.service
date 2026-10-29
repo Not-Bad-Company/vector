@@ -1,0 +1,12 @@
+[Unit]
+Description=AI workspace (headless output for AI agents, workspace 0)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/aiws daemon
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

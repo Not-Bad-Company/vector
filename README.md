@@ -84,6 +84,10 @@
 Vector is a small suite of desktop apps that share one look and one way of working: Vector Find
 (the file manager) and Vector View (the viewer).
 
+The repo also holds the [agent environment](agents/README.md): a private workspace, browser and
+sandbox for AI coding agents on Hyprland, so they can do real desktop work without ever touching
+your screen, clipboard or files, and without trampling each other's work.
+
 Vector Find is a file manager that tries to be the best of both worlds: a normal graphical file
 manager you can click around in, and a keyboard-driven one that feels like nvim, ranger or oil.nvim.
 It is flat and quiet to look at, never blocks on slow disks, and asks before anything is deleted.

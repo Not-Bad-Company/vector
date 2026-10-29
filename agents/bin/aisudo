@@ -1,0 +1,8 @@
+#!/bin/sh
+# Root commands AI agents may run without a password (allowlist: aisudo --help).
+# Set up once by the owner: sudo ~/.local/bin/aisudo-install
+if [ ! -x /usr/local/libexec/aisudo ]; then
+    echo "aisudo is not installed yet; the owner sets it up once with: sudo ~/.local/bin/aisudo-install" >&2
+    exit 1
+fi
+exec sudo -n /usr/local/libexec/aisudo "$@"

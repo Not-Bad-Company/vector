@@ -1,0 +1,24 @@
+#!/bin/sh
+# One-time setup of aisudo (the allowlisted root commands for AI agents).
+#   sudo ~/.local/bin/aisudo-install           install / update
+#   sudo ~/.local/bin/aisudo-install --remove  take it away again
+# Copies ~/.local/share/aiws/aisudo.py to /usr/local/libexec/aisudo, owned by
+# root (agents can't change it afterwards), and lets your user run only that
+# file without a password. Read aisudo.py first if you like: it is the whole
+# allowlist. Re-run after changing it.
+set -eu
+[ "$(id -u)" = 0 ] || { echo "run with sudo"; exit 1; }
+user=${SUDO_USER:?run with sudo from your own account}
+home=$(getent passwd "$user" | cut -d: -f6)
+if [ "${1:-}" = "--remove" ]; then
+    rm -f /etc/sudoers.d/aisudo /usr/local/libexec/aisudo
+    echo "aisudo removed"
+    exit 0
+fi
+install -D -o root -g root -m 755 "$home/.local/share/aiws/aisudo.py" /usr/local/libexec/aisudo
+tmp=$(mktemp)
+printf '# AI agents: only the allowlisted commands in /usr/local/libexec/aisudo (aisudo-install)\n%s ALL=(root) NOPASSWD: /usr/local/libexec/aisudo\n' "$user" > "$tmp"
+visudo -cf "$tmp" >/dev/null
+install -o root -g root -m 440 "$tmp" /etc/sudoers.d/aisudo
+rm -f "$tmp"
+echo "aisudo installed: agents can now run e.g. 'aisudo systemctl restart AdGuardHome'"

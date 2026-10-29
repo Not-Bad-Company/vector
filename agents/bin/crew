@@ -1,0 +1,1187 @@
+#!/usr/bin/env python3
+"""crew: see and work with the other AI agents on this laptop.
+
+Every Claude Code session (any window, any account) and its sub-agents, plus
+running Codex and Antigravity processes. What each one is doing comes from
+facts, not from what agents say about themselves: Claude Code's own session
+state and the tool calls in its transcript (files edited, commands run,
+sub-agents started).
+
+Hooks (installed in every Claude account) keep agents from clashing:
+  PreToolUse   an edit of a file another live agent edited in the last 30
+               minutes, or a git command that would sweep up, discard or
+               rewrite their uncommitted work, is stopped once with who and
+               what; the same action again goes through
+  PostToolUse  delivers messages mid-turn; says once when another agent
+               starts editing in your repo
+  Stop         wakes an idle session when a message arrives
+
+Storage: ~/.local/share/crew/crew.db (SQLite, WAL).
+"""
+import argparse
+import glob
+import json
+import os
+import re
+import signal
+import sqlite3
+import subprocess
+import sys
+import time
+from datetime import datetime
+
+HOME = os.path.expanduser("~")
+DATA = os.path.join(HOME, ".local/share/crew")
+DB_PATH = os.path.join(DATA, "crew.db")
+# every Claude Code config dir (~/.claude, and extra accounts like ~/.claude-work);
+# an agent's account is shown as its dir name
+ACCOUNTS = {os.path.basename(d): os.path.basename(d).lstrip(".")
+            for d in glob.glob(os.path.join(HOME, ".claude*")) if os.path.isdir(os.path.join(d, "sessions"))
+            or os.path.exists(os.path.join(d, "settings.json"))}
+POLL = 0.5
+EDIT_WINDOW = 1800  # an edit this recent means the file is someone's work in progress
+WARN_AGAIN = 900  # a clash is reported once per this many seconds; a repeat goes through
+TAIL = 600_000  # bytes of a transcript read for its recent activity
+
+
+# ---------------------------------------------------------------- storage
+
+def db():
+    os.makedirs(DATA, exist_ok=True)
+    con = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None)
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA journal_mode=WAL")
+    con.executescript("""
+    CREATE TABLE IF NOT EXISTS messages(
+        id INTEGER PRIMARY KEY, ts REAL, sender TEXT, sender_addr TEXT,
+        recipient TEXT, recipient_addr TEXT, body TEXT, reply_to INTEGER,
+        delivered REAL, kind TEXT);
+    CREATE INDEX IF NOT EXISTS m_rcpt ON messages(recipient_addr, delivered);
+    CREATE TABLE IF NOT EXISTS aliases(sid TEXT PRIMARY KEY, alias TEXT UNIQUE);
+    CREATE TABLE IF NOT EXISTS waits(msg_id INTEGER PRIMARY KEY, pid INTEGER);
+    CREATE TABLE IF NOT EXISTS topics(sid TEXT PRIMARY KEY, text TEXT);
+    CREATE TABLE IF NOT EXISTS doing(sid TEXT PRIMARY KEY, text TEXT, ts REAL);
+    CREATE TABLE IF NOT EXISTS locks(name TEXT PRIMARY KEY, holder TEXT, holder_addr TEXT,
+                                     holder_pid INTEGER, reason TEXT, ts REAL);
+    CREATE TABLE IF NOT EXISTS groups(name TEXT, member TEXT, member_addr TEXT, ts REAL,
+                                      PRIMARY KEY(name, member_addr));
+    CREATE TABLE IF NOT EXISTS warned(sid TEXT, key TEXT, ts REAL, PRIMARY KEY(sid, key));
+    CREATE TABLE IF NOT EXISTS told(sid TEXT, peer TEXT, ts REAL, PRIMARY KEY(sid, peer));
+    CREATE TABLE IF NOT EXISTS bash_start(sid TEXT PRIMARY KEY, ts REAL, repo TEXT);
+    CREATE TABLE IF NOT EXISTS touches(sid TEXT, path TEXT, ts REAL, PRIMARY KEY(sid, path));
+    """)
+    return con
+
+
+# ---------------------------------------------------------------- facts
+
+def pid_alive(pid, proc_start=None):
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            fields = f.read().rsplit(")", 1)[1].split()
+    except (OSError, TypeError):
+        return False
+    return proc_start is None or fields[19] == str(proc_start)
+
+
+def short(p):
+    return p.replace(HOME, "~") if isinstance(p, str) else p
+
+
+def epoch(iso):
+    try:
+        return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+    except (AttributeError, ValueError):
+        return 0.0
+
+
+def ago(ts):
+    d = int(time.time() - (ts or 0))
+    return f"{d}s" if d < 120 else f"{d // 60}m" if d < 7200 else f"{d // 3600}h"
+
+
+def tail_lines(path, n=TAIL):
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - n))
+            return f.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return []
+
+
+def describe_call(name, inp):
+    inp = inp or {}
+    if name in ("Edit", "Write", "Read", "NotebookEdit", "MultiEdit"):
+        return f"{name} {short(inp.get('file_path') or inp.get('notebook_path') or '')}"
+    if name == "Bash":
+        what = inp.get("description") or " ".join(str(inp.get("command", "")).split())
+        return f"Bash: {what[:80]}"
+    if name in ("Grep", "Glob"):
+        return f"{name} {str(inp.get('pattern', ''))[:50]}"
+    if name == "Agent":
+        return f"started sub-agent ({inp.get('subagent_type') or 'general'}): {inp.get('description', '')[:60]}"
+    if name == "Skill":
+        return f"skill {inp.get('skill', '')}"
+    if name.startswith("mcp__"):
+        bits = name.split("__")
+        arg = inp.get("url") or inp.get("element") or inp.get("text") or ""
+        return f"{bits[1]}: {bits[-1]} {str(arg)[:50]}".strip()
+    return name
+
+
+def activity(path, since=None):
+    """Tool calls, edited files, title, last prompt and branch from a transcript tail."""
+    out = {"calls": [], "edits": {}, "title": None, "prompt": None, "branch": None, "last": 0.0}
+    if not path:
+        return out
+    for line in tail_lines(path):
+        if '"ai-title"' in line or '"custom-title"' in line:
+            try:
+                e = json.loads(line)
+                out["title"] = e.get("customTitle") or e.get("aiTitle") or out["title"]
+            except ValueError:
+                pass
+            continue
+        if '"last-prompt"' in line:
+            try:
+                out["prompt"] = json.loads(line).get("lastPrompt") or out["prompt"]
+            except ValueError:
+                pass
+            continue
+        if '"tool_use"' not in line and '"timestamp"' not in line:
+            continue
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        ts = epoch(e.get("timestamp"))
+        if ts:
+            out["last"] = max(out["last"], ts)
+        out["branch"] = e.get("gitBranch") or out["branch"]
+        msg = e.get("message") or {}
+        if e.get("type") != "assistant" or not isinstance(msg.get("content"), list):
+            continue
+        for c in msg["content"]:
+            if c.get("type") != "tool_use":
+                continue
+            name, inp = c.get("name", ""), c.get("input") or {}
+            if since and ts < since:
+                continue
+            out["calls"].append((ts, describe_call(name, inp)))
+            p = inp.get("file_path") or inp.get("notebook_path")
+            if name in ("Edit", "Write", "NotebookEdit", "MultiEdit") and p:
+                out["edits"][os.path.realpath(p)] = ts
+    return out
+
+
+def subagents(tp, fresh=600):
+    """Sub-agents of a session: running ones (and recently finished with `fresh`)."""
+    out = []
+    if not tp:
+        return out
+    for meta in glob.glob(tp[:-len(".jsonl")] + "/subagents/*.meta.json"):
+        jl = meta[:-len(".meta.json")] + ".jsonl"
+        try:
+            m = json.load(open(meta))
+            mt = os.path.getmtime(jl)
+        except (OSError, ValueError):
+            continue
+        running = not m.get("finished") and time.time() - mt < 3600
+        if running or time.time() - mt < fresh:
+            out.append({"id": os.path.basename(jl)[len("agent-"):-len(".jsonl")], "type": m.get("agentType"),
+                        "model": m.get("model"), "desc": m.get("description"), "running": running,
+                        "transcript": jl, "mtime": mt})
+    return sorted(out, key=lambda x: x["mtime"])
+
+
+def sessions(con=None, deep=True):
+    """Live Claude Code sessions with what they are doing."""
+    con = con or db()
+    aliases = {r["sid"]: r["alias"] for r in con.execute("SELECT * FROM aliases")}
+    topics = {r["sid"]: r["text"] for r in con.execute("SELECT * FROM topics")}
+    doing = {r["sid"]: r for r in con.execute("SELECT * FROM doing")}
+    out, seen = [], set()
+    for f in glob.glob(os.path.join(HOME, ".claude*/sessions/*.json")):
+        try:
+            s = json.load(open(f))
+        except (OSError, ValueError):
+            continue
+        sid, pid = s.get("sessionId"), s.get("pid")
+        if not sid or sid in seen or not pid_alive(pid, s.get("procStart")):
+            continue
+        seen.add(sid)
+        acct = f.split("/")[-3]
+        cwd = s.get("cwd", "")
+        tp = os.path.join(HOME, acct, "projects", re.sub(r"[^A-Za-z0-9]", "-", cwd), sid + ".jsonl")
+        if not os.path.exists(tp):
+            hits = glob.glob(os.path.join(HOME, acct, "projects", "*", sid + ".jsonl"))
+            tp = hits[0] if hits else None
+        x = {"sid": sid, "pid": pid, "name": aliases.get(sid) or s.get("name") or sid[:8],
+             "account": ACCOUNTS.get(acct, acct), "cwd": cwd, "kind": s.get("kind", "?"),
+             "status": s.get("status", "?"), "status_ts": (s.get("statusUpdatedAt") or 0) / 1000,
+             "started": (s.get("startedAt") or 0) / 1000, "transcript": tp, "topic": topics.get(sid)}
+        d = doing.get(sid)
+        # a self-reported status goes stale: only while busy and under 30 minutes old
+        x["doing"] = d["text"] if d and x["status"] == "busy" and time.time() - d["ts"] < 1800 else None
+        if deep:
+            a = activity(tp, since=time.time() - EDIT_WINDOW)
+            x.update(title=x["topic"] or a["title"], prompt=a["prompt"], branch=a["branch"], calls=a["calls"],
+                     edits=a["edits"], last=a["last"] or x["status_ts"], subs=subagents(tp))
+            for sa in x["subs"]:
+                sub = activity(sa["transcript"], since=time.time() - EDIT_WINDOW)
+                sa["calls"], sa["edits"] = sub["calls"], sub["edits"]
+                for p, ts in sub["edits"].items():
+                    x["edits"][p] = max(ts, x["edits"].get(p, 0))
+        out.append(x)
+    if deep:
+        cut = time.time() - EDIT_WINDOW
+        con.execute("DELETE FROM touches WHERE ts < ?", (cut,))
+        by = {x["sid"]: x for x in out}
+        for r in con.execute("SELECT * FROM touches"):
+            if r["sid"] in by:
+                e = by[r["sid"]]["edits"]
+                e[r["path"]] = max(r["ts"], e.get(r["path"], 0))
+    out.sort(key=lambda x: x["started"])
+    return out
+
+
+def externals():
+    """Codex and Antigravity processes, with the Claude session that started them if any."""
+    out = []
+    claude_pids = {}
+    for f in glob.glob(os.path.join(HOME, ".claude*/sessions/*.json")):
+        try:
+            s = json.load(open(f))
+            claude_pids[s["pid"]] = s.get("name") or s["sessionId"][:8]
+        except (OSError, ValueError, KeyError):
+            pass
+    for d in os.listdir("/proc"):
+        if not d.isdigit():
+            continue
+        try:
+            argv = open(f"/proc/{d}/cmdline", "rb").read().split(b"\0")
+            comm = open(f"/proc/{d}/comm").read().strip()
+        except OSError:
+            continue
+        args = [a.decode(errors="replace") for a in argv if a]
+        if not args:
+            continue
+        exe = os.path.basename(args[0])
+        tool = None
+        if comm == "codex" or exe == "codex" or (exe in ("node", "bun") and len(args) > 1 and
+                                                  os.path.basename(args[1]) == "codex"):
+            tool = "codex"
+        elif comm == "agy" or exe == "agy":
+            tool = "antigravity"
+        if not tool:
+            continue
+        pid = int(d)
+        # skip helper children of another codex/agy process
+        try:
+            ppid = int(open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()[1])
+            pcomm = open(f"/proc/{ppid}/comm").read().strip()
+        except (OSError, ValueError):
+            ppid, pcomm = 0, ""
+        if pcomm in ("codex", "agy"):
+            continue
+        owner, p = None, pid
+        for _ in range(12):  # walk up to a Claude session that started it
+            try:
+                p = int(open(f"/proc/{p}/stat").read().rsplit(")", 1)[1].split()[1])
+            except (OSError, ValueError):
+                break
+            if p in claude_pids:
+                owner = claude_pids[p]
+                break
+            if p <= 1:
+                break
+        try:
+            cwd = os.readlink(f"/proc/{pid}/cwd")
+            start = os.path.getmtime(f"/proc/{pid}")
+        except OSError:
+            cwd, start = "?", 0
+        out.append({"tool": tool, "pid": pid, "cwd": cwd, "owner": owner, "started": start,
+                    "mode": "exec" if "exec" in args else "interactive"})
+    return out
+
+
+_repo_cache = {}
+
+
+def repo_root(path):
+    d = path if os.path.isdir(path) else os.path.dirname(path)
+    if d not in _repo_cache:
+        try:
+            r = subprocess.run(["git", "-C", d, "rev-parse", "--show-toplevel"],
+                               capture_output=True, text=True, timeout=3)
+            _repo_cache[d] = r.stdout.strip() or None
+        except (OSError, subprocess.SubprocessError):
+            _repo_cache[d] = None
+    return _repo_cache[d]
+
+
+def dirty(repo):
+    try:
+        r = subprocess.run(["git", "-C", repo, "status", "--porcelain", "-z"],
+                           capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    out = set()
+    for entry in r.stdout.split("\0"):
+        if len(entry) > 3:
+            out.add(os.path.realpath(os.path.join(repo, entry[3:])))
+    return out
+
+
+def me():
+    return os.environ.get("CLAUDE_CODE_SESSION_ID")
+
+
+def resolve(target, live):
+    base, _, sub = target.partition("/")
+    t = base.lower()
+    hit = [s for s in live if t == s["name"].lower() or (len(t) >= 6 and s["sid"].startswith(t))]
+    if not hit:
+        hit = [s for s in live if t in s["name"].lower()]
+    if not hit:
+        words = [w for w in re.findall(r"\w+", t) if len(w) > 2]
+        scored = sorted(((sum(" ".join(str(s.get(k) or "") for k in ("title", "cwd", "prompt")).lower().count(w)
+                              for w in words), s) for s in live), key=lambda z: -z[0])
+        hit = [s for n, s in scored if n][:1]
+    if len(hit) != 1:
+        sys.exit(f"crew: {'no live agent matches' if not hit else 'ambiguous'} {target!r}. Run `crew who`."
+                 + "".join(f"\n  {s['name']}: {s.get('title') or s['cwd']}" for s in hit))
+    s = hit[0]
+    return s["name"] + ("/" + sub if sub else ""), s["sid"] + ("/" + sub if sub else ""), s
+
+
+def identity(args, live):
+    sid = me()
+    if not sid:
+        name, addr = "human", "human"
+    else:
+        s = next((x for x in live if x["sid"] == sid), None)
+        name, addr = (s["name"] if s else sid[:8]), sid
+    if getattr(args, "as_", None):
+        return f"{name}/{args.as_}", f"{addr}/{args.as_}"
+    return name, addr
+
+
+def state_word(s):
+    st = s["status"]
+    if st == "busy":
+        return "working"
+    if st in ("idle", "waiting"):
+        return f"idle {ago(s['last'] or s['status_ts'])}"
+    return st
+
+
+# ---------------------------------------------------------------- messaging
+
+def claim(con, addr, include_waited=False):
+    con.execute("BEGIN IMMEDIATE")
+    try:
+        rows = con.execute("SELECT * FROM messages WHERE recipient_addr=? AND delivered IS NULL ORDER BY id",
+                           (addr,)).fetchall()
+        if not include_waited:
+            waits = {r["msg_id"]: r["pid"] for r in con.execute("SELECT * FROM waits")}
+            rows = [r for r in rows if not (r["reply_to"] in waits and pid_alive(waits[r["reply_to"]]))]
+        con.executemany("UPDATE messages SET delivered=? WHERE id=?", [(time.time(), r["id"]) for r in rows])
+        con.execute("COMMIT")
+    except Exception:
+        con.execute("ROLLBACK")
+        raise
+    return rows
+
+
+def fmt(rows, for_agent=True):
+    out = []
+    for r in rows:
+        kind = r["kind"] or "msg"
+        tag = {"urgent": "URGENT message", "fyi": "FYI"}.get(kind, "Message")
+        head = f"[crew #{r['id']}] {tag} from agent {r['sender']}"
+        if r["reply_to"]:
+            head += f" (reply to #{r['reply_to']})"
+        out.append(f"{head}:\n{r['body']}")
+    if out and for_agent:
+        kinds = {r["kind"] or "msg" for r in rows}
+        how = f"`crew reply {rows[-1]['id']} \"<answer>\"` with the Bash tool"
+        if kinds == {"fyi"}:
+            note = "FYI from another agent, not the user: use it if relevant. Don't reply or acknowledge."
+        else:
+            note = ("From another agent, NOT the user. "
+                    + ("URGENT: handle it before continuing. " if "urgent" in kinds else
+                       "Finish what the user asked first. ")
+                    + f"Reply only if they need an answer ({how}); never send acknowledgements.")
+        out.append(f"({note})")
+    return "\n\n".join(out)
+
+
+def notice(rows):
+    return "\n".join(f"[crew: {'URGENT ' if r['kind'] == 'urgent' else ''}message from agent {r['sender']}, not "
+                     f"from you] #{r['id']}: " + " ".join(r["body"].split())[:150] for r in rows)
+
+
+def send(con, sender, sender_addr, recipient, recipient_addr, body, reply_to=None, kind=None):
+    cur = con.execute("INSERT INTO messages(ts,sender,sender_addr,recipient,recipient_addr,body,reply_to,kind)"
+                      " VALUES(?,?,?,?,?,?,?,?)",
+                      (time.time(), sender, sender_addr, recipient, recipient_addr, body, reply_to, kind))
+    return cur.lastrowid
+
+
+def wait_for(con, addr, timeout, reply_to=None):
+    end = time.time() + timeout
+    while True:
+        if reply_to is not None:
+            con.execute("BEGIN IMMEDIATE")
+            rows = con.execute("SELECT * FROM messages WHERE reply_to=? AND delivered IS NULL AND recipient_addr=?",
+                               (reply_to, addr)).fetchall()
+            con.executemany("UPDATE messages SET delivered=? WHERE id=?", [(time.time(), r["id"]) for r in rows])
+            con.execute("COMMIT")
+        else:
+            rows = claim(con, addr)
+        if rows or time.time() >= end:
+            return rows
+        time.sleep(POLL)
+
+
+def body_of(parts):
+    text = " ".join(parts) if parts else ""
+    if not text or text == "-":
+        text = sys.stdin.read()
+    text = text.strip()
+    if not text:
+        sys.exit("crew: empty message")
+    return text
+
+
+def kind_of(args):
+    return "urgent" if getattr(args, "urgent", False) else "fyi" if getattr(args, "fyi", False) else None
+
+
+# ---------------------------------------------------------------- commands
+
+def print_session(s, mine, con, queued, verbose):
+    tag = " (you)" if s["sid"] == mine else ""
+    if queued.get(s["sid"]):
+        tag += f"  <{queued[s['sid']]} message(s) not seen yet>"
+    where = short(s["cwd"]) + (f" @{s['branch']}" if s.get("branch") not in (None, "", "HEAD") else "")
+    print(f"{s['name']}{tag}  [{s['account']}, {state_word(s)}, {where}]")
+    print(f"    task: {s.get('title') or '-'}")
+    if s["doing"]:
+        print(f"    says: {s['doing']}")
+    calls = s.get("calls") or []
+    if calls and s["status"] == "busy" or (calls and verbose):
+        for ts, what in calls[-(6 if verbose else 3):]:
+            print(f"    {ago(ts):>4} ago  {what}")
+    edits = sorted((s.get("edits") or {}).items(), key=lambda kv: -kv[1])
+    if edits:
+        shown = ", ".join(short(p) for p, _ in edits[:6])
+        print(f"    edited (30m): {shown}" + (f" +{len(edits) - 6}" if len(edits) > 6 else ""))
+    for sa in s.get("subs") or []:
+        state = "running" if sa["running"] else f"finished {ago(sa['mtime'])} ago"
+        last = sa["calls"][-1][1] if sa.get("calls") else ""
+        print(f"    sub-agent {sa['type']} ({sa['model'] or 'default'}), {state}: {sa['desc'] or '-'}"
+              + (f"  · last: {last}" if last and sa["running"] else ""))
+    for l in con.execute("SELECT * FROM locks WHERE holder_addr LIKE ?", (s["sid"] + "%",)):
+        print(f"    holds lock '{l['name']}': {l['reason'] or '-'} ({ago(l['ts'])})")
+    if verbose and s.get("prompt"):
+        print(f"    last prompt: {' '.join(s['prompt'].split())[:160]}")
+
+
+def cmd_who(args):
+    con = db()
+    live = sessions(con)
+    if args.json:
+        print(json.dumps({"claude": live, "external": externals()}, indent=1, default=str))
+        return
+    mine = me()
+    queued = {r[0]: r[1] for r in con.execute(
+        "SELECT recipient_addr, count(*) FROM messages WHERE delivered IS NULL GROUP BY recipient_addr")}
+    for s in live:
+        print_session(s, mine, con, queued, args.verbose)
+    ext = externals()
+    for e in ext:
+        by = f", started by {e['owner']}" if e["owner"] else ""
+        print(f"{e['tool']} pid {e['pid']}  [{e['mode']}{by}, {short(e['cwd'])}, running {ago(e['started'])}]")
+    if not live and not ext:
+        print("no agents running")
+
+
+def cmd_show(args):
+    con = db()
+    live = sessions(con)
+    _, _, s = resolve(args.agent, live) if args.agent not in ("me", "self") else \
+        (None, None, next((x for x in live if x["sid"] == me()), None))
+    if not s:
+        sys.exit("crew: not inside a Claude Code session")
+    a = activity(s["transcript"])
+    s["calls"] = a["calls"]
+    print_session(s, me(), con, {}, True)
+    print("  recent actions:")
+    for ts, what in a["calls"][-args.n:]:
+        print(f"    {time.strftime('%H:%M:%S', time.localtime(ts))}  {what}")
+
+
+def watch_lines(path, pos):
+    """New tool calls and short assistant notes since byte offset pos."""
+    out = []
+    try:
+        with open(path, "rb") as f:
+            f.seek(pos)
+            data = f.read()
+    except OSError:
+        return out, pos
+    cut = data.rfind(b"\n") + 1
+    for line in data[:cut].decode("utf-8", "replace").splitlines():
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        ts = epoch(e.get("timestamp"))
+        msg = e.get("message") or {}
+        content = msg.get("content")
+        if e.get("type") == "assistant" and isinstance(content, list):
+            for c in content:
+                if c.get("type") == "tool_use":
+                    out.append((ts, describe_call(c.get("name", ""), c.get("input"))))
+                elif c.get("type") == "text" and c.get("text", "").strip():
+                    out.append((ts, "says: " + " ".join(c["text"].split())[:160]))
+        elif e.get("type") == "user" and isinstance(content, list):
+            for c in content:
+                if c.get("type") == "tool_result" and c.get("is_error"):
+                    txt = c.get("content")
+                    txt = txt if isinstance(txt, str) else json.dumps(txt)
+                    out.append((ts, "error: " + " ".join(txt.split())[:160]))
+    return out, pos + cut
+
+
+def cmd_watch(args):
+    con = db()
+    live = sessions(con)
+    if args.agent in ("me", "self"):
+        s = next((x for x in live if x["sid"] == me()), None)
+        if not s:
+            sys.exit("crew: not inside a Claude Code session")
+    else:
+        _, _, s = resolve(args.agent, live)
+    files = {}  # path -> (label, offset)
+    end = time.time() + args.seconds if args.seconds else None
+    first = True
+    while end is None or time.time() < end:
+        if not args.subagents_only and s["transcript"] and s["transcript"] not in files:
+            files[s["transcript"]] = (s["name"], os.path.getsize(s["transcript"]) if not args.history else 0)
+        for sa in subagents(s["transcript"], fresh=10 ** 9 if args.history and first else 3600):
+            if sa["transcript"] not in files:
+                young = time.time() - os.path.getctime(sa["transcript"]) < 600
+                start = 0 if (not first or args.history or young) else os.path.getsize(sa["transcript"])
+                files[sa["transcript"]] = (f"{s['name']}/{sa['type']}:{(sa['desc'] or sa['id'])[:30]}", start)
+                if not first:
+                    print(f"--- sub-agent started: {sa['type']} ({sa['model'] or 'default'}): {sa['desc']}",
+                          flush=True)
+        first = False
+        for path, (lbl, pos) in list(files.items()):
+            lines, pos = watch_lines(path, pos)
+            files[path] = (lbl, pos)
+            for ts, what in lines:
+                print(f"{time.strftime('%H:%M:%S', time.localtime(ts or time.time()))} [{lbl}] {what}", flush=True)
+        time.sleep(1)
+
+
+def cmd_send(args):
+    con = db()
+    live = sessions(con, deep=False)
+    sender, sender_addr = identity(args, live)
+    body = body_of(args.message)
+    if args.to in ("all", "*"):
+        targets = [(s["name"], s["sid"]) for s in live if s["sid"] != me()]
+    elif args.to.startswith("@"):
+        targets = [(f"{r['member']} (via @{r['name']})", r["member_addr"]) for r in con.execute(
+            "SELECT * FROM groups WHERE name=? AND member_addr!=? ORDER BY ts", (args.to[1:].lower(), sender_addr))]
+        if not targets:
+            sys.exit(f"crew: group {args.to} has no other members (crew group list)")
+    elif args.to == "parent":
+        if "/" not in sender_addr:
+            sys.exit("crew: 'parent' only works with --as (from a sub-agent)")
+        targets = [(sender.split("/")[0], sender_addr.split("/")[0])]
+    else:
+        n, a, _ = resolve(args.to, sessions(con))
+        targets = [(n, a)]
+    ids = []
+    for name, addr in targets:
+        ids.append(send(con, sender, sender_addr, name, addr, body, args.reply_to, kind_of(args)))
+        print(f"sent #{ids[-1]} to {name}")
+    if args.wait and len(ids) == 1:
+        con.execute("INSERT OR REPLACE INTO waits VALUES(?,?)", (ids[0], os.getpid()))
+        try:
+            rows = wait_for(con, sender_addr, args.wait, reply_to=ids[0])
+        finally:
+            con.execute("DELETE FROM waits WHERE msg_id=?", (ids[0],))
+        if rows:
+            print(fmt(rows))
+        else:
+            sys.exit(f"crew: no reply to #{ids[0]} within {args.wait:g}s (it may still come in)")
+
+
+def cmd_ask(args):
+    args.wait, args.reply_to = args.timeout, None
+    cmd_send(args)
+
+
+def cmd_reply(args):
+    con = db()
+    orig = con.execute("SELECT * FROM messages WHERE id=?", (args.id,)).fetchone()
+    if not orig:
+        sys.exit(f"crew: no message #{args.id}")
+    sender, sender_addr = identity(args, sessions(con, deep=False))
+    mid = send(con, sender, sender_addr, orig["sender"], orig["sender_addr"], body_of(args.message), orig["id"],
+               kind_of(args))
+    print(f"sent #{mid} to {orig['sender']}")
+
+
+def cmd_status(args):
+    con = db()
+    for i in (int(a.lstrip("#")) for a in args.ids):
+        r = con.execute("SELECT * FROM messages WHERE id=?", (i,)).fetchone()
+        if not r:
+            print(f"#{i}: no such message")
+        elif r["delivered"]:
+            replies = [x["id"] for x in con.execute("SELECT id FROM messages WHERE reply_to=?", (i,))]
+            print(f"#{i} to {r['recipient']}: read {ago(r['delivered'])} ago"
+                  + (f"; replied with #{', #'.join(map(str, replies))}" if replies else "; no reply yet"))
+        else:
+            print(f"#{i} to {r['recipient']}: not seen yet ({ago(r['ts'])}); it arrives after their current"
+                  " tool call or when they go idle")
+
+
+def cmd_inbox(args):
+    con = db()
+    _, addr = identity(args, sessions(con, deep=False))
+    if args.all:
+        for r in con.execute("SELECT * FROM messages WHERE recipient_addr=? OR sender_addr=? ORDER BY id DESC"
+                             " LIMIT ?", (addr, addr, args.n)).fetchall()[::-1]:
+            print(f"#{r['id']} {time.strftime('%H:%M', time.localtime(r['ts']))} "
+                  f"[{'read' if r['delivered'] else 'unseen'}] {r['sender']} -> {r['recipient']}: {r['body']}")
+        return
+    rows = claim(con, addr, include_waited=True)
+    print(fmt(rows) if rows else "no new messages")
+
+
+def cmd_wait(args):
+    con = db()
+    _, addr = identity(args, sessions(con, deep=False))
+    rows = wait_for(con, addr, args.timeout)
+    if not rows:
+        sys.exit(f"crew: nothing within {args.timeout:g}s")
+    print(fmt(rows))
+
+
+def cmd_doing(args):
+    sid = me() or sys.exit("crew: not inside a Claude Code session")
+    con = db()
+    text = " ".join(args.text).strip()
+    if text in ("", "-", "clear"):
+        con.execute("DELETE FROM doing WHERE sid=?", (sid,))
+        print("cleared")
+    else:
+        con.execute("INSERT OR REPLACE INTO doing VALUES(?,?,?)", (sid, text, time.time()))
+        print(f"note set (shown while you work, for 30 minutes): {text}")
+
+
+def cmd_topic(args):
+    sid = me() or sys.exit("crew: not inside a Claude Code session")
+    con = db()
+    text = " ".join(args.text).strip()
+    if text in ("", "-", "clear"):
+        con.execute("DELETE FROM topics WHERE sid=?", (sid,))
+        print("task reset to Claude's own session title")
+    else:
+        con.execute("INSERT OR REPLACE INTO topics VALUES(?,?)", (sid, text))
+        print(f"task set: {text}")
+
+
+def cmd_name(args):
+    sid = me() or sys.exit("crew: not inside a Claude Code session")
+    alias = args.alias.strip().replace(" ", "-")
+    if "/" in alias:
+        sys.exit("crew: a name cannot contain '/'")
+    try:
+        db().execute("INSERT OR REPLACE INTO aliases VALUES(?,?)", (sid, alias))
+    except sqlite3.IntegrityError:
+        sys.exit(f"crew: {alias!r} is taken")
+    print(f"you are now {alias!r}")
+
+
+def cmd_whoami(args):
+    live = sessions(db(), deep=False)
+    name, _ = identity(args, live)
+    print(f"you are '{name}'; your sub-agents are '{name}/<label>' (they pass --as <label>)")
+
+
+def live_locks(con):
+    out = []
+    for l in con.execute("SELECT * FROM locks ORDER BY name").fetchall():
+        if l["holder_pid"] and not pid_alive(l["holder_pid"]):
+            con.execute("DELETE FROM locks WHERE name=? AND holder_pid=?", (l["name"], l["holder_pid"]))
+            continue
+        out.append(l)
+    return out
+
+
+def cmd_lock(args):
+    con = db()
+    live = sessions(con, deep=False)
+    holder, addr = identity(args, live)
+    pid = next((x["pid"] for x in live if x["sid"] == me()), None)
+    end = time.time() + (args.wait or 0)
+    said = False
+    while True:
+        con.execute("BEGIN IMMEDIATE")
+        live_locks(con)
+        cur = con.execute("SELECT * FROM locks WHERE name=?", (args.name,)).fetchone()
+        if not cur or cur["holder_addr"] == addr:
+            con.execute("INSERT OR REPLACE INTO locks VALUES(?,?,?,?,?,?)",
+                        (args.name, holder, addr, pid, args.reason, cur["ts"] if cur else time.time()))
+            con.execute("COMMIT")
+            print(f"lock '{args.name}' is yours; `crew unlock {args.name}` when done (freed if your session ends)")
+            return
+        con.execute("COMMIT")
+        if not args.wait or time.time() >= end:
+            sys.exit(f"crew: lock '{args.name}' held by {cur['holder']} for {ago(cur['ts'])}: {cur['reason'] or '-'}"
+                     + ("" if args.wait else f". Wait: crew lock {args.name} --wait 3600"))
+        if not said:
+            print(f"waiting for '{args.name}' (held by {cur['holder']})", flush=True)
+            said = True
+        time.sleep(2)
+
+
+def cmd_unlock(args):
+    con = db()
+    _, addr = identity(args, sessions(con, deep=False))
+    cur = con.execute("SELECT * FROM locks WHERE name=?", (args.name,)).fetchone()
+    if not cur:
+        print(f"lock '{args.name}' is not held")
+    elif cur["holder_addr"] != addr and not args.force:
+        sys.exit(f"crew: '{args.name}' is held by {cur['holder']}, not you (--force breaks it)")
+    else:
+        con.execute("DELETE FROM locks WHERE name=?", (args.name,))
+        print(f"lock '{args.name}' released")
+
+
+def cmd_locks(args):
+    ls = live_locks(db())
+    for l in ls:
+        print(f"{l['name']}: {l['holder']} for {ago(l['ts'])} - {l['reason'] or '-'}")
+    if not ls:
+        print("no locks held")
+
+
+def cmd_group(args):
+    con = db()
+    live = sessions(con, deep=False)
+    g = args.name.lstrip("@").lower() if args.name else None
+    if args.action == "list":
+        rows = con.execute("SELECT * FROM groups" + (" WHERE name=?" if g else "") + " ORDER BY name, ts",
+                           (g,) if g else ()).fetchall()
+        for name in dict.fromkeys(r["name"] for r in rows):
+            print(f"@{name}: " + ", ".join(r["member"] for r in rows if r["name"] == name))
+        if not rows:
+            print("no groups")
+        return
+    if not g:
+        sys.exit("crew: group name required")
+    if args.action == "delete":
+        con.execute("DELETE FROM groups WHERE name=?", (g,))
+        print(f"deleted @{g}")
+        return
+    if args.action == "leave":
+        con.execute("DELETE FROM groups WHERE name=? AND member_addr=?", (g, identity(args, live)[1]))
+        print(f"left @{g}")
+        return
+    full = sessions(con)
+    members = [identity(args, live) if m in ("me", "self") else resolve(m, full)[:2] for m in (args.members or ["me"])]
+    for name, addr in members:
+        if args.action == "remove":
+            con.execute("DELETE FROM groups WHERE name=? AND member_addr=?", (g, addr))
+        else:
+            con.execute("INSERT OR REPLACE INTO groups VALUES(?,?,?,?)", (g, name, addr, time.time()))
+    print(f"{'removed from' if args.action == 'remove' else 'in'} @{g}: " + ", ".join(n for n, _ in members))
+
+
+# ---------------------------------------------------------------- clash checks
+
+GIT_RISKY = [
+    (r"\bgit\b[^;&|]*\badd\s+(-A|--all|\.(\s|$)|-u\b|--update)", "stage everything, including their files"),
+    (r"\bgit\b[^;&|]*\bcommit\b[^;&|]*\s-[a-zA-Z]*a", "commit every modified file, including theirs"),
+    (r"\bgit\b[^;&|]*\bstash(\s+(push|save)|\s*($|[;&|]))", "stash away their uncommitted work"),
+    (r"\bgit\b[^;&|]*\breset\b[^;&|]*--hard", "throw away their uncommitted work"),
+    (r"\bgit\b[^;&|]*\bcheckout\s+(--\s|\.(\s|$))", "throw away their uncommitted changes"),
+    (r"\bgit\b[^;&|]*\brestore\b(?![^;&|]*--staged)", "throw away their uncommitted changes"),
+    (r"\bgit\b[^;&|]*\bclean\b[^;&|]*-[a-zA-Z]*f", "delete their untracked files"),
+    (r"\bgit\b[^;&|]*\b(rebase|switch|checkout\s+-b|checkout\s+[\w./-]+\s*($|[;&|]))",
+     "change the branch or history under them"),
+    (r"\bgit\b[^;&|]*\bpush\b[^;&|]*(-f\b|--force)", "force-push over shared history"),
+]
+
+
+def others_edits(con, sid, live=None):
+    """{path: (agent name, ts)} edited by other live agents (and their sub-agents) in the last 30 minutes."""
+    out = {}
+    for s in live or sessions(con):
+        if s["sid"] == sid:
+            continue
+        for p, ts in (s.get("edits") or {}).items():
+            if time.time() - ts < EDIT_WINDOW and (p not in out or out[p][1] < ts):
+                out[p] = (s, ts)
+    return out
+
+
+def warn_once(con, sid, key):
+    row = con.execute("SELECT ts FROM warned WHERE sid=? AND key=?", (sid, key)).fetchone()
+    if row and time.time() - row["ts"] < WARN_AGAIN:
+        return False
+    con.execute("INSERT OR REPLACE INTO warned VALUES(?,?,?)", (sid, key, time.time()))
+    return True
+
+
+def deny(reason):
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                             "permissionDecisionReason": reason}}))
+    sys.exit(0)
+
+
+def who_line(s):
+    bits = [s["account"], state_word(s)]
+    task = s.get("doing") or s.get("title")
+    return f"{s['name']} ({', '.join(bits)})" + (f", task: {task}" if task else "")
+
+
+def command_dir(cmd, cwd):
+    m = re.search(r"\bgit\s+-C\s+(\S+)", cmd) or re.search(r"(?:^|&&|;)\s*cd\s+(\S+)", cmd)
+    where = os.path.expanduser(m.group(1).strip("'\"")) if m else cwd or os.getcwd()
+    if not os.path.isabs(where):
+        where = os.path.join(cwd or os.getcwd(), where)
+    return where
+
+
+def bash_started(con, sid, data):
+    """Remember when a Bash call started and in which repo, to credit the files it changes."""
+    repo = repo_root(command_dir((data.get("tool_input") or {}).get("command", ""), data.get("cwd")))
+    if repo:
+        con.execute("INSERT OR REPLACE INTO bash_start VALUES(?,?,?)", (sid, time.time() - 1, repo))
+
+
+def bash_finished(con, sid):
+    row = con.execute("SELECT * FROM bash_start WHERE sid=?", (sid,)).fetchone()
+    if not row:
+        return
+    con.execute("DELETE FROM bash_start WHERE sid=?", (sid,))
+    now = time.time()
+    for p in dirty(row["repo"]):
+        try:
+            if os.path.getmtime(p) >= row["ts"]:
+                con.execute("INSERT OR REPLACE INTO touches VALUES(?,?,?)", (sid, p, now))
+        except OSError:
+            pass
+
+
+def pre_tool(con, sid, data):
+    tool = data.get("tool_name", "")
+    inp = data.get("tool_input") or {}
+    if tool in ("Edit", "Write", "NotebookEdit", "MultiEdit"):
+        p = inp.get("file_path") or inp.get("notebook_path")
+        if not p:
+            return
+        p = os.path.realpath(p)
+        theirs = others_edits(con, sid).get(p)
+        if theirs and warn_once(con, sid, "edit:" + p):
+            s, ts = theirs
+            deny(f"crew: {who_line(s)} edited {short(p)} {ago(ts)} ago and may still be working on it. "
+                 f"Editing it now can overwrite or tangle their changes. Options: work on something else first; "
+                 f"ask them (`crew ask {s['name']} \"...\"`); or, if you're sure it's fine (their change is done, "
+                 f"or you agreed), repeat this exact edit: the next attempt goes through.")
+    elif tool == "Bash":
+        cmd = inp.get("command", "")
+        if not data.get("agent_id"):
+            bash_started(con, sid, data)
+        risky = [why for rx, why in GIT_RISKY if re.search(rx, cmd)]
+        if not risky:
+            return
+        repo = repo_root(command_dir(cmd, data.get("cwd")))
+        if not repo:
+            return
+        live = sessions(con)
+        mine = next((x for x in live if x["sid"] == sid), None)
+        my_edits = set((mine or {}).get("edits") or {})
+        changed = dirty(repo)
+        theirs = {p: v for p, v in others_edits(con, sid, live).items()
+                  if p.startswith(repo + "/") and p in changed and p not in my_edits}
+        if theirs and warn_once(con, sid, "git:" + repo + ":" + risky[0]):
+            agents = {}
+            for p, (s, _) in theirs.items():
+                agents.setdefault(s["name"], (s, []))[1].append(short(p))
+            lines = "\n".join(f"- {who_line(s)}: {', '.join(ps[:8])}" for s, ps in agents.values())
+            deny(f"crew: this would {risky[0]}. Other agents have uncommitted work in {short(repo)}:\n{lines}\n"
+                 "Stage and commit only your own files by path (`git add path/a path/b`, then `git commit`), "
+                 "or ask them first. If this is really intended, run the same command again: it goes through.")
+
+
+def peers_in_repo(con, sid, cwd):
+    """Once per peer: another agent started editing in this repo."""
+    repo = repo_root(cwd) if cwd else None
+    if not repo:
+        return []
+    out = []
+    for p, (s, ts) in others_edits(con, sid).items():
+        if not p.startswith(repo + "/"):
+            continue
+        row = con.execute("SELECT ts FROM told WHERE sid=? AND peer=?", (sid, s["sid"])).fetchone()
+        if row:
+            continue
+        con.execute("INSERT OR REPLACE INTO told VALUES(?,?,?)", (sid, s["sid"], time.time()))
+        out.append(f"- {who_line(s)} is editing in {short(repo)} (e.g. {short(p)}, {ago(ts)} ago)")
+    return out
+
+
+# ---------------------------------------------------------------- hooks
+
+def waiter_pidfile(sid):
+    return os.path.join(DATA, f"waiter-{sid}.pid")
+
+
+def cmd_hook(args):
+    try:
+        data = json.load(sys.stdin)
+    except ValueError:
+        data = {}
+    sid = data.get("session_id") or me()
+    if not sid:
+        return
+    con = db()
+    ev = args.event
+
+    if ev == "session-start":
+        live = sessions(con)
+        s = next((x for x in live if x["sid"] == sid), None)
+        name = s["name"] if s else sid[:8]
+        cwd = data.get("cwd") or (s["cwd"] if s else os.getcwd())
+        repo = repo_root(cwd)
+        near = [x for x in live if x["sid"] != sid and (
+            (repo and any(p.startswith(repo + "/") for p in x.get("edits", {})))
+            or (repo and repo_root(x["cwd"]) == repo))]
+        ctx = (f"crew: you are '{name}'. Other AI agents may work on this laptop at the same time. `crew who` "
+               "shows what each is actually doing (from their real actions). Clashes are caught for you: an edit "
+               "of a file another agent is working on, or a git command that would sweep up or discard their "
+               "work, is stopped once with the details. Messages from agents arrive by themselves. Only message "
+               "another agent when you need something from them or a crew warning tells you to; never to "
+               "announce, report progress or acknowledge. Don't claim what other agents are doing unless "
+               "`crew who` shows it.")
+        if near:
+            ctx += "\nAgents in this repo right now:\n" + "\n".join("- " + who_line(x) for x in near)
+            for x in near:
+                con.execute("INSERT OR REPLACE INTO told VALUES(?,?,?)", (sid, x["sid"], time.time()))
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": ctx}}))
+        return
+
+    if ev == "pre-tool":
+        pre_tool(con, sid, data)
+        return
+
+    if ev == "prompt":
+        return
+
+    if ev == "post-tool":
+        if data.get("agent_id"):
+            return
+        if data.get("tool_name") == "Bash":
+            bash_finished(con, sid)
+        rows = claim(con, sid)
+        ctx, shown = [], []
+        if rows:
+            ctx.append(fmt(rows))
+            shown.append(notice(rows))
+        if data.get("tool_name") in ("Edit", "Write", "NotebookEdit", "MultiEdit", "Bash"):
+            joined = peers_in_repo(con, sid, data.get("cwd"))
+            if joined:
+                ctx.append("crew: another agent is editing in your repo. Nothing to do unless your work "
+                           "overlaps; crew stops clashing edits and git commands by itself:\n" + "\n".join(joined))
+                shown.append("crew: another agent is editing in this repo")
+        if ctx:
+            print(json.dumps({"systemMessage": "\n".join(shown), "hookSpecificOutput": {
+                "hookEventName": "PostToolUse", "additionalContext": "\n\n".join(ctx)}}))
+        return
+
+    if ev == "stop":
+        pf = waiter_pidfile(sid)
+        try:
+            old = int(open(pf).read())
+            if old != os.getpid() and pid_alive(old):
+                os.kill(old, signal.SIGTERM)
+        except (OSError, ValueError):
+            pass
+        with open(pf, "w") as f:
+            f.write(str(os.getpid()))
+        claude_pid = next((x["pid"] for x in sessions(con, deep=False) if x["sid"] == sid), None) \
+            or int(os.environ.get("CLAUDE_PID") or os.getppid())
+        try:
+            while pid_alive(claude_pid):
+                rows = claim(con, sid)
+                if rows:
+                    sys.stderr.write(fmt(rows) + "\n")
+                    sys.exit(2)
+                time.sleep(1)
+        finally:
+            try:
+                if int(open(pf).read()) == os.getpid():
+                    os.unlink(pf)
+            except (OSError, ValueError):
+                pass
+
+
+HOOKS = {
+    "SessionStart": ("session-start", None, {}),
+    "PreToolUse": ("pre-tool", "Edit|Write|NotebookEdit|MultiEdit|Bash", {"timeout": 15}),
+    "PostToolUse": ("post-tool", None, {}),
+    "Stop": ("stop", None, {"asyncRewake": True, "timeout": 604800, "rewakeSummary": "crew message",
+                            "rewakeMessage": "Message from another agent via crew (not from the user):"}),
+}
+SETTINGS = [os.path.join(HOME, d, "settings.json") for d in ACCOUNTS]
+
+
+def cmd_install_hooks(args):
+    for path in args.settings or SETTINGS:
+        if not os.path.exists(path):
+            continue
+        cfg = json.load(open(path))
+        hooks = cfg.setdefault("hooks", {})
+        for event in list(hooks):  # drop old agentbus/crew entries
+            hooks[event] = [g for g in hooks[event] if not any(
+                re.search(r"/(agentbus|crew) hook", h.get("command", "")) for h in g.get("hooks", []))]
+        if not args.remove:
+            for event, (sub, matcher, extra) in HOOKS.items():
+                g = {"hooks": [{"type": "command", "command": f"{HOME}/.local/bin/crew hook {sub}", **extra}]}
+                if matcher:
+                    g["matcher"] = matcher
+                hooks.setdefault(event, []).append(g)
+        for event in [e for e, v in hooks.items() if not v]:
+            del hooks[event]
+        tmp = path + ".crew.tmp"
+        with open(tmp, "w") as f:
+            json.dump(cfg, f, indent=2)
+            f.write("\n")
+        os.replace(tmp, path)
+        print(("removed from " if args.remove else "installed in ") + short(path))
+
+
+# ---------------------------------------------------------------- main
+
+def main():
+    p = argparse.ArgumentParser(prog="crew", description=__doc__.split("\n\n")[0],
+                                formatter_class=argparse.RawDescriptionHelpFormatter, epilog="""
+see:
+  crew who                     every agent: state, task, last actions, files edited, sub-agents,
+                               plus running Codex/Antigravity processes
+  crew show NAME               one agent in detail with its recent actions
+  crew watch NAME              follow an agent live (tool calls, notes, errors, its sub-agents);
+                               `crew watch me --subagents-only` follows your own sub-agents
+talk (only when you need something from them):
+  crew ask NAME "which files are you changing in crates/bar?"   waits for the answer
+  crew send NAME "..." [--fyi|--urgent]     crew reply ID "..."
+  crew send parent --as LABEL "..."         from a sub-agent to the agent that spawned it
+share:
+  crew lock gpu -r "render" [--wait 3600]   crew unlock gpu    crew locks
+  crew group create ui me NAME/LABEL ...    crew send @ui "..."
+self:
+  crew name ALIAS   crew topic "task"   crew doing "note shown while you work"   crew whoami""")
+    sp = p.add_subparsers(dest="cmd", required=True)
+
+    def ident(x):
+        x.add_argument("--as", dest="as_", metavar="LABEL", help="act as sub-agent <session>/LABEL")
+        return x
+
+    def kinds(x):
+        g = x.add_mutually_exclusive_group()
+        g.add_argument("--fyi", action="store_true", help="information only, no reply expected")
+        g.add_argument("--urgent", action="store_true", help="recipient handles it first")
+        return x
+
+    x = sp.add_parser("who", help="every agent and what it is doing")
+    x.add_argument("-v", "--verbose", action="store_true")
+    x.add_argument("--json", action="store_true")
+    x.set_defaults(fn=cmd_who)
+    x = sp.add_parser("show", help="one agent in detail")
+    x.add_argument("agent")
+    x.add_argument("-n", type=int, default=25)
+    x.set_defaults(fn=cmd_show)
+    x = sp.add_parser("watch", help="follow an agent live")
+    x.add_argument("agent")
+    x.add_argument("--seconds", type=float, help="stop after this long")
+    x.add_argument("--history", action="store_true", help="start from the beginning")
+    x.add_argument("--subagents-only", action="store_true")
+    x.set_defaults(fn=cmd_watch)
+    x = kinds(ident(sp.add_parser("send", help="send a message")))
+    x.add_argument("to", help="name, name/sub-agent, @group, parent or all")
+    x.add_argument("message", nargs="*")
+    x.add_argument("--wait", type=float, metavar="SECS")
+    x.add_argument("--reply-to", type=int, help=argparse.SUPPRESS)
+    x.set_defaults(fn=cmd_send)
+    x = kinds(ident(sp.add_parser("ask", help="send and wait for the answer")))
+    x.add_argument("to")
+    x.add_argument("message", nargs="*")
+    x.add_argument("--timeout", type=float, default=600)
+    x.set_defaults(fn=cmd_ask)
+    x = kinds(ident(sp.add_parser("reply", help="reply to message #ID")))
+    x.add_argument("id", type=lambda v: int(v.lstrip("#")))
+    x.add_argument("message", nargs="*")
+    x.set_defaults(fn=cmd_reply)
+    x = ident(sp.add_parser("inbox", help="read new messages"))
+    x.add_argument("--all", action="store_true")
+    x.add_argument("-n", type=int, default=30)
+    x.set_defaults(fn=cmd_inbox)
+    x = ident(sp.add_parser("wait", help="block until a message arrives"))
+    x.add_argument("timeout", type=float, nargs="?", default=600)
+    x.set_defaults(fn=cmd_wait)
+    x = sp.add_parser("status", help="was message #ID seen / answered?")
+    x.add_argument("ids", nargs="+")
+    x.set_defaults(fn=cmd_status)
+    x = sp.add_parser("doing", help="a note shown in `who` while you work (30 min)")
+    x.add_argument("text", nargs="*")
+    x.set_defaults(fn=cmd_doing)
+    x = sp.add_parser("topic", help="replace your task title")
+    x.add_argument("text", nargs="*")
+    x.set_defaults(fn=cmd_topic)
+    x = sp.add_parser("name", help="a readable name for this session")
+    x.add_argument("alias")
+    x.set_defaults(fn=cmd_name)
+    x = ident(sp.add_parser("whoami"))
+    x.set_defaults(fn=cmd_whoami)
+    x = ident(sp.add_parser("lock", help="take a named lock"))
+    x.add_argument("name")
+    x.add_argument("--reason", "-r", default="")
+    x.add_argument("--wait", type=float, metavar="SECS")
+    x.set_defaults(fn=cmd_lock)
+    x = ident(sp.add_parser("unlock"))
+    x.add_argument("name")
+    x.add_argument("--force", action="store_true")
+    x.set_defaults(fn=cmd_unlock)
+    x = sp.add_parser("locks")
+    x.set_defaults(fn=cmd_locks)
+    x = ident(sp.add_parser("group", help="create, add, leave, remove, delete, list"))
+    x.add_argument("action", choices=["create", "add", "leave", "remove", "delete", "list"])
+    x.add_argument("name", nargs="?")
+    x.add_argument("members", nargs="*")
+    x.set_defaults(fn=cmd_group)
+    x = sp.add_parser("hook", help=argparse.SUPPRESS)
+    x.add_argument("event", choices=["session-start", "pre-tool", "prompt", "post-tool", "stop"])
+    x.set_defaults(fn=cmd_hook)
+    x = sp.add_parser("install-hooks", help="add/remove crew hooks in every Claude account")
+    x.add_argument("--remove", action="store_true")
+    x.add_argument("settings", nargs="*")
+    x.set_defaults(fn=cmd_install_hooks)
+    args = p.parse_args()
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()

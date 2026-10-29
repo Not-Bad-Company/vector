@@ -1,0 +1,198 @@
+#!/usr/bin/env python3
+"""aiws-guard: Claude Code PreToolUse hook that keeps agents off the owner's
+private data and off the owner's screen. It blocks (exit 2, reason on stderr):
+
+- the real clipboard: wl-paste, wl-copy, cliphist, clipse, xclip, xsel, the
+  Vector Space clipboard store
+- the real notifications: notification history (makoctl history/list,
+  notifications.json, the Notifications D-Bus interfaces) and notify-send
+- opening things on the owner's screen: xdg-open, gio open, hyprctl dispatch
+  exec (unless onto workspace 10), switching or focusing workspaces/windows,
+  killactive, omarchy-launch-*, uwsm app
+- browser private data: cookies, history, saved logins, sessions of every
+  browser profile (theme files like userChrome.css stay allowed)
+
+Escapes, each only for its own case:
+- `# owner-asked` anywhere in the command: the owner explicitly asked for it
+- a private bus (`aiws env`, DBUS_SESSION_BUS_ADDRESS=...) for notifications
+- the nested compositor (`aiws nest`, WAYLAND_DISPLAY=...) for the clipboard
+"""
+import json
+import os
+import re
+import shlex
+import sys
+
+try:
+    ev = json.load(sys.stdin)
+except ValueError:
+    sys.exit(0)
+tool = ev.get("tool_name", "")
+inp = ev.get("tool_input") or {}
+
+BROWSER_PRIVATE = re.compile(
+    r"(cookies\.sqlite|places\.sqlite|logins\.json|key4\.db|formhistory\.sqlite|sessionstore|"
+    r"recovery\.jsonlz4|/Cookies\b|/History\b|Login Data|Web Data|Local Storage|Session Storage|"
+    r"IndexedDB)")
+CLIP_STORE = re.compile(r"vector-space/clipboard|\.local/share/clipse|cliphist")
+NOTE_STORE = re.compile(r"vector-bar/notifications\.json|notification-center")
+OWN_BROWSER_DIRS = re.compile(r"\.zen/|\.mozilla/|\.config/(chromium|google-chrome|BraveSoftware|vivaldi)")
+AI_BROWSER = "aiws/browser"
+
+
+HOME = os.path.expanduser("~")
+PERSONAL = [os.path.join(HOME, d) for d in ("Pictures", "Videos", "Music", "Documents", "Desktop", "Downloads",
+                                            "Public", "Templates")]
+CRITICAL = [os.path.join(HOME, d) for d in (".dotfiles.git", ".ssh", ".gnupg", ".password-store",
+                                            ".local/share/keyrings", ".config/1Password", ".claude.json")]
+
+
+def expand(word, cwd):
+    w = word.replace("$HOME", HOME).replace("${HOME}", HOME)
+    if w.startswith("~"):
+        w = HOME + w[1:]
+    if "$" in w:
+        return None  # unknown at this point
+    w = w.split("*")[0].split("?")[0] or "."
+    return os.path.normpath(w if os.path.isabs(w) else os.path.join(cwd, w))
+
+
+def under(p, roots):
+    return any(p == r or p.startswith(r + "/") for r in roots)
+
+
+def destructive(cmd, cwd):
+    """(path, how) for each target a command would delete, move away or overwrite."""
+    out = []
+    for seg in re.split(r"&&|\|\||;|\||\n", cmd):
+        for m in re.finditer(r"(?<![>&0-9])>\s*([^\s;&|]+)", seg):  # > overwrite, not >> or 2>&1
+            p = expand(m.group(1), cwd)
+            if p and os.path.isfile(p):
+                out.append((p, "overwrite", False))
+        try:
+            words = shlex.split(seg, comments=True)
+        except ValueError:
+            continue
+        while words and (words[0] in ("sudo", "aisudo", "env", "command", "nice", "time") or "=" in words[0]):
+            words = words[1:]
+        if not words:
+            continue
+        if words[0] == "cd":  # later parts of the command run there
+            cwd = expand(words[1], cwd) if len(words) > 1 else HOME
+            cwd = cwd or HOME
+            continue
+        prog = os.path.basename(words[0])
+        args = [w for w in words[1:] if not w.startswith("-")]
+        flags = "".join(w for w in words[1:] if w.startswith("-") and not w.startswith("--"))
+        rec = "r" in flags.lower() or "--recursive" in words
+        if prog in ("rm", "rmdir", "shred", "unlink", "truncate"):
+            out += [(p, prog, rec) for p in (expand(a, cwd) for a in args) if p]
+        elif prog == "mv" and len(args) >= 2:
+            out += [(p, "move away", True) for p in (expand(a, cwd) for a in args[:-1]) if p]
+        elif prog == "find" and "-delete" in words and args:
+            p = expand(args[0], cwd)
+            if p:
+                out.append((p, "find -delete", True))
+        elif prog == "rsync" and any(w.startswith("--delete") for w in words) and args:
+            p = expand(args[-1], cwd)
+            if p:
+                out.append((p, "rsync --delete", True))
+        elif prog == "git" and "clean" in words and cwd:
+            out.append((cwd, "git clean", True))
+    return out
+
+
+def protect(cmd, cwd):
+    for p, how, rec in destructive(cmd, cwd):
+        if under(p, PERSONAL) and p not in PERSONAL or p in PERSONAL:
+            block(f"`{how}` on {p.replace(HOME, '~')}, the owner's personal files",
+                  "Don't delete, move or overwrite the owner's own files. Writing NEW files there is fine.")
+        if under(p, CRITICAL):
+            block(f"`{how}` on {p.replace(HOME, '~')}, which holds the owner's keys, logins or dotfile history",
+                  "Leave it alone.")
+        depth = len(os.path.relpath(p, HOME).split(os.sep)) if under(p, [HOME]) else 99
+        if p in ("/", HOME) or (rec and depth <= 1 and how != "overwrite"):
+            block(f"`{how}` on {p.replace(HOME, '~') or '/'} would remove a whole top-level folder of the home "
+                  "directory (or more)",
+                  "Delete only what you created, by exact path, or move it to the trash with `gio trash PATH` "
+                  "(recoverable).")
+
+
+def block(why, instead):
+    print(f"aiws-guard blocked this: {why}. {instead} "
+          "If the owner explicitly asked for exactly this, add the comment `# owner-asked` to the command "
+          "(Bash only; for a blocked file read, use Bash with that comment).", file=sys.stderr)
+    sys.exit(2)
+
+
+def private_path(p):
+    if AI_BROWSER in p:
+        return None
+    if re.search(r"aiws/aisudo\.py|bin/aisudo(-install)?\b|sudoers", p) and tool != "Read" and \
+            not (tool == "Bash" and not re.search(r"(>|sed\s+-i|tee|cp|mv|install|chmod|python3?\s+-)", p)):
+        return ("that changes what agents may run as root", "Only the owner changes the aisudo allowlist.")
+    if CLIP_STORE.search(p):
+        return ("that is the owner's clipboard history", "Test with synthetic data in a sandbox (`aiws env`).")
+    if NOTE_STORE.search(p):
+        return ("that is the owner's notification history", "Test with a private bus (`aiws env`).")
+    if OWN_BROWSER_DIRS.search(p) and BROWSER_PRIVATE.search(p):
+        return ("that is private browser data (cookies, history, logins or sessions)",
+                "Use the AI browser (`aiws browser`) for anything that needs a login.")
+    return None
+
+
+if tool == "Bash":
+    cmd = inp.get("command", "")
+    if "# owner-asked" in cmd:
+        sys.exit(0)
+    private_bus = "aiws env" in cmd or "DBUS_SESSION_BUS_ADDRESS=" in cmd or "AIWS_SANDBOX" in cmd
+    nested = "aiws nest" in cmd or re.search(r"WAYLAND_DISPLAY=\S", cmd)
+    protect(cmd, ev.get("cwd") or os.getcwd())
+    hit = private_path(cmd)
+    if hit:
+        block(*hit)
+    if re.search(r"\b(wl-paste|wl-copy|cliphist|clipse|xclip|xsel)\b", cmd) and not nested:
+        block("that touches the owner's real clipboard",
+              "To test clipboard features use the nested compositor (`aiws nest`), which has its own clipboard.")
+    if not private_bus:
+        if re.search(r"\bmakoctl\s+(history|list)\b", cmd) or re.search(
+                r"org\.(vectoros|freedesktop)\.Notifications|fr\.emersion\.Mako", cmd):
+            block("that reads or drives the owner's real notifications",
+                  'Run test instances on a private bus: `eval "$(aiws env)"` in the same command.')
+        if re.search(r"\bnotify-send\b", cmd):
+            block("notify-send would pop up on the owner's screen",
+                  'Send test notifications on a private bus: `eval "$(aiws env)"` in the same command.')
+    m = re.search(r"\bpkill\s+(?:-\w+\s+)*-f\s+(?:-\w+\s+)*(['\"]?)([^'\"\s]+)", cmd)
+    if m and "[" not in m.group(2):
+        block("`pkill -f PATTERN` also matches the shell running this very command (its command line contains "
+              "PATTERN), so it kills itself (exit 144) and whatever came after never runs",
+              f"Write the pattern so it can't match itself, e.g. `pkill -f '[{m.group(2)[0]}]{m.group(2)[1:]}'`, "
+              "or kill by exact name (`pkill -x node`) or by PID.")
+    if re.search(r"\bxdg-open\b|\bgio\s+open\b|\bomarchy-launch-|\buwsm(-app|\s+app)\b", cmd):
+        block("that opens something on the owner's screen (or in an app they have open)",
+              "Start it on the AI workspace with `aiws run CMD`; for URLs use `aiws browser URL`.")
+    for m in re.finditer(r"dispatch\s+([a-z]+)([^;&|\n]*)", cmd):
+        d, rest = m.group(1), m.group(2)
+        if d == "exec" and not re.search(r"workspace\s+10\b", rest):
+            block("hyprctl dispatch exec opens windows on the owner's screen", "Use `aiws run CMD`.")
+        if d in ("workspace", "focuswindow", "focusmonitor", "killactive", "togglespecialworkspace",
+                 "fullscreen", "movefocus", "swapactiveworkspaces"):
+            block(f"`dispatch {d}` changes what the owner sees or closes their window",
+                  "Work on the AI workspace with aiws (run, key, type, close, shot) instead.")
+elif tool.startswith("mcp__claude-in-chrome__"):
+    print("aiws-guard blocked this: Claude in Chrome is replaced by the AI browser. Run `aiws browser` and use "
+          "the ai-browser MCP tools (mcp__ai-browser__browser_navigate, browser_snapshot, browser_click...); "
+          "see the ai-browser skill.", file=sys.stderr)
+    sys.exit(2)
+elif tool in ("Read", "Grep", "Glob", "Edit", "Write", "NotebookEdit"):
+    for k in ("file_path", "path", "notebook_path"):
+        p = inp.get(k)
+        if isinstance(p, str):
+            hit = private_path(p)
+            if hit:
+                block(*hit)
+            rp = os.path.realpath(p)
+            if tool in ("Edit", "Write", "NotebookEdit") and os.path.exists(rp) and under(rp, PERSONAL + CRITICAL):
+                block(f"{tool} would change {rp.replace(HOME, '~')}, an existing file of the owner's",
+                      "Writing new files there is fine; never change or overwrite the owner's own.")
+sys.exit(0)

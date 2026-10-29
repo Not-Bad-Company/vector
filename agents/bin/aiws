@@ -1,0 +1,752 @@
+#!/usr/bin/env python3
+"""aiws: the AI workspace. Workspace 0 (Hyprland id 10, SUPER+0) belongs to AI
+agents. It lives on an invisible headless output named AI, so agents can open,
+drive and screenshot windows there without ever touching the screen the owner
+is working on. The owner can pull it onto their own screen to watch (SUPER+0 or
+`aiws show`); leaving it sends it back.
+
+Agents:
+  aiws run CMD [ARGS...]    start CMD on the AI workspace (never steals focus);
+                            prints pid and log file. Inherits env and cwd.
+  aiws shot [FILE]          screenshot of the AI workspace (png), prints the path
+  aiws windows              windows on the AI workspace: address, pid, class, title
+  aiws key ADDR "MODS, KEY" send one shortcut to a window, e.g. "CTRL, L", ", Return"
+  aiws type ADDR TEXT       type text into a window (no focus change)
+  aiws close ADDR|all       close one window, or every window on the AI workspace
+  aiws env                  print exports for a scratch sandbox: own XDG dirs,
+                            private D-Bus, AI_WORKSPACE=1 (eval "$(aiws env)")
+  aiws nest ...              a nested Hyprland in a window on workspace 0 with its
+                            own pointer, keyboard, focus and clipboard: real mouse
+                            clicks, drags, typing and copy/paste, all isolated.
+                            Started on first use; idle it draws nothing.
+      nest run CMD            start an app inside it (log path printed)
+      nest click X Y [right|middle] / move X Y / drag X1 Y1 X2 Y2 / scroll X Y N
+      nest key COMBO          e.g. ctrl+l, ctrl+shift+t, Return, alt+F4
+      nest type TEXT
+      nest shot [FILE]        png of the nested screen (coordinates match clicks)
+      nest windows            its windows: class, title, position and size
+      nest env                exports to run anything else inside it (wl-copy...)
+      nest status | stop
+  aiws browser [URL]        the AI browser: Chromium on workspace 0 with its own
+                            persistent profile (logins stay), driven over CDP at
+                            http://127.0.0.1:9333 (Playwright MCP is pointed at it;
+                            scripts: chromium.connect_over_cdp). Opens URL in a tab.
+  aiws wait [TEXT] [SECS]   wait until a window whose class or title contains
+                            TEXT is on workspace 0 (default: any new one, 10 s)
+  aiws make SPEC...          synthetic test files, never the owner's own (see below)
+  aiws clean                remove made files, run logs and dead sandboxes
+  aiws status
+  aiws help
+
+aiws make: each SPEC is a file name or just an extension; the extension picks
+what is made. Prints the paths. Into $AIWS_SANDBOX/files when in a sandbox,
+else $XDG_RUNTIME_DIR/aiws/files; --dir D to choose. SPEC:N makes N of them.
+  images  png jpg webp gif avif heic jxl bmp tiff svg   (--size 1280x800)
+  video   mp4 webm mkv mov avi                          (--secs 3, --size 640x360)
+  audio   wav mp3 ogg opus flac m4a
+  text    txt md csv json html xml yaml toml log
+  docs    pdf docx odt xlsx ods
+  archive zip tar tar.gz 7z      (a few small files inside)
+  tree                           a folder for file-manager tests: nested dirs,
+                                 mixed types, spaces and unicode in names, a
+                                 hidden file, an empty dir, a symlink, a 50 MB file
+  e.g.  aiws make jpg:12 clip.mp4 report.pdf data.csv tree
+
+Owner:
+  aiws show                 toggle the AI workspace on the focused screen (SUPER+0)
+Service:
+  aiws daemon               keeps the AI output and workspace in place, keeps focus
+                            off it, and moves any window whose process has
+                            AI_WORKSPACE=1 in its environment to the AI workspace
+"""
+import json
+import os
+import shlex
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+
+OUT = "AI"  # headless output
+WS = 10  # shown as 0 in the bar, SUPER+0
+IDLE = "name:ai-idle"  # holds the AI output while workspace 0 is being viewed
+MODE = "1920x1200@30"
+POS = "0x10000"  # far from every real screen: the cursor can never wander onto it
+RUN = os.path.join(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"), "aiws")
+
+
+def hypr_dir():
+    sig = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
+    base = os.path.join(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"), "hypr")
+    if not sig:
+        sig = max(os.listdir(base), key=lambda d: os.path.getmtime(os.path.join(base, d)))
+    return os.path.join(base, sig)
+
+
+def req(cmd: str) -> str:
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect(os.path.join(hypr_dir(), ".socket.sock"))
+    s.sendall(cmd.encode())
+    out = b""
+    while chunk := s.recv(65536):
+        out += chunk
+    s.close()
+    return out.decode(errors="replace")
+
+
+def j(what: str):
+    return json.loads(req(f"j/{what}"))
+
+
+def batch(*cmds: str) -> str:
+    return req("[[BATCH]]" + " ; ".join(cmds))
+
+
+def monitors():
+    return {m["name"]: m for m in j("monitors")}
+
+
+def ws_monitor(mons, ws=WS):
+    for w in j("workspaces"):
+        if w["id"] == ws:
+            return w["monitor"]
+    return None
+
+
+LAST = [None]  # the daemon's last focused screen other than AI
+
+
+def user_monitor(mons):
+    """The screen the owner works on: the focused one, else the last one, else the built-in one."""
+    for n, m in mons.items():
+        if m["focused"] and n != OUT:
+            return n
+    if LAST[0] in mons:
+        return LAST[0]
+    for n in mons:
+        if n.startswith("eDP"):
+            return n
+    return next((n for n in mons if n != OUT), None)
+
+
+def ensure():
+    """Create the AI output if missing and show workspace 0 on it."""
+    mons = monitors()
+    if OUT not in mons:
+        back = user_monitor(mons)
+        req(f"/output create headless {OUT}")
+        batch(f"keyword monitor {OUT},{MODE},{POS},1", f"keyword workspace {WS},monitor:{OUT},default:true,persistent:true")
+        if back:
+            batch(f"dispatch focusmonitor {back}")
+    normalize()
+
+
+def normalize():
+    mons = monitors()
+    if OUT not in mons:
+        return
+    back = user_monitor(mons)
+    cmds = []
+    where = ws_monitor(mons)
+    # every numbered workspace other than 0 belongs on the owner's screens
+    for w in j("workspaces"):
+        if w["monitor"] == OUT and w["id"] > 0 and w["id"] != WS and back:
+            cmds.append(f"dispatch moveworkspacetomonitor {w['id']} {back}")
+    viewed = where and where != OUT and mons.get(where, {}).get("activeWorkspace", {}).get("id") == WS
+    if not viewed and (where != OUT or mons[OUT]["activeWorkspace"]["id"] != WS):
+        # workspace 0 was left (or never placed): put it back on the AI output
+        if where and where != OUT:
+            cmds.append(f"dispatch moveworkspacetomonitor {WS} {OUT}")
+        cmds += [f"dispatch focusmonitor {OUT}", f"dispatch workspace {WS}"]
+    if mons[OUT]["focused"] or any("focusmonitor" in c for c in cmds):
+        if back:
+            cmds.append(f"dispatch focusmonitor {back}")
+    if cmds:
+        batch(*cmds)
+
+
+def ai_env(pid: int) -> bool:
+    """True when the process (or a parent) was started by an AI agent."""
+    for _ in range(8):
+        try:
+            with open(f"/proc/{pid}/environ", "rb") as f:
+                if b"AI_WORKSPACE=1\0" in f.read() + b"\0":
+                    return True
+            with open(f"/proc/{pid}/stat") as f:
+                pid = int(f.read().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            return False
+        if pid <= 1:
+            return False
+    return False
+
+
+def claim(addr: str):
+    for c in j("clients"):
+        if c["address"] == addr:
+            if c["workspace"]["id"] != WS and ai_env(c["pid"]):
+                batch(f"dispatch movetoworkspacesilent {WS},address:{addr}")
+            return
+
+
+def janitor():
+    """Clean up after agents that forgot: the AI browser closes once only empty
+    tabs are left, the nested compositor stops once nothing runs in it (each
+    after two quiet checks, a minute apart)."""
+    import threading
+
+    def loop():
+        quiet = {"browser": 0, "nest": 0}
+        while True:
+            time.sleep(60)
+            try:
+                pages = [t["url"] for t in cdp("/json/list") if t.get("type") == "page"]
+                empty = all(u.startswith(("chrome://newtab", "about:blank", "chrome://new-tab-page")) for u in pages)
+                quiet["browser"] = quiet["browser"] + 1 if empty else 0
+                if quiet["browser"] >= 2:
+                    addrs = [c["address"] for c in j("clients") if c["class"] == "aiws-browser"]
+                    if addrs:
+                        batch(*(f"dispatch closewindow address:{a}" for a in addrs))
+                    quiet["browser"] = 0
+            except (OSError, ValueError):
+                quiet["browser"] = 0
+            info = nest_info()
+            if info:
+                try:
+                    idle = not nest_ctl(info, "clients")
+                except (OSError, ValueError):
+                    idle = False
+                quiet["nest"] = quiet["nest"] + 1 if idle else 0
+                if quiet["nest"] >= 2:
+                    os.kill(info["pid"], 15)
+                    quiet["nest"] = 0
+            else:
+                quiet["nest"] = 0
+
+    threading.Thread(target=loop, daemon=True).start()
+
+
+def daemon():
+    os.makedirs(RUN, exist_ok=True)
+    janitor()
+    while True:
+        try:
+            ensure()
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.connect(os.path.join(hypr_dir(), ".socket2.sock"))
+            buf = b""
+            while True:
+                chunk = s.recv(65536)
+                if not chunk:
+                    break
+                buf += chunk
+                *lines, buf = buf.split(b"\n")
+                todo = False
+                for line in lines:
+                    ev, _, data = line.decode(errors="replace").partition(">>")
+                    if ev == "focusedmonv2" and data.split(",")[0] != OUT:
+                        LAST[0] = data.split(",")[0]
+                    if ev == "openwindow":
+                        claim("0x" + data.split(",")[0])
+                    elif ev in ("monitorremoved", "monitorremovedv2") and data.split(",")[-1] == OUT:
+                        time.sleep(0.2)
+                        ensure()
+                    elif ev in ("workspacev2", "focusedmonv2", "moveworkspacev2", "createworkspacev2",
+                                "destroyworkspacev2", "monitoraddedv2", "openwindow", "movewindowv2"):
+                        todo = True
+                if todo:
+                    # let a burst of events settle, then fix the state once
+                    time.sleep(0.03)
+                    normalize()
+        except (OSError, ValueError, KeyError) as e:
+            print(f"aiws: {e}", file=sys.stderr, flush=True)
+            time.sleep(2)
+
+
+def show():
+    mons = monitors()
+    here = user_monitor(mons)
+    if mons.get(here, {}).get("activeWorkspace", {}).get("id") == WS:
+        batch("dispatch workspace previous_per_monitor")
+        return
+    ensure()
+    batch(f"dispatch focusmonitor {OUT}", f"dispatch workspace {IDLE}", f"dispatch focusmonitor {here}",
+          f"dispatch moveworkspacetomonitor {WS} {here}", f"dispatch workspace {WS}")
+
+
+NEST_CONF = os.path.expanduser("~/.config/aiws/nest.conf")
+NEST_STATE = os.path.join(RUN, "nest.json")
+
+
+def nest_info():
+    """The running nested Hyprland: {pid, sig, socket}, or None."""
+    try:
+        info = json.load(open(NEST_STATE))
+        os.kill(info["pid"], 0)
+        return info
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def nest_start():
+    info = nest_info()
+    if info:
+        return info
+    os.makedirs(RUN, exist_ok=True)
+    # the nested compositor runs in the real session env, never a sandbox's
+    run(["Hyprland", "--config", NEST_CONF], quiet=True)
+    for _ in range(100):
+        time.sleep(0.1)
+        try:
+            pids = {int(open(os.path.join(RUN, f)).read()) for f in os.listdir(RUN)
+                    if f.startswith("run-") and f.endswith(".pid")}
+        except (OSError, ValueError):
+            continue
+        out = subprocess.run(["hyprctl", "instances", "-j"], capture_output=True, text=True).stdout
+        for i in json.loads(out or "[]"):
+            if i["pid"] in pids and os.path.exists(os.path.join(os.environ.get("XDG_RUNTIME_DIR", ""), i["wl_socket"])):
+                info = {"pid": i["pid"], "sig": i["instance"], "socket": i["wl_socket"]}
+                with open(NEST_STATE, "w") as f:
+                    json.dump(info, f)
+                time.sleep(0.5)
+                return info
+    sys.exit("aiws: the nested compositor did not start (see the run logs in $XDG_RUNTIME_DIR/aiws)")
+
+
+def nest_env(info):
+    env = dict(os.environ, WAYLAND_DISPLAY=info["socket"], HYPRLAND_INSTANCE_SIGNATURE=info["sig"], AI_WORKSPACE="1")
+    env.pop("DISPLAY", None)
+    return env
+
+
+def nest_ctl(info, what):
+    r = subprocess.run(["hyprctl", "-j", what], capture_output=True, text=True, env=nest_env(info))
+    return json.loads(r.stdout or "null")
+
+
+def nest_size(info):
+    m = nest_ctl(info, "monitors")[0]
+    return f"{m['width']}x{m['height']}"
+
+
+def nest(a):
+    sub = a[0] if a else "status"
+    if sub == "stop":
+        info = nest_info()
+        if info:
+            os.kill(info["pid"], 15)
+        return
+    if sub == "status":
+        info = nest_info()
+        print(f"nested compositor: {'running on ' + info['socket'] + ', ' + nest_size(info) if info else 'not running'}")
+        return
+    info = nest_start()
+    env = nest_env(info)
+    pointer = [os.path.expanduser("~/.local/libexec/aiws-pointer"), "--size", nest_size(info)]
+    if sub == "env":
+        for k in ("WAYLAND_DISPLAY", "HYPRLAND_INSTANCE_SIGNATURE", "AI_WORKSPACE"):
+            print(f"export {k}={shlex.quote(env[k])}")
+        print("unset DISPLAY")
+    elif sub == "run" and len(a) > 1:
+        fd, log = tempfile.mkstemp(prefix="nest-", suffix=".log", dir=RUN)
+        p = subprocess.Popen(a[1:], env=env, stdout=fd, stderr=fd, stdin=subprocess.DEVNULL, start_new_session=True)
+        print(f"pid {p.pid}\nlog {log}")
+    elif sub in ("click", "move", "drag", "scroll", "down", "up") and len(a) > 2:
+        subprocess.run(pointer + a, env=env, check=True)
+    elif sub == "key" and len(a) == 2:
+        *mods, key = a[1].split("+")
+        cmd = ["wtype"]
+        for m in mods:
+            cmd += ["-M", m.lower()]
+        cmd += ["-k", key] if len(key) > 1 else [key]
+        for m in reversed(mods):
+            cmd += ["-m", m.lower()]
+        subprocess.run(cmd, env=env, check=True)
+    elif sub == "type" and len(a) == 2:
+        subprocess.run(["wtype", a[1]], env=env, check=True)
+    elif sub == "shot":
+        path = a[1] if len(a) > 1 else os.path.join(RUN, "nest.png")
+        subprocess.run(["grim", path], env=env, check=True)
+        print(path)
+    elif sub == "windows":
+        for c in nest_ctl(info, "clients") or []:
+            print(f"{c['address']}  pid {c['pid']}  {c['class']}  at {c['at'][0]},{c['at'][1]}  "
+                  f"size {c['size'][0]}x{c['size'][1]}  {c['title']}")
+    else:
+        sys.exit("usage: aiws nest run|click|move|drag|scroll|key|type|shot|windows|env|status|stop (aiws help)")
+
+
+def ai_windows():
+    return [c for c in j("clients") if c["workspace"]["id"] == WS]
+
+
+def run(argv, quiet=False):
+    if not argv:
+        sys.exit("usage: aiws run CMD [ARGS...]")
+    ensure()
+    os.makedirs(RUN, exist_ok=True)
+    fd, script = tempfile.mkstemp(prefix="run-", suffix=".sh", dir=RUN)
+    log = script[:-3] + ".log"
+    pidf = script[:-3] + ".pid"
+    env = dict(os.environ, AI_WORKSPACE="1", VECTOR_OUTPUT=OUT)
+    with os.fdopen(fd, "w") as f:
+        f.write(f"cd {shlex.quote(os.getcwd())} || exit 1\n")
+        for k, v in env.items():
+            if k.isidentifier():
+                f.write(f"export {k}={shlex.quote(v)}\n")
+        f.write(f"echo $$ > {shlex.quote(pidf)}\n")
+        f.write(f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1\n")
+    batch(f"dispatch exec [workspace {WS} silent] sh {shlex.quote(script)}")
+    for _ in range(50):
+        if os.path.exists(pidf) and open(pidf).read().strip():
+            break
+        time.sleep(0.05)
+    pid = open(pidf).read().strip() if os.path.exists(pidf) else "?"
+    if not quiet:
+        print(f"pid {pid}\nlog {log}")
+
+
+def shot(path):
+    path = path or os.path.join(RUN, "shot.png")
+    mons = monitors()
+    where = ws_monitor(mons) or OUT
+    subprocess.run(["grim", "-o", where, path], check=True)
+    print(path)
+
+
+def send_keys(addr, mods, key):
+    out = batch(f"dispatch sendshortcut {mods}, {key}, address:{addr}")
+    if "ok" not in out:
+        sys.exit(out.strip())
+
+
+KEYS = {" ": "space", "\n": "Return", "\t": "Tab", "-": "minus", "=": "equal", ".": "period", ",": "comma",
+        "/": "slash", "\\": "backslash", ";": "semicolon", "'": "apostrophe", "[": "bracketleft",
+        "]": "bracketright", "`": "grave"}
+SHIFTED = {"!": "1", "@": "2", "#": "3", "$": "4", "%": "5", "^": "6", "&": "7", "*": "8", "(": "9", ")": "0",
+           "_": "minus", "+": "equal", ":": "semicolon", '"': "apostrophe", "<": "comma", ">": "period",
+           "?": "slash", "|": "backslash", "{": "bracketleft", "}": "bracketright", "~": "grave"}
+
+
+def type_text(addr, text):
+    cmds = []
+    for ch in text:
+        if ch in SHIFTED:
+            mods, key = "SHIFT", SHIFTED[ch]
+        elif ch.isupper():
+            mods, key = "SHIFT", ch.lower()
+        else:
+            mods, key = "", KEYS.get(ch, ch)
+        cmds.append(f"dispatch sendshortcut {mods}, {key}, address:{addr}")
+    for i in range(0, len(cmds), 40):
+        batch(*cmds[i:i + 40])
+
+
+CDP = 9333
+BROWSER = os.path.join(os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share")), "aiws", "browser")
+
+
+def cdp(path, method="GET"):
+    import urllib.request
+    r = urllib.request.Request(f"http://127.0.0.1:{CDP}{path}", method=method)
+    with urllib.request.urlopen(r, timeout=2) as f:
+        return json.loads(f.read() or b"null")
+
+
+def browser(url):
+    try:
+        cdp("/json/version")
+        up = True
+    except OSError:
+        up = False
+    if not up:
+        os.makedirs(BROWSER, mode=0o700, exist_ok=True)
+        # the real session env: the AI browser must outlive any sandbox
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith(("XDG_CONFIG", "XDG_DATA", "XDG_STATE", "XDG_CACHE", "AIWS_", "DBUS_SESSION"))}
+        os.environ.clear()
+        os.environ.update(env)
+        run(["chromium", f"--user-data-dir={BROWSER}", f"--remote-debugging-port={CDP}",
+             "--remote-debugging-address=127.0.0.1", "--no-first-run", "--no-default-browser-check",
+             # basic store: no keyring prompt can pop up on the owner's screen
+             "--password-store=basic", "--class=aiws-browser", "--new-window"], quiet=True)
+        for _ in range(100):
+            try:
+                cdp("/json/version")
+                break
+            except OSError:
+                time.sleep(0.1)
+        else:
+            sys.exit("aiws: the AI browser did not start (see the run log in $XDG_RUNTIME_DIR/aiws)")
+    if url:
+        import urllib.parse
+        cdp("/json/new?" + urllib.parse.quote(url, safe=":/?&=#%"), method="PUT")
+    print(f"AI browser: http://127.0.0.1:{CDP} (profile {BROWSER})")
+
+
+def wait(text, secs):
+    start = {c["address"] for c in ai_windows()} if not text else set()
+    end = time.time() + secs
+    while time.time() < end:
+        for c in ai_windows():
+            hay = f"{c['class']} {c['title']}".lower()
+            if (text and text.lower() in hay) or (not text and c["address"] not in start):
+                print(f"{c['address']}  pid {c['pid']}  {c['class']}  {c['title']}")
+                return
+        time.sleep(0.1)
+    sys.exit(f"aiws: no {'window matching ' + repr(text) if text else 'new window'} on workspace 0 after {secs:g} s")
+
+
+def files_dir():
+    sb = os.environ.get("AIWS_SANDBOX")
+    return os.path.join(sb, "files") if sb else os.path.join(RUN, "files")
+
+
+IMAGE = {"png", "jpg", "jpeg", "webp", "gif", "avif", "heic", "jxl", "bmp", "tiff", "tif", "ico"}
+VIDEO = {"mp4", "webm", "mkv", "mov", "avi"}
+AUDIO = {"wav", "mp3", "ogg", "opus", "flac", "m4a"}
+LOREM = ("The quick brown fox jumps over the lazy dog. Synthetic test text made by aiws; "
+         "it means nothing and belongs to no one. ")
+
+
+def quiet(argv, **kw):
+    subprocess.run(argv, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kw)
+
+
+def make_text(path, ext, n):
+    rows = [(i, f"item {i}", round(i * 3.7 % 100, 2), f"2026-01-{i % 28 + 1:02d}") for i in range(1, 21)]
+    if ext == "csv":
+        body = "id,name,value,date\n" + "".join(f"{a},{b},{c},{d}\n" for a, b, c, d in rows)
+    elif ext == "json":
+        body = json.dumps([dict(id=a, name=b, value=c, date=d) for a, b, c, d in rows], indent=2) + "\n"
+    elif ext == "md":
+        body = f"# Test document {n}\n\n{LOREM * 3}\n\n## List\n\n- one\n- two\n- three\n\n" \
+               "| id | name | value |\n|---|---|---|\n" + "".join(f"| {a} | {b} | {c} |\n" for a, b, c, _ in rows[:5])
+    elif ext == "html":
+        body = f"<!doctype html><title>Test {n}</title><h1>Test page {n}</h1><p>{LOREM}</p>\n"
+    elif ext == "xml":
+        body = "<items>\n" + "".join(f'  <item id="{a}" value="{c}">{b}</item>\n' for a, b, c, _ in rows) + "</items>\n"
+    elif ext in ("yaml", "yml"):
+        body = "items:\n" + "".join(f"  - id: {a}\n    name: {b}\n    value: {c}\n" for a, b, c, _ in rows)
+    elif ext == "toml":
+        body = f'title = "test {n}"\n' + "".join(f'\n[[item]]\nid = {a}\nname = "{b}"\nvalue = {c}\n' for a, b, c, _ in rows)
+    elif ext == "log":
+        body = "".join(f"2026-01-01T12:{i // 60:02d}:{i % 60:02d} {'INFO WARN ERROR'.split()[i % 3]} test event {i}\n" for i in range(200))
+    else:
+        body = f"Test file {n}\n\n" + (LOREM + "\n") * 10
+    with open(path, "w") as f:
+        f.write(body)
+
+
+def make_one(path, size, secs, n):
+    name = os.path.basename(path)
+    low = name.lower()
+    ext = "tar.gz" if low.endswith(".tar.gz") else low.rsplit(".", 1)[-1]
+    label = name
+    if ext in IMAGE:
+        w, h = size or (1280, 800)
+        # seeded plasma: every file looks different, every run the same
+        quiet(["magick", "-size", f"{w}x{h}", "-seed", str(n), "plasma:", "-blur", "0x2",
+               "-gravity", "center", "-fill", "white", "-stroke", "black", "-strokewidth", "2",
+               "-pointsize", str(max(12, min(w, h) // 10)), "-annotate", "0", label] +
+              (["-resize", "256x256"] if ext == "ico" else []) + [path])
+    elif ext == "svg":
+        w, h = size or (800, 500)
+        hue = n * 47 % 360
+        with open(path, "w") as f:
+            f.write(f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}">'
+                    f'<rect width="100%" height="100%" fill="hsl({hue},45%,35%)"/>'
+                    f'<circle cx="{w // 3}" cy="{h // 2}" r="{min(w, h) // 4}" fill="hsl({(hue + 120) % 360},60%,60%)"/>'
+                    f'<text x="50%" y="88%" font-size="{h // 10}" text-anchor="middle" fill="white">{label}</text></svg>\n')
+    elif ext in VIDEO:
+        w, h = size or (640, 360)
+        vc = {"webm": ["-c:v", "libvpx-vp9", "-b:v", "500k", "-c:a", "libopus"],
+              "avi": ["-c:v", "mpeg4", "-c:a", "mp3"]}.get(ext, ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac"])
+        quiet(["ffmpeg", "-y", "-f", "lavfi", "-i", f"testsrc2=size={w}x{h}:rate=30:duration={secs}",
+               "-f", "lavfi", "-i", f"sine=frequency={220 * (1 + n % 4)}:duration={secs}", *vc, "-shortest", path])
+    elif ext in AUDIO:
+        quiet(["ffmpeg", "-y", "-f", "lavfi", "-i", f"sine=frequency={220 * (1 + n % 4)}:duration={secs}",
+               "-f", "lavfi", "-i", f"sine=frequency={330 * (1 + n % 3)}:duration={secs}",
+               "-filter_complex", "amix=inputs=2", *(["-c:a", "aac"] if ext == "m4a" else []), path])
+    elif ext in ("pdf", "docx", "odt", "xlsx", "ods"):
+        with tempfile.TemporaryDirectory(dir=RUN) as t:
+            src = os.path.join(t, os.path.splitext(name)[0] + (".csv" if ext in ("xlsx", "ods") else ".md"))
+            make_text(src, src.rsplit(".", 1)[-1], n)
+            if ext in ("docx", "odt"):
+                quiet(["pandoc", src, "-o", path])
+            else:
+                if ext == "pdf":
+                    odt = src[:-3] + ".odt"
+                    quiet(["pandoc", src, "-o", odt])
+                    src = odt
+                # own profile: never touches the owner's LibreOffice
+                quiet(["soffice", f"-env:UserInstallation=file://{t}/lo", "--headless",
+                       "--convert-to", ext, "--outdir", t, src])
+                shutil.move(os.path.splitext(src)[0] + "." + ext, path)
+    elif ext in ("zip", "tar", "tar.gz", "tgz", "7z"):
+        with tempfile.TemporaryDirectory(dir=RUN) as t:
+            inner = [os.path.join(t, x) for x in ("readme.txt", "photo.png", "data.csv")]
+            for i, f in enumerate(inner):
+                make_one(f, (320, 200), secs, n + i)
+            names = [os.path.basename(f) for f in inner]
+            if ext == "zip":
+                quiet(["zip", "-q", path, *names], cwd=t)
+            elif ext == "7z":
+                quiet(["7z", "a", path, *names], cwd=t)
+            else:
+                quiet(["tar", "-czf" if ext != "tar" else "-cf", path, *names], cwd=t)
+    else:
+        make_text(path, ext, n)
+
+
+def make_tree(root, size, secs):
+    layout = {
+        "Documents": ["notes.txt", "report.pdf", "budget.csv", "letter.docx", "readme.md"],
+        "Documents/Archive 2025": ["old notes.txt", "data.json"],
+        "Pictures": ["beach.jpg", "cat.png", "diagram.svg", "scan.webp", "café menu.jpg"],
+        "Pictures/Holiday": [f"IMG_{i:04d}.jpg" for i in range(1, 9)],
+        "Music": ["song.mp3", "tone.flac"],
+        "Videos": ["clip.mp4", "screen.webm"],
+        "Downloads": ["bundle.zip", "backup.tar.gz", "setup.log"],
+        "Empty folder": [],
+    }
+    n = 0
+    for d, files in layout.items():
+        os.makedirs(os.path.join(root, d), exist_ok=True)
+        for f in files:
+            n += 1
+            make_one(os.path.join(root, d, f), size if f.endswith(tuple(IMAGE)) else None, secs, n)
+    with open(os.path.join(root, ".hidden-config"), "w") as f:
+        f.write("hidden = true\n")
+    with open(os.path.join(root, "Downloads", "big.bin"), "wb") as f:
+        f.truncate(50 * 1024 * 1024)
+    os.symlink("Documents/notes.txt", os.path.join(root, "link to notes"))
+
+
+def make(args):
+    out, size, secs, specs = files_dir(), None, 3, []
+    it = iter(args)
+    for a in it:
+        if a == "--dir":
+            out = next(it)
+        elif a == "--size":
+            size = tuple(int(x) for x in next(it).lower().split("x"))
+        elif a == "--secs":
+            secs = float(next(it))
+        else:
+            specs.append(a)
+    if not specs:
+        sys.exit("usage: aiws make [--dir D] [--size WxH] [--secs N] SPEC...  (aiws help)")
+    os.makedirs(out, exist_ok=True)
+    seq = len(os.listdir(out))
+    for spec in specs:
+        spec, _, count = spec.partition(":")
+        for _ in range(int(count or 1)):
+            seq += 1
+            if spec == "tree":
+                path = os.path.join(out, f"tree-{seq}")
+                make_tree(path, size, secs)
+            else:
+                # a bare extension (or N*anything) gets a numbered name
+                bare = "." not in spec or spec.lower() in ("tar.gz",)
+                ext = spec if bare else spec.split(".", 1)[1]
+                path = os.path.join(out, spec if not bare and not count else f"test-{seq}.{ext}")
+                make_one(path, size, secs, seq)
+            print(path)
+
+
+def clean():
+
+    for d in (os.path.join(RUN, "files"),):
+        shutil.rmtree(d, ignore_errors=True)
+    if os.path.isdir(RUN):
+        for f in os.listdir(RUN):
+            if f.startswith("run-"):
+                os.remove(os.path.join(RUN, f))
+    tmp = tempfile.gettempdir()
+    for d in os.listdir(tmp):
+        if d.startswith("aiws-sandbox-"):
+            bus = os.path.join(tmp, d, "bus")
+            r = subprocess.run(["fuser", bus], capture_output=True, text=True)
+            users = [int(x) for x in r.stdout.split() if x.isdigit()]
+            daemons = [u for u in users if open(f"/proc/{u}/comm").read().strip() == "dbus-daemon"]
+            if len(users) > len(daemons):
+                continue  # a test instance still uses this sandbox
+            for u in daemons:
+                os.kill(u, 15)
+            shutil.rmtree(os.path.join(tmp, d), ignore_errors=True)
+
+
+def sandbox_env():
+    root = tempfile.mkdtemp(prefix="aiws-sandbox-")
+    out = {"AI_WORKSPACE": "1", "VECTOR_OUTPUT": OUT, "AIWS_SANDBOX": root}
+    for k in ("CONFIG", "DATA", "STATE", "CACHE"):
+        d = os.path.join(root, k.lower())
+        os.makedirs(d)
+        out[f"XDG_{k}_HOME"] = d
+    # GTK animations stall on the headless output (no frame callbacks while
+    # nothing changes), leaving fade-ins stuck at opacity 0
+    for gtk in ("gtk-3.0", "gtk-4.0"):
+        os.makedirs(os.path.join(root, "config", gtk))
+        with open(os.path.join(root, "config", gtk, "settings.ini"), "w") as f:
+            f.write("[Settings]\ngtk-enable-animations=false\n")
+    r = subprocess.run(["dbus-daemon", "--session", "--fork", "--print-address=1", "--print-pid=1",
+                        f"--address=unix:path={root}/bus"], capture_output=True, text=True, check=True)
+    addr, pid = r.stdout.split()[:2]
+    out["DBUS_SESSION_BUS_ADDRESS"] = addr
+    out["AIWS_DBUS_PID"] = pid
+    for k, v in out.items():
+        print(f"export {k}={shlex.quote(v)}")
+    print(f"# clean up: kill {pid}; rm -rf {root}")
+
+
+def main():
+    a = sys.argv[1:]
+    cmd = a[0] if a else "status"
+    if cmd == "daemon":
+        daemon()
+    elif cmd == "up":
+        ensure()
+    elif cmd == "show":
+        show()
+    elif cmd == "run":
+        run(a[1:])
+    elif cmd == "shot":
+        shot(a[1] if len(a) > 1 else None)
+    elif cmd == "windows":
+        for c in ai_windows():
+            print(f"{c['address']}  pid {c['pid']}  {c['class']}  {c['title']}")
+    elif cmd == "key" and len(a) == 3:
+        mods, _, key = a[2].rpartition(",")
+        send_keys(a[1], mods.strip(), key.strip())
+    elif cmd == "type" and len(a) == 3:
+        type_text(a[1], a[2])
+    elif cmd == "close" and len(a) == 2:
+        addrs = [c["address"] for c in ai_windows()] if a[1] == "all" else [a[1]]
+        if addrs:
+            batch(*(f"dispatch closewindow address:{x}" for x in addrs))
+    elif cmd == "nest":
+        nest(a[1:])
+    elif cmd == "browser":
+        browser(a[1] if len(a) > 1 else None)
+    elif cmd == "wait":
+        wait(a[1] if len(a) > 1 else "", float(a[2]) if len(a) > 2 else 10)
+    elif cmd == "make":
+        make(a[1:])
+    elif cmd == "clean":
+        clean()
+    elif cmd == "env":
+        sandbox_env()
+    elif cmd == "status":
+        mons = monitors()
+        print(f"output {OUT}: {'up' if OUT in mons else 'missing'}")
+        print(f"workspace 0 (id {WS}) on {ws_monitor(mons)}, {len(ai_windows())} windows")
+    else:
+        print(__doc__.strip())
+        sys.exit(0 if cmd in ("help", "-h", "--help") else 2)
+
+
+if __name__ == "__main__":
+    main()
