@@ -928,7 +928,10 @@ pub fn message(block: &str, title: &str, detail: &str) {
 }
 
 fn focused_monitor() -> Option<(gdk::Monitor, String)> {
-    let name = focused_monitor_json().and_then(|m| m["name"].as_str().map(str::to_string));
+    let name = std::env::var("VECTOR_OUTPUT")
+        .ok()
+        .filter(|o| !o.is_empty())
+        .or_else(|| focused_monitor_json().and_then(|m| m["name"].as_str().map(str::to_string)));
     let d = gdk::Display::default()?;
     let ms = d.monitors();
     let all: Vec<gdk::Monitor> = (0..ms.n_items())

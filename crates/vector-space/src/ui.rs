@@ -88,7 +88,13 @@ pub fn build(app: &gtk::Application) -> Rc<Ui> {
     win.init_layer_shell();
     win.set_layer(Layer::Overlay);
     win.set_namespace(Some("vector-space"));
-    win.set_keyboard_mode(KeyboardMode::Exclusive);
+    // a test instance on another output (VECTOR_OUTPUT, the AI workspace)
+    // must never take the owner's keyboard
+    win.set_keyboard_mode(if std::env::var_os("VECTOR_OUTPUT").is_some() {
+        KeyboardMode::None
+    } else {
+        KeyboardMode::Exclusive
+    });
     for e in [Edge::Top, Edge::Bottom, Edge::Left, Edge::Right] {
         win.set_anchor(e, true);
     }
@@ -683,14 +689,15 @@ impl Ui {
         });
     }
 
-    /// The focused monitor, and the card a sixth of the way down it.
+    /// The focused monitor (or VECTOR_OUTPUT, for test instances on the AI
+    /// workspace's output), and the card a sixth of the way down it.
     fn place(&self) {
-        let name = util::hypr_json("monitors").and_then(|v| {
+        let name = std::env::var("VECTOR_OUTPUT").ok().filter(|o| !o.is_empty()).or_else(|| util::hypr_json("monitors").and_then(|v| {
             v.as_array()?
                 .iter()
                 .find(|m| m["focused"].as_bool() == Some(true))
                 .and_then(|m| m["name"].as_str().map(str::to_string))
-        });
+        }));
         let Some(display) = gdk::Display::default() else { return };
         let mons = display.monitors();
         let mon = (0..mons.n_items())

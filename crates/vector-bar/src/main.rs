@@ -351,6 +351,9 @@ fn reload(app: &gtk::Application) {
         let Some(m) = monitors.item(i).and_downcast::<gdk::Monitor>() else {
             continue;
         };
+        if !wanted_output(&m, test) {
+            continue;
+        }
         let w = bar::build(app, &m, &cfg, &theme_rc, &sections, test);
         w.present();
         bars.push(w);
@@ -405,6 +408,17 @@ fn watch_files(app: &gtk::Application) {
     }
     // live for the whole program
     std::mem::forget(monitors);
+}
+
+/// The AI workspace's headless output (see `aiws`) gets no bar: agents take
+/// screenshots there and must not see the owner's window titles or media.
+/// A test bar started with VECTOR_OUTPUT=NAME goes on that output only.
+fn wanted_output(m: &gdk::Monitor, test: bool) -> bool {
+    let name = m.connector().map(|c| c.to_string()).unwrap_or_default();
+    match std::env::var("VECTOR_OUTPUT") {
+        Ok(o) if test && !o.is_empty() => name == o,
+        _ => name != "AI",
+    }
 }
 
 fn watch_monitors(app: &gtk::Application) {

@@ -200,6 +200,9 @@ window.vbar .right {{ margin-right: 0; }}
 .ws.active label {{ font-weight: bold; }}
 .ws.urgent label {{ color: {crit}; }}
 .ws:hover {{ background: alpha({fg}, 0.08); }}
+/* the AI workspace (0): set apart from the owner's own */
+.ws.ai {{ margin-left: 4px; }}
+.ws.ai label {{ font-style: italic; }}
 .indicators .item {{ padding: 0 5px; }}
 
 /* ── tooltips ────────────────────────────────────────── */

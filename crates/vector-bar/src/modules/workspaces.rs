@@ -1,6 +1,8 @@
 //! Hyprland workspaces, event driven. Persistent 1..N, plus any other
 //! existing workspace; active shows the dot glyph, empty ones are dimmed,
 //! urgent ones tinted, the special (scratchpad) workspace gets a mark while open.
+//! Workspace 10 ("0") is the AI workspace (`aiws`): it lives on a headless
+//! output, so a click pulls it onto this screen instead of switching to it.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
@@ -12,6 +14,8 @@ use super::{BarInfo, Ctx, Module};
 use crate::hypr;
 use crate::ui;
 use crate::util;
+
+const AI_WS: i64 = 10;
 
 #[derive(Default, Clone, PartialEq)]
 struct Snapshot {
@@ -209,21 +213,35 @@ impl Inner {
             c = ch.next_sibling();
             existing.push(ch);
         }
-        let want = ids.len() + usize::from(special.is_some());
-        if existing.len() != want {
+        // rebuild when the id list changes, not only its length: each button's
+        // click is bound to its id
+        let want: Vec<String> = ids
+            .iter()
+            .map(|i| i.to_string())
+            .chain(special.iter().map(|_| "special".to_string()))
+            .collect();
+        let have: Vec<String> = existing.iter().map(|w| w.widget_name().to_string()).collect();
+        if have != want {
             ui::clear(b);
             existing.clear();
             for id in &ids {
                 let btn = ui::hbox(0, &["ws"]);
+                btn.set_widget_name(&id.to_string());
                 let l = gtk::Label::new(None);
                 btn.append(&l);
                 let id = *id;
-                ui::on_click(&btn, move || hypr::dispatch(&format!("workspace {id}")));
+                if id == AI_WS {
+                    btn.add_css_class("ai");
+                    ui::on_click(&btn, || util::spawn(&["aiws", "show"]));
+                } else {
+                    ui::on_click(&btn, move || hypr::dispatch(&format!("workspace {id}")));
+                }
                 b.append(&btn);
                 existing.push(btn.upcast());
             }
             if special.is_some() {
                 let btn = ui::hbox(0, &["ws", "special"]);
+                btn.set_widget_name("special");
                 btn.append(&gtk::Label::new(None));
                 ui::on_click(&btn, move || hypr::dispatch("togglespecialworkspace"));
                 b.append(&btn);
@@ -249,12 +267,13 @@ impl Inner {
             set(w, "active", is_active);
             set(w, "empty", windows == 0 && !is_active);
             set(w, "urgent", urgent.contains(id));
+            let what = if *id == AI_WS { "AI workspace" } else { "workspace" };
             let tip = match s.spaces.get(id) {
                 Some((_, _, n)) if *n > 0 => format!(
-                    "workspace {name} · {n} window{}",
+                    "{what} {name} · {n} window{}",
                     if *n == 1 { "" } else { "s" }
                 ),
-                _ => format!("workspace {name} · empty"),
+                _ => format!("{what} {name} · empty"),
             };
             w.set_tooltip_text(Some(&tip));
         }

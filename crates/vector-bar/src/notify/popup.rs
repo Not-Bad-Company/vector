@@ -229,12 +229,12 @@ pub fn restyle() {
 }
 
 fn focused_monitor() -> Option<gdk::Monitor> {
-    let name = crate::hypr::json("monitors").and_then(|v| {
+    let name = std::env::var("VECTOR_OUTPUT").ok().filter(|o| !o.is_empty()).or_else(|| crate::hypr::json("monitors").and_then(|v| {
         v.as_array()?
             .iter()
             .find(|m| m["focused"].as_bool() == Some(true))
             .and_then(|m| m["name"].as_str().map(str::to_string))
-    });
+    }));
     let d = gdk::Display::default()?;
     let ms = d.monitors();
     let all: Vec<gdk::Monitor> = (0..ms.n_items())

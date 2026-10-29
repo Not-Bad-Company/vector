@@ -104,7 +104,13 @@ fn open(name: &str, build: PanelFn, anchor: Option<gtk::Widget>, center: bool) {
     win.init_layer_shell();
     win.set_layer(Layer::Overlay);
     win.set_namespace(Some("vector-bar-panel"));
-    win.set_keyboard_mode(KeyboardMode::Exclusive);
+    // a test bar on another output (VECTOR_OUTPUT, the AI workspace) must
+    // never take the owner's keyboard
+    win.set_keyboard_mode(if std::env::var_os("VECTOR_OUTPUT").is_some() {
+        KeyboardMode::None
+    } else {
+        KeyboardMode::Exclusive
+    });
     for e in [Edge::Top, Edge::Bottom, Edge::Left, Edge::Right] {
         win.set_anchor(e, true);
     }
