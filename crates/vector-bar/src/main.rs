@@ -8,6 +8,7 @@
 //!   vector-bar osd <args...>      on-screen display (swayosd-client compatible)
 //!   vector-bar close | modules | quit
 
+mod autohide;
 mod bar;
 mod config;
 mod dbus;
@@ -356,6 +357,7 @@ fn reload(app: &gtk::Application) {
         }
         let w = bar::build(app, &m, &cfg, &theme_rc, &sections, test);
         w.present();
+        autohide::attach(app, &w, &m, test);
         bars.push(w);
     }
     STATE.with(|s| s.borrow_mut().bars = bars);
