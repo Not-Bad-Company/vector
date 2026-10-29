@@ -79,7 +79,8 @@ pub fn sheet() -> gtk::Box {
 /// slanted edge, then the detail. Returns (box, detail label).
 pub fn head(title: &str, detail: &str) -> (gtk::Box, gtk::Label) {
     let b = hbox(0, &["thead"]);
-    let t = text(&title.to_uppercase(), &["htitle"]);
+    let shown = if title.chars().any(|c| c.is_uppercase()) { title.to_string() } else { title.to_uppercase() };
+    let t = text(&shown, &["htitle"]);
     t.set_valign(gtk::Align::Fill);
     b.append(&t);
     let theme = crate::panel::current_theme();

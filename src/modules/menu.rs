@@ -52,7 +52,8 @@ impl Menu {
         slot.tooltip(|| {
             let s = ui::sheet();
             let states = crate::mode::active();
-            s.append(&ui::head("vector", &states.iter().map(|x| x.label.to_lowercase()).collect::<Vec<_>>().join(" · ")).0);
+            let on: Vec<String> = states.iter().filter(|x| x.key != "normal").map(|x| x.label.to_lowercase()).collect();
+            s.append(&ui::head("VectorOS", &if on.is_empty() { "menu".to_string() } else { on.join(" · ") }).0);
             s.append(&ui::thint("click menu  ·  right terminal"));
             Some(s.upcast())
         });
@@ -181,7 +182,7 @@ fn menu_panel(p: &Panel, t: &Rc<Theme>) -> gtk::Widget {
         .unwrap_or_default();
     let theme_name = util::read_trim(util::config_dir().join("omarchy/current/theme.name")).unwrap_or_default().replace('-', " ");
     let _ = host;
-    let card = Card::new("vector os", &format!("up {up}{}", if theme_name.is_empty() { String::new() } else { format!(" · {theme_name}") }));
+    let card = Card::new("VectorOS", &format!("up {up}{}", if theme_name.is_empty() { String::new() } else { format!(" · {theme_name}") }));
     let _ = t;
     let b = &card.body;
 

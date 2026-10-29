@@ -293,7 +293,9 @@ impl Card {
         let root = ui::vbox(0, &[]);
         let head = ui::hbox(0, &["head"]);
         let t = theme();
-        let block = ui::text(&title.to_uppercase(), &["htitle"]);
+        // titles are uppercase like nvim's mode names, except proper names (VectorOS)
+        let shown = if title.chars().any(|c| c.is_uppercase()) { title.to_string() } else { title.to_uppercase() };
+        let block = ui::text(&shown, &["htitle"]);
         block.set_valign(gtk::Align::Fill);
         head.append(&block);
         head.append(&crate::bar::slant(false, crate::bar::Kind::Block, crate::bar::Kind::Plain, &t));
