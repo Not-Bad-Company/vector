@@ -63,13 +63,16 @@ pub fn current() -> &'static str {
 }
 
 /// Every mode key with its theme colour (for the CSS).
-pub const COLORS: [(&str, &str); 7] = [
+/// Every mode key with its theme colour (for the CSS). Informational states
+/// keep the accent (only their word shows); red is for what needs you now.
+pub const COLORS: [(&str, &str); 8] = [
     ("normal", "accent"),
     ("rec", "red"),
-    ("dictate", "magenta"),
-    ("silent", "yellow"),
-    ("awake", "cyan"),
-    ("vm", "green"),
+    ("agent", "red"),
+    ("dictate", "accent"),
+    ("silent", "accent"),
+    ("awake", "accent"),
+    ("vm", "accent"),
     ("low", "red"),
 ];
 

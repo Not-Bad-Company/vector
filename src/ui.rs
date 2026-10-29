@@ -72,7 +72,7 @@ pub fn spacer() -> gtk::Box {
 
 /// A tooltip sheet: vertical box with tooltip padding.
 pub fn sheet() -> gtk::Box {
-    vbox(3, &["sheet"])
+    vbox(5, &["sheet"])
 }
 
 /// Tooltip header: a little statusline, the title in a block with a
@@ -198,7 +198,7 @@ pub fn meter_row(k: &str, frac: f64, value: &str, detail: &str, class: &str) -> 
     let b = hbox(10, &["meterrow"]);
     b.append(&text(k, &["k"]));
     let m = meter(frac, class);
-    m.set_size_request(110, -1);
+    m.set_size_request(140, -1);
     m.set_hexpand(false);
     b.append(&m);
     let v = label(value, &["v"]);

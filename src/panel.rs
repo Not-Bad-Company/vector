@@ -149,7 +149,8 @@ fn open(name: &str, build: PanelFn, anchor: Option<gtk::Widget>, center: bool) {
     let card = ui::vbox(0, &["card"]);
     let content = build(&panel);
     card.append(&content);
-    let w = panel.0.width.get();
+    // a little roomier than each panel asks for: nothing should feel squeezed
+    let w = panel.0.width.get() + 40;
     card.set_size_request(w, -1);
     let nat = card.measure(gtk::Orientation::Horizontal, -1).1.max(w);
     if std::env::var_os("VB_DEBUG").is_some() {

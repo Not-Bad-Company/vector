@@ -177,15 +177,15 @@ tooltip {{
   box-shadow: none;
 }}
 tooltip > box {{ padding: 0; }}
-tooltip .sheet {{ padding: 0 0 10px 0; min-width: 240px; }}
+tooltip .sheet {{ padding: 0 0 12px 0; min-width: 260px; }}
 tooltip .sheet.bare {{ padding: 0; }}
 tooltip .sheet.bare > .thead {{ margin: 0; border-bottom: none; }}
-.tkv .k {{ min-width: {kcol}px; color: alpha({fg}, 0.5); }}
-tooltip .sheet > * {{ margin-left: 14px; margin-right: 14px; }}
-tooltip .sheet > .thead {{ margin: 0 0 6px 0; background: alpha({fg}, 0.035); border-bottom: 1px solid alpha({fg}, 0.08); min-height: 24px; }}
+.tkv .k {{ min-width: {kcol}px; margin-right: 12px; color: alpha({fg}, 0.5); }}
+tooltip .sheet > * {{ margin-left: 16px; margin-right: 16px; }}
+tooltip .sheet > .thead {{ margin: 0 0 8px 0; background: alpha({fg}, 0.035); border-bottom: 1px solid alpha({fg}, 0.08); min-height: 24px; }}
 tooltip .thead .htitle {{ background: {acc}; color: {bg}; font-weight: bold; padding: 0 10px; }}
 tooltip .thead .hdetail {{ color: alpha({fg}, 0.6); margin: 0 12px 0 6px; }}
-tooltip .tsec {{ font-weight: bold; margin-top: 8px; }}
+tooltip .tsec {{ font-weight: bold; margin-top: 12px; margin-bottom: 2px; }}
 
 /* ── panels ──────────────────────────────────────────── */
 window.vpanel {{ background: transparent; }}
@@ -200,13 +200,13 @@ window.vpanel {{ background: transparent; }}
   from {{ opacity: 0; transform: translateY(-6px); }}
   to {{ opacity: 1; transform: none; }}
 }}
-.card .head {{ background: alpha({fg}, 0.035); border-bottom: 1px solid alpha({fg}, 0.08); min-height: 26px; padding: 0 10px 0 0; margin-bottom: 6px; }}
-.card .head .htitle {{ color: {bg}; font-weight: bold; padding: 0 12px; }}
+.card .head {{ background: alpha({fg}, 0.035); border-bottom: 1px solid alpha({fg}, 0.08); min-height: 30px; padding: 0 12px 0 0; margin-bottom: 10px; }}
+.card .head .htitle {{ color: {bg}; font-weight: bold; padding: 0 14px; }}
 .card .head .hdetail {{ color: alpha({fg}, 0.6); }}
 .card .head .hmark {{ margin-left: 10px; }}
-.card .foot {{ padding: 3px 8px; margin-top: 6px; background: alpha({fg}, 0.035); border-top: 1px solid alpha({fg}, 0.08); min-height: 22px; }}
+.card .foot {{ padding: 5px 12px; margin-top: 10px; background: alpha({fg}, 0.035); border-top: 1px solid alpha({fg}, 0.08); min-height: 28px; }}
 .card .foot .key {{ color: alpha({fg}, 0.4); }}
-.card .body {{ padding-bottom: 6px; }}
+.card .body {{ padding-bottom: 10px; }}
 
 .title {{ color: {acc}; font-weight: bold; }}
 .dim {{ color: alpha({fg}, 0.5); }}
@@ -216,18 +216,18 @@ window.vpanel {{ background: transparent; }}
 .warn {{ color: {yellow}; }}
 .crit {{ color: {red}; }}
 .mono-big {{ font-size: {big}px; font-weight: bold; }}
-.section {{ padding: 12px 16px 4px 16px; font-weight: bold; }}
-.section.first {{ padding-top: 4px; }}
+.section {{ padding: 18px 20px 6px 20px; font-weight: bold; }}
+.section.first {{ padding-top: 6px; }}
 .sep {{ background: alpha({fg}, 0.08); min-height: 1px; margin: 6px 0; }}
-.kv {{ padding: 2px 16px; }}
-.kv .k {{ color: alpha({fg}, 0.5); min-width: {kcol}px; }}
+.kv {{ padding: 4px 20px; }}
+.kv .k {{ color: alpha({fg}, 0.5); min-width: {kcol}px; margin-right: 12px; }}
 .note {{ padding: 2px 16px; }}
-.hint {{ padding: 8px 16px 0 16px; color: alpha({fg}, 0.5); }}
-.empty-note {{ padding: 14px 16px; color: alpha({fg}, 0.45); }}
-.msg {{ padding: 2px 16px 6px 16px; }}
+.hint {{ padding: 10px 20px 0 20px; color: alpha({fg}, 0.5); }}
+.empty-note {{ padding: 18px 20px; color: alpha({fg}, 0.45); }}
+.msg {{ padding: 4px 20px 8px 20px; }}
 
 .row {{
-  padding: 7px 16px;
+  padding: 9px 20px;
   border-left: 2px solid transparent;
   transition: background 120ms ease;
 }}
@@ -237,7 +237,7 @@ window.vpanel {{ background: transparent; }}
 .row.sel {{ background: alpha({fg}, 0.09); border-left-color: alpha({fg}, 0.5); }}
 .row .icon {{ min-width: 22px; }}
 .row .meta {{ color: alpha({fg}, 0.5); }}
-.expand {{ padding: 2px 16px 10px 40px; }}
+.expand {{ padding: 4px 20px 12px 46px; }}
 
 /* meters: thin flat bars */
 levelbar.meter {{ min-height: 4px; }}
@@ -248,9 +248,9 @@ levelbar.meter block.empty {{ background: transparent; }}
 levelbar.meter.warn block.filled {{ background: {yellow}; }}
 levelbar.meter.crit block.filled {{ background: {red}; }}
 levelbar.meter.pace block.filled {{ background: alpha({fg}, 0.35); }}
-.meterrow {{ padding: 3px 16px; }}
-.meterrow .k {{ color: alpha({fg}, 0.5); min-width: {kcol}px; }}
-.meterrow .v {{ min-width: 40px; }}
+.meterrow {{ padding: 6px 20px; }}
+.meterrow .k {{ color: alpha({fg}, 0.5); min-width: {kcol}px; margin-right: 4px; }}
+.meterrow .v {{ min-width: 44px; margin-right: 6px; }}
 
 /* buttons */
 button.link, button.chip, button.icon {{
@@ -268,7 +268,7 @@ button.icon:hover {{ opacity: 1; background: alpha({fg}, 0.08); }}
 button.chip {{ border: 1px solid alpha({fg}, 0.16); padding: 4px 10px; }}
 button.chip:hover {{ background: alpha({fg}, 0.07); }}
 button.chip.on {{ border-color: {acc}; background: alpha({acc}, 0.16); color: {fg}; }}
-.chips {{ padding: 4px 16px 6px 16px; }}
+.chips {{ padding: 6px 20px 8px 20px; }}
 .seg button.chip {{ margin-right: -1px; }}
 button.x {{ opacity: 0; padding: 0 5px; }}
 .row:hover button.x {{ opacity: 0.55; }}
@@ -281,7 +281,7 @@ entry {{
   box-shadow: none; outline: none;
 }}
 entry:focus-within {{ border-color: {acc}; }}
-.search {{ padding: 0 16px 8px 16px; }}
+.search {{ padding: 2px 20px 10px 20px; }}
 
 switch {{
   background: alpha({fg}, 0.10);
@@ -305,13 +305,13 @@ scale slider {{ background: {fg}; border-radius: 0; min-width: 10px; min-height:
 scrollbar {{ background: transparent; }}
 scrollbar slider {{ background: alpha({fg}, 0.2); border-radius: 0; min-width: 3px; }}
 spinner {{ color: {acc}; }}
-.thumb {{ padding: 0 16px 8px 48px; }}
+.thumb {{ padding: 0 20px 10px 52px; }}
 .thumb picture {{ border: 1px solid alpha({fg}, 0.12); }}
 .app {{ color: {acc}; }}
 .body-text {{ color: alpha({fg}, 0.65); }}
 
 /* calendar */
-.cal {{ padding: 2px 12px 6px 12px; }}
+.cal {{ padding: 4px 16px 8px 16px; }}
 .cal label {{ min-width: 30px; min-height: 22px; }}
 .cal .wd {{ color: alpha({fg}, 0.45); }}
 .cal .wk {{ color: alpha({fg}, 0.3); }}
@@ -320,11 +320,11 @@ spinner {{ color: {acc}; }}
 .cal .weekend {{ color: alpha({fg}, 0.7); }}
 
 /* spark graphs */
-.spark {{ color: {acc}; padding: 0 16px; }}
+.spark {{ color: {acc}; padding: 0 20px; }}
 "#,
             small = (font_size - 2.0).max(8.0),
             big = font_size + 6.0,
-            kcol = (font_size * 5.6) as i32,
+            kcol = (font_size * 6.2) as i32,
             // the glass edge is 1px of the bar's height, not extra
             inner = if self.glass { height - 1 } else { height },
         ) + &self.mode_css()

@@ -41,7 +41,7 @@ const AGY: &str = "<span font_family='AntigravityMark'>\u{e000}</span>";
 const SPIN: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
 /// How long a finished agent stays on the bar line.
 const DONE_SHOWN: f64 = 120.0;
-const M_AGENT: mode::State = mode::State { key: "silent", label: "AGENT", rank: 2 };
+const M_AGENT: mode::State = mode::State { key: "agent", label: "AGENT", rank: 2 };
 
 // ── agents ───────────────────────────────────────────────────────────────────
 

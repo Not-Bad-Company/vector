@@ -68,7 +68,8 @@ impl Module for Menu {
     fn view(&self, _: &BarInfo) -> gtk::Widget {
         let w = self.slot.view();
         if let Some(b) = w.downcast_ref::<gtk::Box>() {
-            b.prepend(&mark(&self.theme, 13).tap(|m| m.add_css_class("mark")));
+            // the VectorOS mark: nf-md-vector_difference_ba
+            b.prepend(&ui::text("\u{f055c}", &["mark"]));
         }
         w
     }
