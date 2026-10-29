@@ -1,0 +1,33 @@
+[package]
+name = "vector-space"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Vector Space: the Vector OS launcher (apps, clipboard, notifications, emoji, web, calculator)"
+repository = "https://github.com/Not-Bad-Company/vector"
+
+[dependencies]
+vector-core.workspace = true
+glib.workspace = true
+gio.workspace = true
+gio-unix = "0.22"
+gtk.workspace = true
+async-channel.workspace = true
+nucleo.workspace = true
+gtk4-layer-shell = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+libc = "0.2"
+imagesize = "0.15"
+
+# `vector-space`: the light client (no GTK, starts in milliseconds): forwards
+# to the resident window, records copies, converts files.
+[[bin]]
+name = "vector-space"
+path = "src/main.rs"
+
+# `vector-space-daemon`: the window (GTK), run by vector-space.service.
+[[bin]]
+name = "vector-space-daemon"
+path = "src/daemon.rs"
