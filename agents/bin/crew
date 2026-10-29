@@ -1121,7 +1121,7 @@ HOOKS = {
     "PreToolUse": ("pre-tool", "Edit|Write|NotebookEdit|MultiEdit|Bash", {"timeout": 15}),
     "PostToolUse": ("post-tool", None, {}),
     "Stop": ("stop", None, {"asyncRewake": True, "timeout": 604800, "rewakeSummary": "crew message",
-                            "rewakeMessage": "Message from another agent via crew (not from the user):"}),
+                            "rewakeMessage": "Message via crew (it says who it is from):"}),
 }
 SETTINGS = [os.path.join(HOME, d, "settings.json") for d in ACCOUNTS]
 
