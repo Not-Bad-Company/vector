@@ -30,7 +30,10 @@ impl Clock {
             alt: o.str("format_alt", "%d %B W%V %Y"),
             use_alt: Cell::new(false),
         });
-        let right = o.str("on_right", "omarchy-launch-floating-terminal-with-presentation omarchy-tz-select");
+        let right = o.str(
+            "on_right",
+            "omarchy-launch-floating-terminal-with-presentation omarchy-tz-select",
+        );
         inner.slot.on_right(move || util::spawn_sh(&right));
         let w = Rc::downgrade(&inner);
         inner.slot.on_middle(move || {
@@ -49,8 +52,13 @@ impl Clock {
 
 impl Inner {
     fn tick(&self) {
-        let f = if self.use_alt.get() { &self.alt } else { &self.format };
-        self.slot.set_markup(&util::esc(&Local::now().format(f).to_string()));
+        let f = if self.use_alt.get() {
+            &self.alt
+        } else {
+            &self.format
+        };
+        self.slot
+            .set_markup(&util::esc(&Local::now().format(f).to_string()));
     }
 }
 
@@ -78,7 +86,9 @@ fn calendar_panel(p: &Panel) -> gtk::Widget {
     card.body.append(&big);
     card.body.append(&sub);
 
-    let month = Rc::new(Cell::new(NaiveDate::from_ymd_opt(now.year(), now.month(), 1).unwrap_or_default()));
+    let month = Rc::new(Cell::new(
+        NaiveDate::from_ymd_opt(now.year(), now.month(), 1).unwrap_or_default(),
+    ));
     let nav = ui::hbox(4, &["chips"]);
     let mlabel = ui::text("", &[]);
     mlabel.set_hexpand(true);
@@ -132,7 +142,9 @@ fn calendar_panel(p: &Panel) -> gtk::Widget {
     nav.append(&ui::icon_button("", "next month", next.clone()));
 
     // scroll over the grid changes month
-    let sc = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL | gtk::EventControllerScrollFlags::DISCRETE);
+    let sc = gtk::EventControllerScroll::new(
+        gtk::EventControllerScrollFlags::VERTICAL | gtk::EventControllerScrollFlags::DISCRETE,
+    );
     {
         let (prev, next) = (prev.clone(), next.clone());
         sc.connect_scroll(move |_, _, dy| {
@@ -183,7 +195,10 @@ fn month_grid(first: NaiveDate) -> gtk::Widget {
     let wk = ui::text("wk", &["wk"]);
     wk.set_xalign(0.5);
     grid.attach(&wk, 0, 0, 1, 1);
-    for (i, d) in ["mo", "tu", "we", "th", "fr", "sa", "su"].iter().enumerate() {
+    for (i, d) in ["mo", "tu", "we", "th", "fr", "sa", "su"]
+        .iter()
+        .enumerate()
+    {
         let l = ui::text(d, &["wd"]);
         l.set_xalign(0.5);
         grid.attach(&l, i as i32 + 1, 0, 1, 1);

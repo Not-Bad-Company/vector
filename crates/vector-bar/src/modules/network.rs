@@ -65,7 +65,9 @@ impl State {
         self.nets.iter().find(|n| n.connected)
     }
     fn signal_pct(&self) -> i64 {
-        self.rssi.map(|d| (2 * (d + 100)).clamp(0, 100)).unwrap_or(0)
+        self.rssi
+            .map(|d| (2 * (d + 100)).clamp(0, 100))
+            .unwrap_or(0)
     }
 }
 
@@ -104,7 +106,8 @@ fn wired() -> Option<(String, Option<String>)> {
         if name == "lo" || p.join("wireless").exists() || !p.join("device").exists() {
             continue;
         }
-        if util::read_num(p.join("type")) == Some(1) && util::read_num(p.join("carrier")) == Some(1) {
+        if util::read_num(p.join("type")) == Some(1) && util::read_num(p.join("carrier")) == Some(1)
+        {
             let ip = ipv4(&name);
             return Some((name, ip));
         }
@@ -114,26 +117,56 @@ fn wired() -> Option<(String, Option<String>)> {
 
 async fn collect(c: &gio::DBusConnection) -> State {
     let objs: Objects = dbus::managed(c, IWD, "/").await;
-    let mut s = State { adapter: objs.iter().find(|(_, i)| i.contains_key("net.connman.iwd.Adapter")).map(|(p, _)| p.clone()), ..Default::default() };
+    let mut s = State {
+        adapter: objs
+            .iter()
+            .find(|(_, i)| i.contains_key("net.connman.iwd.Adapter"))
+            .map(|(p, _)| p.clone()),
+        ..Default::default()
+    };
     s.wired = wired();
-    let dev = objs.iter().find(|(_, i)| i.get("net.connman.iwd.Device").is_some_and(|d| dbus::get_str(d, "Mode") == "station"));
+    let dev = objs.iter().find(|(_, i)| {
+        i.get("net.connman.iwd.Device")
+            .is_some_and(|d| dbus::get_str(d, "Mode") == "station")
+    });
     let Some((dev, ifs)) = dev else { return s };
     s.device = Some(dev.clone());
     let d = &ifs["net.connman.iwd.Device"];
     s.powered = dbus::get_bool(d, "Powered");
     s.iface = dbus::get_str(d, "Name");
-    let Some(st) = ifs.get("net.connman.iwd.Station") else { return s };
+    let Some(st) = ifs.get("net.connman.iwd.Station") else {
+        return s;
+    };
     s.station = true;
     s.st_state = dbus::get_str(st, "State");
     s.scanning = dbus::get_bool(st, "Scanning");
     let target = dbus::get_str(st, "ConnectedNetwork");
-    if let Ok(v) = dbus::call(c, IWD, dev, "net.connman.iwd.Station", "GetOrderedNetworks", None, 2000).await {
+    if let Ok(v) = dbus::call(
+        c,
+        IWD,
+        dev,
+        "net.connman.iwd.Station",
+        "GetOrderedNetworks",
+        None,
+        2000,
+    )
+    .await
+    {
         let arr = v.child_value(0);
         for i in 0..arr.n_children() {
             let e = arr.child_value(i);
             let path = e.child_value(0).str().unwrap_or("").to_string();
-            let strength = e.child_value(1).get::<i16>().map(i64::from).unwrap_or(-10000);
-            let Some(n) = objs.get(&path).and_then(|x| x.get("net.connman.iwd.Network")) else { continue };
+            let strength = e
+                .child_value(1)
+                .get::<i16>()
+                .map(i64::from)
+                .unwrap_or(-10000);
+            let Some(n) = objs
+                .get(&path)
+                .and_then(|x| x.get("net.connman.iwd.Network"))
+            else {
+                continue;
+            };
             let dbm = strength / 100;
             let known = dbus::get_str(n, "KnownNetwork");
             s.nets.push(WifiNet {
@@ -141,7 +174,8 @@ async fn collect(c: &gio::DBusConnection) -> State {
                 name: dbus::get_str(n, "Name"),
                 kind: dbus::get_str(n, "Type"),
                 connected: dbus::get_bool(n, "Connected") && s.st_state != "connecting",
-                connecting: path == target && matches!(s.st_state.as_str(), "connecting" | "roaming"),
+                connecting: path == target
+                    && matches!(s.st_state.as_str(), "connecting" | "roaming"),
                 known: (!known.is_empty()).then_some(known),
                 level: ((dbm + 90) / 10).clamp(0, 4) as usize,
                 dbm,
@@ -150,7 +184,17 @@ async fn collect(c: &gio::DBusConnection) -> State {
     }
     s.nets.sort_by_key(|n| (!n.connected, n.known.is_none()));
     if s.current().is_some() {
-        if let Ok(v) = dbus::call(c, IWD, dev, "net.connman.iwd.StationDiagnostic", "GetDiagnostics", None, 1500).await {
+        if let Ok(v) = dbus::call(
+            c,
+            IWD,
+            dev,
+            "net.connman.iwd.StationDiagnostic",
+            "GetDiagnostics",
+            None,
+            1500,
+        )
+        .await
+        {
             let p = dbus::props(&v.child_value(0));
             s.rssi = dbus::get_i64(&p, "RSSI");
             s.freq = dbus::get_i64(&p, "Frequency").map(|f| f as u32);
@@ -246,7 +290,10 @@ impl Inner {
         let (icon, cls) = if s.wired.is_some() && s.current().is_none() {
             ("󰀂", "")
         } else if let Some(n) = s.current() {
-            let lvl = s.rssi.map(|d| ((d + 90) / 10).clamp(0, 4) as usize).unwrap_or(n.level);
+            let lvl = s
+                .rssi
+                .map(|d| ((d + 90) / 10).clamp(0, 4) as usize)
+                .unwrap_or(n.level);
             (BARS[lvl], "")
         } else if s.nets.iter().any(|n| n.connecting) {
             (BARS[0], "dim")
@@ -268,7 +315,13 @@ impl Inner {
         } else if let Some(n) = s.current() {
             sh.append(&ui::head("wi-fi", &util::esc(&n.name)).0);
             let pct = s.signal_pct();
-            sh.append(&ui::tmeter("signal", pct as f64 / 100.0, &format!("{pct}%"), &format!("{} dBm", s.rssi.unwrap_or(n.dbm)), if pct < 30 { "warn" } else { "" }));
+            sh.append(&ui::tmeter(
+                "signal",
+                pct as f64 / 100.0,
+                &format!("{pct}%"),
+                &format!("{} dBm", s.rssi.unwrap_or(n.dbm)),
+                if pct < 30 { "warn" } else { "" },
+            ));
             if let Some(b) = s.bitrate {
                 sh.append(&ui::tkv("speed", &format!("{} Mbit/s", b / 10)));
             }
@@ -313,7 +366,12 @@ struct PState {
 
 fn err_text(f: &Fail, with_pw: bool) -> String {
     match f.name.as_str() {
-        "Failed" => if with_pw { "wrong password?" } else { "couldn't connect" }.into(),
+        "Failed" => if with_pw {
+            "wrong password?"
+        } else {
+            "couldn't connect"
+        }
+        .into(),
         "InvalidFormat" => "wrong password?".into(),
         "Aborted" => "cancelled".into(),
         "InProgress" => "already connecting".into(),
@@ -329,7 +387,8 @@ fn wifi_panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
     let card = Card::new("wi-fi", "");
     let ps: Rc<RefCell<PState>> = Rc::default();
     let Some(conn) = i.conn.clone() else {
-        card.body.append(&ui::text("no system bus", &["empty-note"]));
+        card.body
+            .append(&ui::text("no system bus", &["empty-note"]));
         return card.root.upcast();
     };
 
@@ -380,19 +439,40 @@ fn wifi_panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
                         let pw = ps2.borrow().passwords.get(&net).cloned();
                         match pw {
                             Some(pw) => inv.return_value(Some(&(pw,).to_variant())),
-                            None => inv.return_dbus_error("net.connman.iwd.Agent.Error.Canceled", "no passphrase"),
+                            None => inv.return_dbus_error(
+                                "net.connman.iwd.Agent.Error.Canceled",
+                                "no passphrase",
+                            ),
                         }
                     }
                     "Release" | "Cancel" => inv.return_value(None),
-                    _ => inv.return_dbus_error("net.connman.iwd.Agent.Error.Canceled", "unsupported"),
+                    _ => {
+                        inv.return_dbus_error("net.connman.iwd.Agent.Error.Canceled", "unsupported")
+                    }
                 })
                 .build();
             if let Ok(id) = reg {
                 ps.borrow_mut().agent = Some(id);
                 let (c2, ps3) = (conn.clone(), ps.clone());
                 glib::spawn_future_local(async move {
-                    let r = dbus::call(&c2, IWD, "/net/connman/iwd", "net.connman.iwd.AgentManager", "RegisterAgent", Some((glib::variant::ObjectPath::try_from(AGENT_PATH).expect("static path"),).to_variant()), 3000).await;
-                    ps3.borrow_mut().agent_ok = Some(r.is_ok() || r.as_ref().err().is_some_and(|f| f.name == "AlreadyExists"));
+                    let r =
+                        dbus::call(
+                            &c2,
+                            IWD,
+                            "/net/connman/iwd",
+                            "net.connman.iwd.AgentManager",
+                            "RegisterAgent",
+                            Some(
+                                (glib::variant::ObjectPath::try_from(AGENT_PATH)
+                                    .expect("static path"),)
+                                    .to_variant(),
+                            ),
+                            3000,
+                        )
+                        .await;
+                    ps3.borrow_mut().agent_ok = Some(
+                        r.is_ok() || r.as_ref().err().is_some_and(|f| f.name == "AlreadyExists"),
+                    );
                 });
             }
         }
@@ -412,7 +492,18 @@ fn wifi_panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
                 }
             };
             if registered {
-                c2.call(Some(IWD), "/net/connman/iwd", "net.connman.iwd.AgentManager", "UnregisterAgent", Some(&(path,).to_variant()), None, gio::DBusCallFlags::NONE, 1000, gio::Cancellable::NONE, done);
+                c2.call(
+                    Some(IWD),
+                    "/net/connman/iwd",
+                    "net.connman.iwd.AgentManager",
+                    "UnregisterAgent",
+                    Some(&(path,).to_variant()),
+                    None,
+                    gio::DBusCallFlags::NONE,
+                    1000,
+                    gio::Cancellable::NONE,
+                    done,
+                );
             } else {
                 done(Ok(().to_variant()));
             }
@@ -434,17 +525,28 @@ fn wifi_panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
     let do_scan = {
         let (c, i, ps, rr) = (conn.clone(), Rc::downgrade(i), ps.clone(), rerender.clone());
         move || {
-            let Some(dev) = i.upgrade().and_then(|i| i.state.borrow().device.clone()) else { return };
+            let Some(dev) = i.upgrade().and_then(|i| i.state.borrow().device.clone()) else {
+                return;
+            };
             ps.borrow_mut().scan_hold = Some(std::time::Instant::now());
             ps.borrow_mut().errors.remove("scan");
             rr();
             let (c, ps, rr) = (c.clone(), ps.clone(), rr.clone());
             glib::spawn_future_local(async move {
-                if let Err(f) = dbus::call(&c, IWD, &dev, "net.connman.iwd.Station", "Scan", None, 5000).await {
+                if let Err(f) =
+                    dbus::call(&c, IWD, &dev, "net.connman.iwd.Station", "Scan", None, 5000).await
+                {
                     if f.name != "Busy" && f.name != "InProgress" {
                         let mut s = ps.borrow_mut();
                         s.scan_hold = None;
-                        s.errors.insert("scan".into(), if f.name == "NotAvailable" { "can't scan while connecting".into() } else { format!("scan failed: {}", f.message) });
+                        s.errors.insert(
+                            "scan".into(),
+                            if f.name == "NotAvailable" {
+                                "can't scan while connecting".into()
+                            } else {
+                                format!("scan failed: {}", f.message)
+                            },
+                        );
                     }
                 }
                 rr();
@@ -461,7 +563,12 @@ fn wifi_panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
         let ps = ps.clone();
         p.on_key(move |k, m| {
             let typing = ps.borrow().entry.as_ref().is_some_and(|e| e.has_focus());
-            if (k == gtk::gdk::Key::s || k == gtk::gdk::Key::S) && !typing && !m.intersects(gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::ALT_MASK) {
+            if (k == gtk::gdk::Key::s || k == gtk::gdk::Key::S)
+                && !typing
+                && !m.intersects(
+                    gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::ALT_MASK,
+                )
+            {
                 s();
                 return true;
             }
@@ -471,14 +578,22 @@ fn wifi_panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
 
     // power
     {
-        let (c, i, ps, guard, rr) = (conn.clone(), Rc::downgrade(i), ps.clone(), sw_guard.clone(), rerender.clone());
+        let (c, i, ps, guard, rr) = (
+            conn.clone(),
+            Rc::downgrade(i),
+            ps.clone(),
+            sw_guard.clone(),
+            rerender.clone(),
+        );
         sw.connect_state_set(move |_, on| {
             if guard.get() {
                 return glib::Propagation::Proceed;
             }
             ps.borrow_mut().switch_hold = Some((on, std::time::Instant::now()));
             ps.borrow_mut().errors.remove("power");
-            let Some(i) = i.upgrade() else { return glib::Propagation::Proceed };
+            let Some(i) = i.upgrade() else {
+                return glib::Propagation::Proceed;
+            };
             let st = i.state.borrow().clone();
             if on {
                 util::spawn(&["rfkill", "unblock", "wlan"]);
@@ -486,15 +601,38 @@ fn wifi_panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
             let (c, ps, rr) = (c.clone(), ps.clone(), rr.clone());
             glib::spawn_future_local(async move {
                 let r = if let Some(dev) = &st.device {
-                    dbus::set_prop(&c, IWD, dev, "net.connman.iwd.Device", "Powered", on.to_variant()).await
+                    dbus::set_prop(
+                        &c,
+                        IWD,
+                        dev,
+                        "net.connman.iwd.Device",
+                        "Powered",
+                        on.to_variant(),
+                    )
+                    .await
                 } else if let Some(a) = &st.adapter {
-                    dbus::set_prop(&c, IWD, a, "net.connman.iwd.Adapter", "Powered", on.to_variant()).await
+                    dbus::set_prop(
+                        &c,
+                        IWD,
+                        a,
+                        "net.connman.iwd.Adapter",
+                        "Powered",
+                        on.to_variant(),
+                    )
+                    .await
                 } else {
                     Ok(().to_variant())
                 };
                 if let Err(f) = r {
                     let mut s = ps.borrow_mut();
-                    s.errors.insert("power".into(), format!("couldn't turn wi-fi {}: {}", if on { "on" } else { "off" }, f.message));
+                    s.errors.insert(
+                        "power".into(),
+                        format!(
+                            "couldn't turn wi-fi {}: {}",
+                            if on { "on" } else { "off" },
+                            f.message
+                        ),
+                    );
                     s.switch_hold = None;
                 }
                 rr();
@@ -508,13 +646,24 @@ fn wifi_panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
         let (c, i, ps, rr) = (conn.clone(), Rc::downgrade(i), ps.clone(), rerender.clone());
         Rc::new(move |key: String, pw: Option<String>| {
             let Some(i) = i.upgrade() else { return };
-            let Some(n) = i.state.borrow().nets.iter().find(|n| n.path == key).cloned() else { return };
+            let Some(n) = i
+                .state
+                .borrow()
+                .nets
+                .iter()
+                .find(|n| n.path == key)
+                .cloned()
+            else {
+                return;
+            };
             if ps.borrow().busy.contains_key(&key) {
                 return;
             }
             if let Some(pw) = &pw {
                 if n.kind == "psk" && !(8..=63).contains(&pw.chars().count()) {
-                    ps.borrow_mut().errors.insert(key.clone(), "wi-fi passwords are 8 to 63 characters".into());
+                    ps.borrow_mut()
+                        .errors
+                        .insert(key.clone(), "wi-fi passwords are 8 to 63 characters".into());
                     rr();
                     return;
                 }
@@ -533,10 +682,28 @@ fn wifi_panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
                 if pw.is_some() {
                     if let Some(k) = &n.known {
                         // iwd never asks again for a saved network: forget, then connect fresh
-                        let _ = dbus::call(&c, IWD, k, "net.connman.iwd.KnownNetwork", "Forget", None, 5000).await;
+                        let _ = dbus::call(
+                            &c,
+                            IWD,
+                            k,
+                            "net.connman.iwd.KnownNetwork",
+                            "Forget",
+                            None,
+                            5000,
+                        )
+                        .await;
                     }
                 }
-                let r = dbus::call(&c, IWD, &key, "net.connman.iwd.Network", "Connect", None, 90_000).await;
+                let r = dbus::call(
+                    &c,
+                    IWD,
+                    &key,
+                    "net.connman.iwd.Network",
+                    "Connect",
+                    None,
+                    90_000,
+                )
+                .await;
                 let mut s = ps.borrow_mut();
                 s.busy.remove(&key);
                 s.passwords.remove(&key);
@@ -554,13 +721,26 @@ fn wifi_panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
     let disconnect: Rc<dyn Fn(String)> = {
         let (c, i, ps, rr) = (conn.clone(), Rc::downgrade(i), ps.clone(), rerender.clone());
         Rc::new(move |key: String| {
-            let Some(dev) = i.upgrade().and_then(|i| i.state.borrow().device.clone()) else { return };
-            ps.borrow_mut().busy.insert(key.clone(), "disconnecting".into());
+            let Some(dev) = i.upgrade().and_then(|i| i.state.borrow().device.clone()) else {
+                return;
+            };
+            ps.borrow_mut()
+                .busy
+                .insert(key.clone(), "disconnecting".into());
             ps.borrow_mut().expanded = None;
             rr();
             let (c, ps, rr) = (c.clone(), ps.clone(), rr.clone());
             glib::spawn_future_local(async move {
-                let r = dbus::call(&c, IWD, &dev, "net.connman.iwd.Station", "Disconnect", None, 10_000).await;
+                let r = dbus::call(
+                    &c,
+                    IWD,
+                    &dev,
+                    "net.connman.iwd.Station",
+                    "Disconnect",
+                    None,
+                    10_000,
+                )
+                .await;
                 let mut s = ps.borrow_mut();
                 s.busy.remove(&key);
                 if let Err(f) = r {
@@ -577,7 +757,17 @@ fn wifi_panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
             ps.borrow_mut().expanded = None;
             let (c, ps, rr) = (c.clone(), ps.clone(), rr.clone());
             glib::spawn_future_local(async move {
-                if let Err(f) = dbus::call(&c, IWD, &known, "net.connman.iwd.KnownNetwork", "Forget", None, 5000).await {
+                if let Err(f) = dbus::call(
+                    &c,
+                    IWD,
+                    &known,
+                    "net.connman.iwd.KnownNetwork",
+                    "Forget",
+                    None,
+                    5000,
+                )
+                .await
+                {
                     ps.borrow_mut().errors.insert(key, f.message);
                 }
                 rr();
@@ -587,9 +777,26 @@ fn wifi_panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
 
     let draw = {
         let i = Rc::downgrade(i);
-        let (ps, sw, guard, info, msgs, list) = (ps.clone(), sw.clone(), sw_guard.clone(), info.clone(), msgs.clone(), list.clone());
-        let (detail, spin, scan_l, scan_btn) = (card.detail.clone(), spin.clone(), scan_l.clone(), scan_btn.clone());
-        let (connect, disconnect, forget, rr) = (connect.clone(), disconnect.clone(), forget.clone(), rerender.clone());
+        let (ps, sw, guard, info, msgs, list) = (
+            ps.clone(),
+            sw.clone(),
+            sw_guard.clone(),
+            info.clone(),
+            msgs.clone(),
+            list.clone(),
+        );
+        let (detail, spin, scan_l, scan_btn) = (
+            card.detail.clone(),
+            spin.clone(),
+            scan_l.clone(),
+            scan_btn.clone(),
+        );
+        let (connect, disconnect, forget, rr) = (
+            connect.clone(),
+            disconnect.clone(),
+            forget.clone(),
+            rerender.clone(),
+        );
         let pc = p.clone();
         move || {
             let Some(i) = i.upgrade() else { return };
@@ -613,7 +820,11 @@ fn wifi_panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
             let cur = s.current().cloned();
             let going = s.nets.iter().find(|n| n.connecting).cloned();
             let d = if s.device.is_none() {
-                if s.adapter.is_some() { "off".to_string() } else { "no wireless device".into() }
+                if s.adapter.is_some() {
+                    "off".to_string()
+                } else {
+                    "no wireless device".into()
+                }
             } else if let Some(c) = &cur {
                 util::esc(&c.name)
             } else if let Some(g) = &going {
@@ -627,7 +838,10 @@ fn wifi_panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
             };
             detail.set_markup(&d);
 
-            let scanning = s.scanning || st.scan_hold.is_some_and(|t| t.elapsed() < Duration::from_secs(4) && !s.scanning && s.nets.is_empty());
+            let scanning = s.scanning
+                || st.scan_hold.is_some_and(|t| {
+                    t.elapsed() < Duration::from_secs(4) && !s.scanning && s.nets.is_empty()
+                });
             if s.scanning {
                 st.scan_hold = None;
             }
@@ -651,12 +865,22 @@ fn wifi_panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
                 if let Some(b) = s.bitrate {
                     parts.push(format!("{} Mbit/s", b / 10));
                 }
-                info.append(&ui::kv("signal", &parts.join(&format!(" {} ", ui::dim("·")))).0.tap(|b| b.set_margin_top(2)));
+                info.append(
+                    &ui::kv("signal", &parts.join(&format!(" {} ", ui::dim("·"))))
+                        .0
+                        .tap(|b| b.set_margin_top(2)),
+                );
                 info.append(&ui::kv("ip", s.ip.as_deref().unwrap_or("…")).0);
                 let _ = c;
             }
             if let Some((ifc, ip)) = &s.wired {
-                info.append(&ui::kv("wired", &format!("{ifc}  {}", ui::dim(ip.as_deref().unwrap_or("")))).0);
+                info.append(
+                    &ui::kv(
+                        "wired",
+                        &format!("{ifc}  {}", ui::dim(ip.as_deref().unwrap_or(""))),
+                    )
+                    .0,
+                );
             }
 
             ui::clear(&msgs);
@@ -669,28 +893,97 @@ fn wifi_panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
             // network rows
             let mut items: Vec<ui::Item> = Vec::new();
             if s.device.is_none() || !s.powered {
-                let t = if s.adapter.is_none() { "iwd sees no wi-fi device" } else { "wi-fi is off" };
-                items.push(("empty".into(), t.into(), Box::new(move || ui::text(t, &["empty-note"]).upcast())));
+                let t = if s.adapter.is_none() {
+                    "iwd sees no wi-fi device"
+                } else {
+                    "wi-fi is off"
+                };
+                items.push((
+                    "empty".into(),
+                    t.into(),
+                    Box::new(move || ui::text(t, &["empty-note"]).upcast()),
+                ));
             } else if s.nets.is_empty() {
-                let t = if scanning { "looking for networks…" } else { "no networks found · s to scan again" };
-                items.push(("empty".into(), t.into(), Box::new(move || ui::text(t, &["empty-note"]).upcast())));
+                let t = if scanning {
+                    "looking for networks…"
+                } else {
+                    "no networks found · s to scan again"
+                };
+                items.push((
+                    "empty".into(),
+                    t.into(),
+                    Box::new(move || ui::text(t, &["empty-note"]).upcast()),
+                ));
             }
-            let groups = [("saved", s.nets.iter().filter(|n| n.connected || n.known.is_some()).cloned().collect::<Vec<_>>()), ("nearby", s.nets.iter().filter(|n| !(n.connected || n.known.is_some())).cloned().collect())];
+            let groups = [
+                (
+                    "saved",
+                    s.nets
+                        .iter()
+                        .filter(|n| n.connected || n.known.is_some())
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                ),
+                (
+                    "nearby",
+                    s.nets
+                        .iter()
+                        .filter(|n| !(n.connected || n.known.is_some()))
+                        .cloned()
+                        .collect(),
+                ),
+            ];
             for (title, nets) in groups {
                 if nets.is_empty() || !s.powered {
                     continue;
                 }
-                items.push((format!("sec-{title}"), String::new(), Box::new(move || ui::section(title).upcast())));
+                items.push((
+                    format!("sec-{title}"),
+                    String::new(),
+                    Box::new(move || ui::section(title).upcast()),
+                ));
                 for n in nets.into_iter().take(14) {
-                    let busy = st.busy.get(&n.path).cloned().or_else(|| n.connecting.then(|| "connecting".to_string()));
+                    let busy = st
+                        .busy
+                        .get(&n.path)
+                        .cloned()
+                        .or_else(|| n.connecting.then(|| "connecting".to_string()));
                     let err = st.errors.get(&n.path).cloned();
                     let expanded = st.expanded.as_deref() == Some(&n.path);
                     // not the live dBm: a row must not be rebuilt under a click or while typing
                     let level = if expanded { 0 } else { n.level };
-                    let sig = format!("{}|{}|{:?}|{}|{}|{level}|{busy:?}|{err:?}|{expanded}|{:?}", n.name, n.kind, n.known, n.connected, n.connecting, st.agent_ok);
-                    let (ps, connect, disconnect, forget, rr, pc) = (ps.clone(), connect.clone(), disconnect.clone(), forget.clone(), rr.clone(), pc.clone());
+                    let sig = format!(
+                        "{}|{}|{:?}|{}|{}|{level}|{busy:?}|{err:?}|{expanded}|{:?}",
+                        n.name, n.kind, n.known, n.connected, n.connecting, st.agent_ok
+                    );
+                    let (ps, connect, disconnect, forget, rr, pc) = (
+                        ps.clone(),
+                        connect.clone(),
+                        disconnect.clone(),
+                        forget.clone(),
+                        rr.clone(),
+                        pc.clone(),
+                    );
                     let agent_ok = st.agent_ok;
-                    items.push((n.path.clone(), sig, Box::new(move || net_row(&n, busy.as_deref(), err.as_deref(), expanded, agent_ok, &ps, &connect, &disconnect, &forget, &rr, &pc))));
+                    items.push((
+                        n.path.clone(),
+                        sig,
+                        Box::new(move || {
+                            net_row(
+                                &n,
+                                busy.as_deref(),
+                                err.as_deref(),
+                                expanded,
+                                agent_ok,
+                                &ps,
+                                &connect,
+                                &disconnect,
+                                &forget,
+                                &rr,
+                                &pc,
+                            )
+                        }),
+                    ));
                 }
             }
             drop(st);
@@ -727,7 +1020,13 @@ fn net_row(
     p: &Panel,
 ) -> gtk::Widget {
     let b = ui::vbox(0, &[]);
-    let meta = if n.connected { "connected".to_string() } else if n.kind != "open" { LOCK.to_string() } else { String::new() };
+    let meta = if n.connected {
+        "connected".to_string()
+    } else if n.kind != "open" {
+        LOCK.to_string()
+    } else {
+        String::new()
+    };
     let row = ui::Row::new(BARS[n.level], &n.name, &meta);
     row.set_active(n.connected);
     if let Some(bz) = busy {
@@ -745,7 +1044,11 @@ fn net_row(
             }
             if n.connected || (n.known.is_none() && n.kind != "open") {
                 let mut s = ps.borrow_mut();
-                s.expanded = if s.expanded.as_deref() == Some(&n.path) { None } else { Some(n.path.clone()) };
+                s.expanded = if s.expanded.as_deref() == Some(&n.path) {
+                    None
+                } else {
+                    Some(n.path.clone())
+                };
                 s.errors.remove(&n.path);
                 drop(s);
                 rr();
@@ -764,10 +1067,15 @@ fn net_row(
             ex.append(&ui::link("disconnect", &[], move || d(key.clone())));
             if let Some(k) = n.known.clone() {
                 let (f, key) = (forget.clone(), n.path.clone());
-                ex.append(&ui::link("forget", &["danger"], move || f(key.clone(), k.clone())));
+                ex.append(&ui::link("forget", &["danger"], move || {
+                    f(key.clone(), k.clone())
+                }));
             }
         } else if n.kind == "8021x" {
-            ex.append(&ui::text("enterprise network: set it up in impala", &["dim"]));
+            ex.append(&ui::text(
+                "enterprise network: set it up in impala",
+                &["dim"],
+            ));
             let pc = p.clone();
             ex.append(&ui::link("impala", &[], move || {
                 pc.close();
@@ -779,7 +1087,14 @@ fn net_row(
             let e = gtk::PasswordEntry::new();
             e.set_show_peek_icon(true);
             e.set_hexpand(true);
-            e.set_property("placeholder-text", if n.known.is_some() { "new password" } else { "password" });
+            e.set_property(
+                "placeholder-text",
+                if n.known.is_some() {
+                    "new password"
+                } else {
+                    "password"
+                },
+            );
             let (c, key) = (connect.clone(), n.path.clone());
             e.connect_activate(move |w| {
                 let t = w.text().to_string();

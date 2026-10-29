@@ -5,8 +5,8 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use gtk::prelude::*;
 use gtk::gdk;
+use gtk::prelude::*;
 
 use crate::config::Bind;
 use crate::panel;
@@ -63,7 +63,12 @@ pub fn register_click(w: &impl IsA<gtk::Widget>, f: Clicker) {
 pub fn click_at(w: &gtk::Widget, button: u32) -> bool {
     let mut cur = Some(w.clone());
     while let Some(x) = cur {
-        let f = CLICKERS.with(|c| c.borrow().iter().find(|(r, _)| r.upgrade().as_ref() == Some(&x)).map(|(_, f)| f.clone()));
+        let f = CLICKERS.with(|c| {
+            c.borrow()
+                .iter()
+                .find(|(r, _)| r.upgrade().as_ref() == Some(&x))
+                .map(|(_, f)| f.clone())
+        });
         if let Some(f) = f {
             f(button, &x);
             return true;
@@ -115,7 +120,10 @@ impl Slot {
     pub fn new(name: &str, bind: Option<&Bind>, classes: &[&str]) -> Slot {
         Slot(Rc::new(Inner {
             name: name.to_string(),
-            state: RefCell::new(State { visible: true, ..Default::default() }),
+            state: RefCell::new(State {
+                visible: true,
+                ..Default::default()
+            }),
             views: RefCell::default(),
             actions: RefCell::default(),
             tooltip: RefCell::default(),
@@ -133,7 +141,9 @@ impl Slot {
     fn views(&self) -> Vec<(gtk::Box, gtk::Label)> {
         let mut v = self.0.views.borrow_mut();
         v.retain(|(w, _)| w.upgrade().is_some());
-        v.iter().filter_map(|(w, l)| w.upgrade().map(|b| (b, l.clone()))).collect()
+        v.iter()
+            .filter_map(|(w, l)| w.upgrade().map(|b| (b, l.clone())))
+            .collect()
     }
 
     /// Bar text (Pango markup).
@@ -158,7 +168,11 @@ impl Slot {
 
     /// State classes (replaces the previous set): "dim", "warn", "crit", ...
     pub fn set_classes(&self, classes: &[&str]) {
-        let new: Vec<String> = classes.iter().filter(|c| !c.is_empty()).map(|s| s.to_string()).collect();
+        let new: Vec<String> = classes
+            .iter()
+            .filter(|c| !c.is_empty())
+            .map(|s| s.to_string())
+            .collect();
         let old = std::mem::replace(&mut self.0.state.borrow_mut().classes, new.clone());
         if old == new {
             return;
@@ -227,9 +241,14 @@ impl Slot {
 
     /// Opens/closes this slot's panel under its widget on the given (or first) bar.
     pub fn toggle_panel(&self, anchor: Option<&gtk::Widget>, center: bool) {
-        let Some(build) = self.0.panel.borrow().clone() else { return };
+        let Some(build) = self.0.panel.borrow().clone() else {
+            return;
+        };
         let anchor = anchor.cloned().or_else(|| {
-            self.views().into_iter().find(|(b, _)| b.is_mapped()).map(|(b, _)| b.upcast())
+            self.views()
+                .into_iter()
+                .find(|(b, _)| b.is_mapped())
+                .map(|(b, _)| b.upcast())
         });
         panel::toggle(&self.0.name, build, anchor, center);
     }
@@ -322,7 +341,9 @@ impl Slot {
             if panel::is_open(&me.0.name) {
                 return false;
             }
-            let Some(f) = me.0.tooltip.borrow().clone() else { return false };
+            let Some(f) = me.0.tooltip.borrow().clone() else {
+                return false;
+            };
             let v = me.0.version.get();
             let now = util::now();
             let mut c = cache.borrow_mut();
@@ -330,7 +351,9 @@ impl Slot {
             if !fresh {
                 match f() {
                     Some(w) => {
-                        if w.has_css_class("sheet") && w.first_child().is_some_and(|c| c.next_sibling().is_none()) {
+                        if w.has_css_class("sheet")
+                            && w.first_child().is_some_and(|c| c.next_sibling().is_none())
+                        {
                             w.add_css_class("bare");
                         }
                         *c = Some((v, now, w))
@@ -382,14 +405,22 @@ impl Slot {
     }
 
     fn scroll(&self, up: bool) {
-        let bind = if up { &self.0.bind.scroll_up } else { &self.0.bind.scroll_down };
+        let bind = if up {
+            &self.0.bind.scroll_up
+        } else {
+            &self.0.bind.scroll_down
+        };
         if let Some(cmd) = bind {
             util::spawn_sh(cmd);
             return;
         }
         let f = {
             let a = self.0.actions.borrow();
-            if up { a.scroll_up.clone() } else { a.scroll_down.clone() }
+            if up {
+                a.scroll_up.clone()
+            } else {
+                a.scroll_down.clone()
+            }
         };
         if let Some(f) = f {
             f();

@@ -22,7 +22,10 @@ pub fn props(v: &glib::Variant) -> Props {
     let mut m = HashMap::new();
     for i in 0..v.n_children() {
         let e = v.child_value(i);
-        if let (Some(k), Some(val)) = (e.child_value(0).str().map(str::to_string), e.child_value(1).as_variant()) {
+        if let (Some(k), Some(val)) = (
+            e.child_value(0).str().map(str::to_string),
+            e.child_value(1).as_variant(),
+        ) {
             m.insert(k, val);
         }
     }
@@ -40,7 +43,10 @@ pub fn objects(v: &glib::Variant) -> Objects {
         let mut m = HashMap::new();
         for j in 0..ifs.n_children() {
             let ie = ifs.child_value(j);
-            m.insert(ie.child_value(0).str().unwrap_or("").to_string(), props(&ie.child_value(1)));
+            m.insert(
+                ie.child_value(0).str().unwrap_or("").to_string(),
+                props(&ie.child_value(1)),
+            );
         }
         out.insert(path, m);
     }
@@ -49,7 +55,16 @@ pub fn objects(v: &glib::Variant) -> Objects {
 
 pub async fn managed(c: &gio::DBusConnection, service: &str, root: &str) -> Objects {
     match c
-        .call_future(Some(service), root, "org.freedesktop.DBus.ObjectManager", "GetManagedObjects", None, None, gio::DBusCallFlags::NONE, 3000)
+        .call_future(
+            Some(service),
+            root,
+            "org.freedesktop.DBus.ObjectManager",
+            "GetManagedObjects",
+            None,
+            None,
+            gio::DBusCallFlags::NONE,
+            3000,
+        )
         .await
     {
         Ok(v) => objects(&v),
@@ -66,32 +81,81 @@ pub struct Fail {
 
 impl Fail {
     pub fn from(e: &glib::Error) -> Fail {
-        let remote = gio::DBusError::remote_error(e).map(|s| s.to_string()).unwrap_or_default();
+        let remote = gio::DBusError::remote_error(e)
+            .map(|s| s.to_string())
+            .unwrap_or_default();
         let mut msg = e.message().to_string();
         if let Some((_, rest)) = msg.rsplit_once(": ") {
             msg = rest.to_string();
         }
         let name = if remote.is_empty() {
-            if e.matches(gio::IOErrorEnum::TimedOut) { "Timeout".into() } else { String::new() }
+            if e.matches(gio::IOErrorEnum::TimedOut) {
+                "Timeout".into()
+            } else {
+                String::new()
+            }
         } else {
             remote.rsplit('.').next().unwrap_or("").to_string()
         };
-        Fail { name, message: msg.to_lowercase() }
+        Fail {
+            name,
+            message: msg.to_lowercase(),
+        }
     }
 }
 
-pub async fn call(c: &gio::DBusConnection, service: &str, path: &str, iface: &str, method: &str, args: Option<glib::Variant>, timeout_ms: i32) -> Result<glib::Variant, Fail> {
-    c.call_future(Some(service), path, iface, method, args.as_ref(), None, gio::DBusCallFlags::NONE, timeout_ms)
-        .await
-        .map_err(|e| Fail::from(&e))
+pub async fn call(
+    c: &gio::DBusConnection,
+    service: &str,
+    path: &str,
+    iface: &str,
+    method: &str,
+    args: Option<glib::Variant>,
+    timeout_ms: i32,
+) -> Result<glib::Variant, Fail> {
+    c.call_future(
+        Some(service),
+        path,
+        iface,
+        method,
+        args.as_ref(),
+        None,
+        gio::DBusCallFlags::NONE,
+        timeout_ms,
+    )
+    .await
+    .map_err(|e| Fail::from(&e))
 }
 
-pub async fn set_prop(c: &gio::DBusConnection, service: &str, path: &str, iface: &str, prop: &str, value: glib::Variant) -> Result<glib::Variant, Fail> {
-    call(c, service, path, "org.freedesktop.DBus.Properties", "Set", Some((iface, prop, value).to_variant()), 5000).await
+pub async fn set_prop(
+    c: &gio::DBusConnection,
+    service: &str,
+    path: &str,
+    iface: &str,
+    prop: &str,
+    value: glib::Variant,
+) -> Result<glib::Variant, Fail> {
+    call(
+        c,
+        service,
+        path,
+        "org.freedesktop.DBus.Properties",
+        "Set",
+        Some((iface, prop, value).to_variant()),
+        5000,
+    )
+    .await
 }
 
 pub fn get_str(p: &Props, k: &str) -> String {
-    p.get(k).and_then(|v| v.str().map(str::to_string).or_else(|| v.get::<glib::variant::ObjectPath>().map(|o| o.as_str().to_string()))).unwrap_or_default()
+    p.get(k)
+        .and_then(|v| {
+            v.str().map(str::to_string).or_else(|| {
+                v.get::<glib::variant::ObjectPath>()
+                    .map(|o| o.as_str().to_string())
+            })
+        })
+        .unwrap_or_default()
 }
 
 pub fn get_bool(p: &Props, k: &str) -> bool {
@@ -120,9 +184,19 @@ impl Drop for Sub {
     }
 }
 
-pub fn subscribe(c: &gio::DBusConnection, service: &str, f: impl Fn(&str, &str, &glib::Variant) + 'static) -> Sub {
-    let id = c.signal_subscribe(Some(service), None, None, None, None, gio::DBusSignalFlags::NONE, move |_, _, path, _iface, member, args| {
-        f(path, member, args)
-    });
+pub fn subscribe(
+    c: &gio::DBusConnection,
+    service: &str,
+    f: impl Fn(&str, &str, &glib::Variant) + 'static,
+) -> Sub {
+    let id = c.signal_subscribe(
+        Some(service),
+        None,
+        None,
+        None,
+        None,
+        gio::DBusSignalFlags::NONE,
+        move |_, _, path, _iface, member, args| f(path, member, args),
+    );
     Sub(c.clone(), Some(id))
 }

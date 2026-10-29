@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
-use gtk::prelude::*;
 use gtk::gio;
+use gtk::prelude::*;
 
 use super::{BarInfo, Ctx, Module};
 use crate::panel::{Card, Panel};
@@ -51,10 +51,17 @@ pub struct Media(Rc<Inner>);
 fn props(v: &glib::Variant) -> HashMap<String, glib::Variant> {
     let mut m = HashMap::new();
     // GetAll returns (a{sv})
-    let dict = if v.n_children() == 1 && v.type_().is_tuple() { v.child_value(0) } else { v.clone() };
+    let dict = if v.n_children() == 1 && v.type_().is_tuple() {
+        v.child_value(0)
+    } else {
+        v.clone()
+    };
     for i in 0..dict.n_children() {
         let e = dict.child_value(i);
-        if let (Some(k), Some(val)) = (e.child_value(0).str().map(str::to_string), e.child_value(1).as_variant()) {
+        if let (Some(k), Some(val)) = (
+            e.child_value(0).str().map(str::to_string),
+            e.child_value(1).as_variant(),
+        ) {
             m.insert(k, val);
         }
     }
@@ -62,7 +69,8 @@ fn props(v: &glib::Variant) -> HashMap<String, glib::Variant> {
 }
 
 fn vstr(v: Option<&glib::Variant>) -> String {
-    v.and_then(|v| v.str().map(str::to_string)).unwrap_or_default()
+    v.and_then(|v| v.str().map(str::to_string))
+        .unwrap_or_default()
 }
 
 fn parse(bus: &str, identity: String, all: &glib::Variant) -> Track {
@@ -79,7 +87,12 @@ fn parse(bus: &str, identity: String, all: &glib::Variant) -> Track {
         .unwrap_or(0);
     let track_id = meta
         .get("mpris:trackid")
-        .and_then(|v| v.str().map(str::to_string).or_else(|| v.get::<glib::variant::ObjectPath>().map(|o| o.as_str().to_string())))
+        .and_then(|v| {
+            v.str().map(str::to_string).or_else(|| {
+                v.get::<glib::variant::ObjectPath>()
+                    .map(|o| o.as_str().to_string())
+            })
+        })
         .unwrap_or_default();
     Track {
         bus: bus.to_string(),
@@ -91,7 +104,10 @@ fn parse(bus: &str, identity: String, all: &glib::Variant) -> Track {
         art: vstr(meta.get("mpris:artUrl")),
         length_us: length,
         track_id,
-        can_seek: p.get("CanSeek").and_then(|v| v.get::<bool>()).unwrap_or(false),
+        can_seek: p
+            .get("CanSeek")
+            .and_then(|v| v.get::<bool>())
+            .unwrap_or(false),
     }
 }
 
@@ -142,7 +158,9 @@ impl Media {
             }
         });
         let w = Rc::downgrade(&inner);
-        inner.slot.tooltip(move || w.upgrade().and_then(|i| i.tooltip()));
+        inner
+            .slot
+            .tooltip(move || w.upgrade().and_then(|i| i.tooltip()));
         let w = Rc::downgrade(&inner);
         inner.slot.panel(move |p| match w.upgrade() {
             Some(i) => panel(&i, p),
@@ -151,17 +169,37 @@ impl Media {
 
         if let Some(c) = &inner.conn {
             // any player's property change or a player appearing/leaving
-            for (iface, member) in [("org.freedesktop.DBus.Properties", "PropertiesChanged"), ("org.freedesktop.DBus", "NameOwnerChanged")] {
+            for (iface, member) in [
+                ("org.freedesktop.DBus.Properties", "PropertiesChanged"),
+                ("org.freedesktop.DBus", "NameOwnerChanged"),
+            ] {
                 let w = Rc::downgrade(&inner);
-                let path = if member == "PropertiesChanged" { Some(PATH) } else { None };
-                let id = c.signal_subscribe(None, Some(iface), Some(member), path, None, gio::DBusSignalFlags::NONE, move |_, _, _, _, _, args| {
-                    if let Some(i) = w.upgrade() {
-                        if member == "NameOwnerChanged" && !args.child_value(0).str().is_some_and(|n| n.starts_with(MPRIS)) {
-                            return;
+                let path = if member == "PropertiesChanged" {
+                    Some(PATH)
+                } else {
+                    None
+                };
+                let id = c.signal_subscribe(
+                    None,
+                    Some(iface),
+                    Some(member),
+                    path,
+                    None,
+                    gio::DBusSignalFlags::NONE,
+                    move |_, _, _, _, _, args| {
+                        if let Some(i) = w.upgrade() {
+                            if member == "NameOwnerChanged"
+                                && !args
+                                    .child_value(0)
+                                    .str()
+                                    .is_some_and(|n| n.starts_with(MPRIS))
+                            {
+                                return;
+                            }
+                            i.schedule();
                         }
-                        i.schedule();
-                    }
-                });
+                    },
+                );
                 inner.subs.borrow_mut().push(id);
             }
         }
@@ -197,7 +235,16 @@ impl Inner {
         let w = Rc::downgrade(self);
         glib::spawn_future_local(async move {
             let names = c
-                .call_future(Some("org.freedesktop.DBus"), "/org/freedesktop/DBus", "org.freedesktop.DBus", "ListNames", None, None, gio::DBusCallFlags::NONE, 1000)
+                .call_future(
+                    Some("org.freedesktop.DBus"),
+                    "/org/freedesktop/DBus",
+                    "org.freedesktop.DBus",
+                    "ListNames",
+                    None,
+                    None,
+                    gio::DBusCallFlags::NONE,
+                    1000,
+                )
                 .await;
             let mut buses: Vec<String> = names
                 .ok()
@@ -210,14 +257,42 @@ impl Inner {
             let mut tracks = Vec::new();
             for bus in buses {
                 let all = c
-                    .call_future(Some(&bus), PATH, "org.freedesktop.DBus.Properties", "GetAll", Some(&(PLAYER,).to_variant()), None, gio::DBusCallFlags::NONE, 800)
+                    .call_future(
+                        Some(&bus),
+                        PATH,
+                        "org.freedesktop.DBus.Properties",
+                        "GetAll",
+                        Some(&(PLAYER,).to_variant()),
+                        None,
+                        gio::DBusCallFlags::NONE,
+                        800,
+                    )
                     .await;
                 let ident = c
-                    .call_future(Some(&bus), PATH, "org.freedesktop.DBus.Properties", "Get", Some(&(MPRIS, "Identity").to_variant()), None, gio::DBusCallFlags::NONE, 500)
+                    .call_future(
+                        Some(&bus),
+                        PATH,
+                        "org.freedesktop.DBus.Properties",
+                        "Get",
+                        Some(&(MPRIS, "Identity").to_variant()),
+                        None,
+                        gio::DBusCallFlags::NONE,
+                        500,
+                    )
                     .await
                     .ok()
-                    .and_then(|v| v.child_value(0).as_variant().and_then(|x| x.str().map(str::to_string)))
-                    .unwrap_or_else(|| bus.trim_start_matches(&format!("{MPRIS}.")).split('.').next().unwrap_or("").to_string());
+                    .and_then(|v| {
+                        v.child_value(0)
+                            .as_variant()
+                            .and_then(|x| x.str().map(str::to_string))
+                    })
+                    .unwrap_or_else(|| {
+                        bus.trim_start_matches(&format!("{MPRIS}."))
+                            .split('.')
+                            .next()
+                            .unwrap_or("")
+                            .to_string()
+                    });
                 if let Ok(all) = all {
                     tracks.push(parse(&bus, ident, &all));
                 }
@@ -242,37 +317,85 @@ impl Inner {
         }
         ps.iter()
             .find(|t| t.status == "Playing")
-            .or_else(|| ps.iter().find(|t| t.status == "Paused" && !t.title.is_empty()))
+            .or_else(|| {
+                ps.iter()
+                    .find(|t| t.status == "Paused" && !t.title.is_empty())
+            })
             .cloned()
     }
 
     fn render(&self) {
-        let Some(t) = self.current().filter(|t| !t.title.is_empty() && t.status != "Stopped") else {
+        let Some(t) = self
+            .current()
+            .filter(|t| !t.title.is_empty() && t.status != "Stopped")
+        else {
             self.slot.set_visible(false);
             return;
         };
-        let meta = if t.artist.is_empty() { t.title.clone() } else { format!("{} — {}", t.artist, t.title) };
-        let short = if meta.chars().count() > self.max { meta.chars().take(self.max).collect::<String>() + "…" } else { meta };
-        let icon = if t.status == "Playing" { "󰐊" } else { "󰏤" };
-        self.slot.set_markup(&format!("{icon}  {}", util::esc(&short)));
-        self.slot.set_classes(&[if t.status == "Playing" { "playing" } else { "dim" }]);
+        let meta = if t.artist.is_empty() {
+            t.title.clone()
+        } else {
+            format!("{} — {}", t.artist, t.title)
+        };
+        let short = if meta.chars().count() > self.max {
+            meta.chars().take(self.max).collect::<String>() + "…"
+        } else {
+            meta
+        };
+        let icon = if t.status == "Playing" {
+            "󰐊"
+        } else {
+            "󰏤"
+        };
+        self.slot
+            .set_markup(&format!("{icon}  {}", util::esc(&short)));
+        self.slot.set_classes(&[if t.status == "Playing" {
+            "playing"
+        } else {
+            "dim"
+        }]);
         self.slot.set_visible(true);
     }
 
     fn call(&self, method: &str) {
-        let (Some(c), Some(t)) = (self.conn.clone(), self.current()) else { return };
-        c.call(Some(&t.bus), PATH, PLAYER, method, None, None, gio::DBusCallFlags::NONE, 2000, gio::Cancellable::NONE, |_| {});
+        let (Some(c), Some(t)) = (self.conn.clone(), self.current()) else {
+            return;
+        };
+        c.call(
+            Some(&t.bus),
+            PATH,
+            PLAYER,
+            method,
+            None,
+            None,
+            gio::DBusCallFlags::NONE,
+            2000,
+            gio::Cancellable::NONE,
+            |_| {},
+        );
     }
 
     fn tooltip(&self) -> Option<gtk::Widget> {
         let t = self.current()?;
         let s = ui::sheet();
-        s.append(&ui::head("now playing", &format!("{} · {}", t.status.to_lowercase(), util::esc(&t.identity.to_lowercase()))).0);
+        s.append(
+            &ui::head(
+                "now playing",
+                &format!(
+                    "{} · {}",
+                    t.status.to_lowercase(),
+                    util::esc(&t.identity.to_lowercase())
+                ),
+            )
+            .0,
+        );
         s.append(&ui::text(&t.title, &[]).tap(|l| l.set_margin_top(6)));
         if !t.artist.is_empty() {
             s.append(&ui::text(&t.artist, &["dim"]));
         }
-        s.append(&ui::thint("click play/pause  ·  right player  ·  middle next  ·  scroll skip"));
+        s.append(&ui::thint(
+            "click play/pause  ·  right player  ·  middle next  ·  scroll skip",
+        ));
         Some(s.upcast())
     }
 }
@@ -291,13 +414,19 @@ impl Module for Media {
 
 fn fmt_us(us: i64) -> String {
     let s = (us / 1_000_000).max(0);
-    if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, s % 3600 / 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) }
+    if s >= 3600 {
+        format!("{}:{:02}:{:02}", s / 3600, s % 3600 / 60, s % 60)
+    } else {
+        format!("{}:{:02}", s / 60, s % 60)
+    }
 }
 
 /// Album art from a file:// url, or downloaded once into the cache for http(s).
 fn load_art(url: &str, pic: &gtk::Picture) {
     if let Some(path) = url.strip_prefix("file://") {
-        let path = glib::Uri::unescape_string(path, None::<&str>).map(|s| s.to_string()).unwrap_or(path.to_string());
+        let path = glib::Uri::unescape_string(path, None::<&str>)
+            .map(|s| s.to_string())
+            .unwrap_or(path.to_string());
         pic.set_filename(Some(path));
         return;
     }
@@ -305,7 +434,9 @@ fn load_art(url: &str, pic: &gtk::Picture) {
         pic.set_paintable(None::<&gtk::gdk::Paintable>);
         return;
     }
-    let dest = util::cache_dir().join("vector-bar/art").join(format!("{:x}", md5ish(url)));
+    let dest = util::cache_dir()
+        .join("vector-bar/art")
+        .join(format!("{:x}", md5ish(url)));
     if dest.exists() {
         pic.set_filename(Some(&dest));
         return;
@@ -411,7 +542,16 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
     let last_art = Rc::new(RefCell::new(String::new()));
     let fill = {
         let i = Rc::downgrade(i);
-        let (title, artist, album, art, play, players, detail, len_l) = (title.clone(), artist.clone(), album.clone(), art.clone(), play.clone(), players.clone(), card.detail.clone(), len_l.clone());
+        let (title, artist, album, art, play, players, detail, len_l) = (
+            title.clone(),
+            artist.clone(),
+            album.clone(),
+            art.clone(),
+            play.clone(),
+            players.clone(),
+            card.detail.clone(),
+            len_l.clone(),
+        );
         let last_art = last_art.clone();
         let seek = seek.clone();
         move || {
@@ -420,17 +560,29 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
                 title.set_text("nothing playing");
                 return;
             };
-            detail.set_markup(&format!("{} · {}", t.status.to_lowercase(), util::esc(&t.identity.to_lowercase())));
+            detail.set_markup(&format!(
+                "{} · {}",
+                t.status.to_lowercase(),
+                util::esc(&t.identity.to_lowercase())
+            ));
             title.set_text(&t.title);
             artist.set_text(&t.artist);
             album.set_text(&t.album);
             album.set_visible(!t.album.is_empty());
-            play.set_label(if t.status == "Playing" { "󰏤" } else { "󰐊" });
+            play.set_label(if t.status == "Playing" {
+                "󰏤"
+            } else {
+                "󰐊"
+            });
             if *last_art.borrow() != t.art {
                 *last_art.borrow_mut() = t.art.clone();
                 load_art(&t.art, &art);
             }
-            len_l.set_text(&if t.length_us > 0 { fmt_us(t.length_us) } else { String::new() });
+            len_l.set_text(&if t.length_us > 0 {
+                fmt_us(t.length_us)
+            } else {
+                String::new()
+            });
             seek.set_sensitive(t.can_seek && t.length_us > 0);
             ui::clear(&players);
             let all = i.players.borrow().clone();
@@ -438,14 +590,16 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
                 for pl in all {
                     let w = Rc::downgrade(&i);
                     let bus = pl.bus.clone();
-                    players.append(&ui::chip(&pl.identity.to_lowercase(), pl.bus == t.bus, move || {
-                        if let Some(i) = w.upgrade() {
-                            *i.chosen.borrow_mut() = Some(bus.clone());
-                            i.render();
-                            i.changed.emit();
-                        }
-                    })
-                    .tap(|c| c.set_margin_end(4)));
+                    players.append(
+                        &ui::chip(&pl.identity.to_lowercase(), pl.bus == t.bus, move || {
+                            if let Some(i) = w.upgrade() {
+                                *i.chosen.borrow_mut() = Some(bus.clone());
+                                i.render();
+                                i.changed.emit();
+                            }
+                        })
+                        .tap(|c| c.set_margin_end(4)),
+                    );
                 }
             }
         }
@@ -461,18 +615,35 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
         let (seek, pos_l, dragging) = (seek.clone(), pos_l.clone(), dragging.clone());
         move || {
             let Some(i) = i.upgrade() else { return };
-            let (Some(c), Some(t)) = (i.conn.clone(), i.current()) else { return };
+            let (Some(c), Some(t)) = (i.conn.clone(), i.current()) else {
+                return;
+            };
             if dragging.get() {
                 return;
             }
             let (seek, pos_l) = (seek.clone(), pos_l.clone());
-            c.call(Some(&t.bus), PATH, "org.freedesktop.DBus.Properties", "Get", Some(&(PLAYER, "Position").to_variant()), None, gio::DBusCallFlags::NONE, 500, gio::Cancellable::NONE, move |r| {
-                let pos = r.ok().and_then(|v| v.child_value(0).as_variant()).and_then(|v| v.get::<i64>()).unwrap_or(0);
-                pos_l.set_text(&fmt_us(pos));
-                if t.length_us > 0 {
-                    seek.set_value(pos as f64 / t.length_us as f64);
-                }
-            });
+            c.call(
+                Some(&t.bus),
+                PATH,
+                "org.freedesktop.DBus.Properties",
+                "Get",
+                Some(&(PLAYER, "Position").to_variant()),
+                None,
+                gio::DBusCallFlags::NONE,
+                500,
+                gio::Cancellable::NONE,
+                move |r| {
+                    let pos = r
+                        .ok()
+                        .and_then(|v| v.child_value(0).as_variant())
+                        .and_then(|v| v.get::<i64>())
+                        .unwrap_or(0);
+                    pos_l.set_text(&fmt_us(pos));
+                    if t.length_us > 0 {
+                        seek.set_value(pos as f64 / t.length_us as f64);
+                    }
+                },
+            );
         }
     };
     poll();
@@ -489,13 +660,26 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
         gesture.connect_released(move |_, _, _, _| {
             d.set(false);
             let Some(i) = i.upgrade() else { return };
-            let (Some(c), Some(t)) = (i.conn.clone(), i.current()) else { return };
+            let (Some(c), Some(t)) = (i.conn.clone(), i.current()) else {
+                return;
+            };
             if t.track_id.is_empty() {
                 return;
             }
             let pos = (seek.value() * t.length_us as f64) as i64;
             if let Ok(path) = glib::variant::ObjectPath::try_from(t.track_id.clone()) {
-                c.call(Some(&t.bus), PATH, PLAYER, "SetPosition", Some(&(path, pos).to_variant()), None, gio::DBusCallFlags::NONE, 1000, gio::Cancellable::NONE, |_| {});
+                c.call(
+                    Some(&t.bus),
+                    PATH,
+                    PLAYER,
+                    "SetPosition",
+                    Some(&(path, pos).to_variant()),
+                    None,
+                    gio::DBusCallFlags::NONE,
+                    1000,
+                    gio::Cancellable::NONE,
+                    |_| {},
+                );
             }
         });
     }

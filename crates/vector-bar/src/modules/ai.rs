@@ -41,7 +41,11 @@ const AGY: &str = "<span font_family='AntigravityMark'>\u{e000}</span>";
 const SPIN: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
 /// How long a finished agent stays on the bar line.
 const DONE_SHOWN: f64 = 120.0;
-const M_AGENT: mode::State = mode::State { key: "agent", label: "AGENT", rank: 2 };
+const M_AGENT: mode::State = mode::State {
+    key: "agent",
+    label: "AGENT",
+    rank: 2,
+};
 
 // ── agents ───────────────────────────────────────────────────────────────────
 
@@ -76,16 +80,31 @@ pub struct SubAgent {
 
 fn subagents(dir: &Path) -> Vec<SubAgent> {
     let mut out = Vec::new();
-    let Ok(rd) = std::fs::read_dir(dir) else { return out };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return out;
+    };
     for e in rd.flatten() {
         let p = e.path();
-        let Some(name) = p.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_suffix(".meta.json")) else { continue };
-        let Some(meta) = util::read_json(&p) else { continue };
+        let Some(name) = p
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.strip_suffix(".meta.json"))
+        else {
+            continue;
+        };
+        let Some(meta) = util::read_json(&p) else {
+            continue;
+        };
         if meta["finished"] == true {
             continue;
         }
         let log = dir.join(format!("{name}.jsonl"));
-        let mtime = std::fs::metadata(&log).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs_f64()).unwrap_or(0.0);
+        let mtime = std::fs::metadata(&log)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
         // a subagent left unfinished by a crash stops counting after 10 quiet minutes
         if util::now() - mtime > 600.0 {
             continue;
@@ -98,26 +117,41 @@ fn subagents(dir: &Path) -> Vec<SubAgent> {
             changed: at.max(mtime),
         });
     }
-    out.sort_by(|a, b| b.changed.partial_cmp(&a.changed).unwrap_or(std::cmp::Ordering::Equal));
+    out.sort_by(|a, b| {
+        b.changed
+            .partial_cmp(&a.changed)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     out
 }
 
 impl Agent {
     pub fn needs_you(&self) -> bool {
-        self.waiting.is_some() || matches!(self.status.as_str(), "waiting" | "requires_action" | "blocked" | "awaiting_approval" | "awaiting_user")
+        self.waiting.is_some()
+            || matches!(
+                self.status.as_str(),
+                "waiting" | "requires_action" | "blocked" | "awaiting_approval" | "awaiting_user"
+            )
     }
     pub fn busy(&self) -> bool {
         self.status == "busy"
     }
     fn label(&self) -> String {
-        if self.title.is_empty() { self.name.clone() } else { self.title.clone() }
+        if self.title.is_empty() {
+            self.name.clone()
+        } else {
+            self.title.clone()
+        }
     }
 }
 
 fn account_label(dir: &str) -> String {
     match dir {
         ".claude" => "claude".into(),
-        d => d.strip_prefix(".claude-account").map(|n| format!("claude{n}")).unwrap_or_else(|| d.trim_start_matches('.').to_string()),
+        d => d
+            .strip_prefix(".claude-account")
+            .map(|n| format!("claude{n}"))
+            .unwrap_or_else(|| d.trim_start_matches('.').to_string()),
     }
 }
 
@@ -131,12 +165,16 @@ type Meta = (String, String, String, f64);
 
 /// transcript path -> (size, mtime, parsed): only changed files are read again.
 /// Process-wide: the scans run on worker threads.
-static META: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<PathBuf, (u64, std::time::SystemTime, Meta)>>> = std::sync::LazyLock::new(Default::default);
+static META: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<PathBuf, (u64, std::time::SystemTime, Meta)>>,
+> = std::sync::LazyLock::new(Default::default);
 
 /// Title, last prompt and what the latest tool call does, from the transcript tail.
 /// Cached per file until its size or mtime changes.
 fn transcript_meta(path: &Path) -> Meta {
-    let Ok(md) = std::fs::metadata(path) else { return Default::default() };
+    let Ok(md) = std::fs::metadata(path) else {
+        return Default::default();
+    };
     let (size, mtime) = (md.len(), md.modified().unwrap_or(std::time::UNIX_EPOCH));
     if let Ok(c) = META.lock() {
         if let Some((_, _, m)) = c.get(path).filter(|(s, t, _)| *s == size && *t == mtime) {
@@ -155,31 +193,46 @@ fn transcript_meta(path: &Path) -> Meta {
 
 fn read_meta(path: &Path) -> Meta {
     use std::io::{Read, Seek, SeekFrom};
-    let Ok(mut f) = std::fs::File::open(path) else { return Default::default() };
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return Default::default();
+    };
     let size = f.seek(SeekFrom::End(0)).unwrap_or(0);
     let _ = f.seek(SeekFrom::Start(size.saturating_sub(128_000)));
     let mut buf = Vec::new();
     let _ = f.read_to_end(&mut buf);
     let text = String::from_utf8_lossy(&buf);
-    let (mut title, mut prompt, mut doing, mut doing_at) = (String::new(), String::new(), String::new(), 0.0);
+    let (mut title, mut prompt, mut doing, mut doing_at) =
+        (String::new(), String::new(), String::new(), 0.0);
     for line in text.lines().rev() {
         if !title.is_empty() && !prompt.is_empty() && !doing.is_empty() {
             break;
         }
-        if title.is_empty() && (line.contains("\"ai-title\"") || line.contains("\"custom-title\"")) {
+        if title.is_empty() && (line.contains("\"ai-title\"") || line.contains("\"custom-title\""))
+        {
             if let Ok(v) = serde_json::from_str::<Value>(line) {
-                title = v["customTitle"].as_str().or(v["aiTitle"].as_str()).unwrap_or("").to_string();
+                title = v["customTitle"]
+                    .as_str()
+                    .or(v["aiTitle"].as_str())
+                    .unwrap_or("")
+                    .to_string();
             }
         } else if prompt.is_empty() && line.contains("\"last-prompt\"") {
             if let Ok(v) = serde_json::from_str::<Value>(line) {
                 prompt = v["lastPrompt"].as_str().unwrap_or("").to_string();
             }
         } else if doing.is_empty() && line.contains("\"tool_use\"") {
-            let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
-            let Some(items) = v["message"]["content"].as_array() else { continue };
+            let Ok(v) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            let Some(items) = v["message"]["content"].as_array() else {
+                continue;
+            };
             if let Some(c) = items.iter().rev().find(|c| c["type"] == "tool_use") {
                 doing = describe_tool(&c["name"], &c["input"]);
-                doing_at = v["timestamp"].as_str().and_then(util::parse_iso).unwrap_or(0.0);
+                doing_at = v["timestamp"]
+                    .as_str()
+                    .and_then(util::parse_iso)
+                    .unwrap_or(0.0);
             }
         }
     }
@@ -188,7 +241,12 @@ fn read_meta(path: &Path) -> Meta {
 
 fn describe_tool(name: &Value, input: &Value) -> String {
     let name = name.as_str().unwrap_or("");
-    let file = |k: &str| input[k].as_str().and_then(|p| Path::new(p).file_name()).map(|f| f.to_string_lossy().to_string());
+    let file = |k: &str| {
+        input[k]
+            .as_str()
+            .and_then(|p| Path::new(p).file_name())
+            .map(|f| f.to_string_lossy().to_string())
+    };
     if let Some(d) = input["description"].as_str() {
         return d.to_string();
     }
@@ -197,8 +255,12 @@ fn describe_tool(name: &Value, input: &Value) -> String {
         "Write" => file("file_path").map(|f| format!("writing {f}")),
         "Read" => file("file_path").map(|f| format!("reading {f}")),
         "Grep" | "Glob" => input["pattern"].as_str().map(|p| format!("searching {p}")),
-        "Bash" => input["command"].as_str().map(|c| c.chars().take(48).collect()),
-        "Agent" | "Task" => input["description"].as_str().map(|d| format!("subagent: {d}")),
+        "Bash" => input["command"]
+            .as_str()
+            .map(|c| c.chars().take(48).collect()),
+        "Agent" | "Task" => input["description"]
+            .as_str()
+            .map(|d| format!("subagent: {d}")),
         "WebSearch" | "WebFetch" => Some("on the web".into()),
         _ => None,
     }
@@ -206,17 +268,27 @@ fn describe_tool(name: &Value, input: &Value) -> String {
 }
 
 /// session id -> its transcript, found once
-static TRANSCRIPTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, PathBuf>>> = std::sync::LazyLock::new(Default::default);
+static TRANSCRIPTS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, PathBuf>>,
+> = std::sync::LazyLock::new(Default::default);
 
 /// A session's transcript. Usually `<projects>/<cwd as dashes>/<sid>.jsonl`, but a
 /// session keeps the folder it *started* in (cwd changes, accounts switch), so
 /// fall back to looking for `<sid>.jsonl` in every account's projects folder.
 fn transcript_path(home: &Path, sid: &str, cwd: &str) -> PathBuf {
-    if let Some(p) = TRANSCRIPTS.lock().ok().and_then(|m| m.get(sid).cloned()).filter(|p| p.exists()) {
+    if let Some(p) = TRANSCRIPTS
+        .lock()
+        .ok()
+        .and_then(|m| m.get(sid).cloned())
+        .filter(|p| p.exists())
+    {
         return p;
     }
     let name = format!("{sid}.jsonl");
-    let dashed: String = cwd.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    let dashed: String = cwd
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
     let mut roots: Vec<PathBuf> = vec![home.join(".claude/projects")];
     if let Ok(rd) = std::fs::read_dir(home) {
         for e in rd.flatten() {
@@ -232,7 +304,11 @@ fn transcript_path(home: &Path, sid: &str, cwd: &str) -> PathBuf {
         .find(|p| p.exists())
         .or_else(|| {
             roots.iter().find_map(|r| {
-                std::fs::read_dir(r).ok()?.flatten().map(|d| d.path().join(&name)).find(|p| p.exists())
+                std::fs::read_dir(r)
+                    .ok()?
+                    .flatten()
+                    .map(|d| d.path().join(&name))
+                    .find(|p| p.exists())
             })
         })
         .unwrap_or_else(|| home.join(".claude/projects").join(&dashed).join(&name));
@@ -247,15 +323,21 @@ fn transcript_path(home: &Path, sid: &str, cwd: &str) -> PathBuf {
 pub fn agents() -> Vec<Agent> {
     let mut out: Vec<Agent> = Vec::new();
     let home = util::home();
-    let Ok(rd) = std::fs::read_dir(&home) else { return out };
+    let Ok(rd) = std::fs::read_dir(&home) else {
+        return out;
+    };
     for d in rd.flatten() {
         let dn = d.file_name().to_string_lossy().to_string();
         if !dn.starts_with(".claude") {
             continue;
         }
-        let Ok(sessions) = std::fs::read_dir(d.path().join("sessions")) else { continue };
+        let Ok(sessions) = std::fs::read_dir(d.path().join("sessions")) else {
+            continue;
+        };
         for f in sessions.flatten() {
-            let Some(v) = util::read_json(f.path()) else { continue };
+            let Some(v) = util::read_json(f.path()) else {
+                continue;
+            };
             let pid = v["pid"].as_u64().unwrap_or(0) as u32;
             let sid = v["sessionId"].as_str().unwrap_or("").to_string();
             if pid == 0 || sid.is_empty() || out.iter().any(|a| a.sid == sid) {
@@ -275,7 +357,10 @@ pub fn agents() -> Vec<Agent> {
             let subs = subagents(&tp.with_extension("").join("subagents"));
             let ms = |k: &str| v[k].as_f64().unwrap_or(0.0) / 1000.0;
             let since = ms("statusUpdatedAt").max(ms("startedAt"));
-            let changed = subs.iter().map(|s| s.changed).fold(since.max(doing_at), f64::max);
+            let changed = subs
+                .iter()
+                .map(|s| s.changed)
+                .fold(since.max(doing_at), f64::max);
             out.push(Agent {
                 pid,
                 sid,
@@ -295,16 +380,26 @@ pub fn agents() -> Vec<Agent> {
         }
     }
     out.extend(cli_agents());
-    out.sort_by(|a, b| a.started.partial_cmp(&b.started).unwrap_or(std::cmp::Ordering::Equal));
+    out.sort_by(|a, b| {
+        a.started
+            .partial_cmp(&b.started)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     out
 }
 
 /// pid -> cpu ticks at the last poll (Antigravity: busy = using cpu)
-static TICKS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<u32, (u64, f64)>>> = std::sync::LazyLock::new(Default::default);
+static TICKS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<u32, (u64, f64)>>> =
+    std::sync::LazyLock::new(Default::default);
 
 fn boot_time() -> f64 {
     util::read("/proc/stat")
-        .and_then(|s| s.lines().find_map(|l| l.strip_prefix("btime ").and_then(|v| v.trim().parse::<f64>().ok())))
+        .and_then(|s| {
+            s.lines().find_map(|l| {
+                l.strip_prefix("btime ")
+                    .and_then(|v| v.trim().parse::<f64>().ok())
+            })
+        })
         .unwrap_or(0.0)
 }
 
@@ -328,29 +423,47 @@ fn proc_env(pid: u32, key: &str) -> Option<String> {
 /// Codex (every CODEX_HOME account) and Antigravity sessions running now.
 fn cli_agents() -> Vec<Agent> {
     let mut out = Vec::new();
-    let Ok(rd) = std::fs::read_dir("/proc") else { return out };
+    let Ok(rd) = std::fs::read_dir("/proc") else {
+        return out;
+    };
     let now = util::now();
     let mut seen = Vec::new();
     for e in rd.flatten() {
-        let Some(pid) = e.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else { continue };
-        let Some(comm) = util::read_trim(e.path().join("comm")) else { continue };
+        let Some(pid) = e.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else {
+            continue;
+        };
+        let Some(comm) = util::read_trim(e.path().join("comm")) else {
+            continue;
+        };
         if comm != "codex" && comm != "agy" {
             continue;
         }
         // one entry per session: skip a codex/agy whose parent is the same program
         let parent_same = util::read(format!("/proc/{pid}/stat"))
-            .and_then(|s| s.rsplit_once(')').and_then(|r| r.1.split_whitespace().nth(1).map(str::to_string)))
+            .and_then(|s| {
+                s.rsplit_once(')')
+                    .and_then(|r| r.1.split_whitespace().nth(1).map(str::to_string))
+            })
             .and_then(|pp| util::read_trim(format!("/proc/{pp}/comm")))
             .is_some_and(|pc| pc == comm);
         if parent_same {
             continue;
         }
-        let Some((started, ticks)) = proc_times(pid) else { continue };
-        let cwd = std::fs::read_link(format!("/proc/{pid}/cwd")).map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+        let Some((started, ticks)) = proc_times(pid) else {
+            continue;
+        };
+        let cwd = std::fs::read_link(format!("/proc/{pid}/cwd"))
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
         seen.push(pid);
         if comm == "codex" {
-            let home = proc_env(pid, "CODEX_HOME").map(PathBuf::from).unwrap_or_else(|| util::home().join(".codex"));
-            let account = home.file_name().map(|n| n.to_string_lossy().trim_start_matches('.').to_string()).unwrap_or_else(|| "codex".into());
+            let home = proc_env(pid, "CODEX_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| util::home().join(".codex"));
+            let account = home
+                .file_name()
+                .map(|n| n.to_string_lossy().trim_start_matches('.').to_string())
+                .unwrap_or_else(|| "codex".into());
             let (title, doing, busy, changed, cwd2) = codex_rollout(&home, started);
             out.push(Agent {
                 pid,
@@ -362,7 +475,11 @@ fn cli_agents() -> Vec<Agent> {
                 waiting: None,
                 started,
                 since: changed.max(started),
-                title: if title.is_empty() { "codex session".into() } else { title },
+                title: if title.is_empty() {
+                    "codex session".into()
+                } else {
+                    title
+                },
                 doing,
                 prompt: String::new(),
                 changed: changed.max(started),
@@ -376,7 +493,9 @@ fn cli_agents() -> Vec<Agent> {
                 if let Some(m) = m.as_mut() {
                     m.insert(pid, (ticks, now));
                 }
-                prev.is_some_and(|(t, at)| now > at && (ticks.saturating_sub(t)) as f64 / 100.0 / (now - at) > 0.03)
+                prev.is_some_and(|(t, at)| {
+                    now > at && (ticks.saturating_sub(t)) as f64 / 100.0 / (now - at) > 0.03
+                })
             };
             out.push(Agent {
                 pid,
@@ -388,7 +507,13 @@ fn cli_agents() -> Vec<Agent> {
                 waiting: None,
                 started,
                 since: started,
-                title: format!("antigravity · {}", Path::new(&cwd).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()),
+                title: format!(
+                    "antigravity · {}",
+                    Path::new(&cwd)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default()
+                ),
                 doing: String::new(),
                 prompt: String::new(),
                 changed: started,
@@ -412,7 +537,13 @@ fn codex_rollout(home: &Path, since: f64) -> (String, String, bool, f64, String)
             if p.is_dir() && depth < 4 {
                 newest(&p, best, depth + 1);
             } else if p.extension().is_some_and(|x| x == "jsonl") {
-                let m = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs_f64()).unwrap_or(0.0);
+                let m = e
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs_f64())
+                    .unwrap_or(0.0);
                 if best.as_ref().is_none_or(|(t, _)| m > *t) {
                     *best = Some((m, p));
                 }
@@ -421,23 +552,52 @@ fn codex_rollout(home: &Path, since: f64) -> (String, String, bool, f64, String)
     }
     let mut best = None;
     newest(&home.join("sessions"), &mut best, 0);
-    let Some((mtime, path)) = best.filter(|(m, _)| *m >= since - 5.0) else { return (String::new(), String::new(), false, 0.0, String::new()) };
+    let Some((mtime, path)) = best.filter(|(m, _)| *m >= since - 5.0) else {
+        return (String::new(), String::new(), false, 0.0, String::new());
+    };
     let text = std::fs::read_to_string(&path).unwrap_or_default();
-    let (mut title, mut doing, mut cwd, mut busy) = (String::new(), String::new(), String::new(), true);
+    let (mut title, mut doing, mut cwd, mut busy) =
+        (String::new(), String::new(), String::new(), true);
     for line in text.lines() {
-        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
         let p = &v["payload"];
         match (v["type"].as_str(), p["type"].as_str()) {
             (Some("session_meta"), _) => cwd = p["cwd"].as_str().unwrap_or("").to_string(),
             (_, Some("message")) if title.is_empty() && p["role"] == "user" => {
-                let t = p["content"].as_array().and_then(|a| a.iter().find_map(|c| c["text"].as_str())).unwrap_or("");
+                let t = p["content"]
+                    .as_array()
+                    .and_then(|a| a.iter().find_map(|c| c["text"].as_str()))
+                    .unwrap_or("");
                 // the first real line of the brief, not option lines like "mode: write"
-                title = t.lines().map(str::trim).find(|l| !l.is_empty() && !l.contains(": ") || l.len() > 40).unwrap_or("").chars().take(80).collect();
+                title = t
+                    .lines()
+                    .map(str::trim)
+                    .find(|l| !l.is_empty() && !l.contains(": ") || l.len() > 40)
+                    .unwrap_or("")
+                    .chars()
+                    .take(80)
+                    .collect();
             }
             (_, Some("function_call")) => {
-                let args: Value = p["arguments"].as_str().and_then(|a| serde_json::from_str(a).ok()).unwrap_or_default();
-                let cmd = args["cmd"].as_str().map(str::to_string).or_else(|| args["command"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(" ")));
-                doing = cmd.unwrap_or_else(|| p["name"].as_str().unwrap_or("").to_string()).chars().take(60).collect();
+                let args: Value = p["arguments"]
+                    .as_str()
+                    .and_then(|a| serde_json::from_str(a).ok())
+                    .unwrap_or_default();
+                let cmd = args["cmd"].as_str().map(str::to_string).or_else(|| {
+                    args["command"].as_array().map(|a| {
+                        a.iter()
+                            .filter_map(|x| x.as_str())
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    })
+                });
+                doing = cmd
+                    .unwrap_or_else(|| p["name"].as_str().unwrap_or("").to_string())
+                    .chars()
+                    .take(60)
+                    .collect();
             }
             (_, Some("task_started")) => busy = true,
             (_, Some("task_complete")) => busy = false,
@@ -452,14 +612,24 @@ fn focus_agent(pid: u32) {
     util::bg(
         move || {
             let clients = hypr::json("clients")?;
-            let wins: Vec<(u64, String)> = clients.as_array()?.iter().filter_map(|c| Some((c["pid"].as_u64()?, c["address"].as_str()?.to_string()))).collect();
+            let wins: Vec<(u64, String)> = clients
+                .as_array()?
+                .iter()
+                .filter_map(|c| Some((c["pid"].as_u64()?, c["address"].as_str()?.to_string())))
+                .collect();
             let mut p = pid as u64;
             for _ in 0..12 {
                 if let Some((_, addr)) = wins.iter().find(|(wp, _)| *wp == p) {
                     return Some(addr.clone());
                 }
                 let stat = util::read(format!("/proc/{p}/stat"))?;
-                p = stat.rsplit_once(')')?.1.split_whitespace().nth(1)?.parse().ok()?;
+                p = stat
+                    .rsplit_once(')')?
+                    .1
+                    .split_whitespace()
+                    .nth(1)?
+                    .parse()
+                    .ok()?;
                 if p <= 1 {
                     break;
                 }
@@ -490,7 +660,9 @@ impl Window {
     pub fn pace(&self) -> Option<f64> {
         let r = self.reset?;
         let elapsed = 1.0 - (r - util::now()) / self.span;
-        (0.02..=1.0).contains(&elapsed).then(|| self.pct - elapsed * 100.0)
+        (0.02..=1.0)
+            .contains(&elapsed)
+            .then(|| self.pct - elapsed * 100.0)
     }
 }
 
@@ -507,7 +679,10 @@ pub struct Account {
 
 impl Account {
     fn worst(&self) -> Option<f64> {
-        self.windows.iter().map(|w| w.pct).fold(None, |a, p| Some(a.map_or(p, |x: f64| x.max(p))))
+        self.windows
+            .iter()
+            .map(|w| w.pct)
+            .fold(None, |a, p| Some(a.map_or(p, |x: f64| x.max(p))))
     }
 }
 
@@ -516,9 +691,19 @@ fn win(name: &str, v: &Value, span: f64) -> Option<Window> {
     let reset = v["resets_at"].as_str().and_then(util::parse_iso);
     // the window rolled over since the snapshot
     if reset.is_some_and(|r| r <= util::now()) {
-        return Some(Window { name: name.into(), pct: 0.0, reset: None, span });
+        return Some(Window {
+            name: name.into(),
+            pct: 0.0,
+            reset: None,
+            span,
+        });
     }
-    Some(Window { name: name.into(), pct, reset, span })
+    Some(Window {
+        name: name.into(),
+        pct,
+        reset,
+        span,
+    })
 }
 
 fn cache(name: &str) -> PathBuf {
@@ -529,7 +714,9 @@ fn claude_account(label: &str, dir: &Path, claude_json: &Path, force: bool) -> A
     let state_path = cache(&format!("claude-{label}.json"));
     let mut st = util::read_json(&state_path).unwrap_or(Value::Object(Default::default()));
     let now = util::now();
-    let creds = util::read_json(dir.join(".credentials.json")).map(|v| v["claudeAiOauth"].clone()).unwrap_or_default();
+    let creds = util::read_json(dir.join(".credentials.json"))
+        .map(|v| v["claudeAiOauth"].clone())
+        .unwrap_or_default();
     let token = creds["accessToken"].as_str().unwrap_or("").to_string();
     let expires = creds["expiresAt"].as_f64().unwrap_or(0.0) / 1000.0;
     let plan = creds["subscriptionType"].as_str().unwrap_or("").to_string();
@@ -581,7 +768,10 @@ fn claude_account(label: &str, dir: &Path, claude_json: &Path, force: bool) -> A
         fetched = cc_at;
         source = "claude code".into();
     }
-    let email = cj["oauthAccount"]["emailAddress"].as_str().unwrap_or("").to_string();
+    let email = cj["oauthAccount"]["emailAddress"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
     let mut windows = Vec::new();
     windows.extend(win("5h", &snap["five_hour"], 5.0 * 3600.0));
     windows.extend(win("week", &snap["seven_day"], 7.0 * 86400.0));
@@ -592,12 +782,29 @@ fn claude_account(label: &str, dir: &Path, claude_json: &Path, force: bool) -> A
     }
     let ex = &snap["extra_usage"];
     let extra = if ex["is_enabled"] == true {
-        Some(format!("{:.2} / {} {}", ex["used_credits"].as_f64().unwrap_or(0.0), ex["monthly_limit"], ex["currency"].as_str().unwrap_or("")))
+        Some(format!(
+            "{:.2} / {} {}",
+            ex["used_credits"].as_f64().unwrap_or(0.0),
+            ex["monthly_limit"],
+            ex["currency"].as_str().unwrap_or("")
+        ))
     } else {
         None
     };
-    let detail = [plan, email].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
-    Account { label: label.into(), detail, windows, extra, source, fetched, error }
+    let detail = [plan, email]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ");
+    Account {
+        label: label.into(),
+        detail,
+        windows,
+        extra,
+        source,
+        fetched,
+        error,
+    }
 }
 
 fn codex_account(label: &str, home: &Path, force: bool) -> Account {
@@ -605,9 +812,17 @@ fn codex_account(label: &str, home: &Path, force: bool) -> Account {
     let mut st = util::read_json(&state_path).unwrap_or(Value::Object(Default::default()));
     let now = util::now();
     let auth = util::read_json(home.join("auth.json")).unwrap_or_default();
-    let token = auth["tokens"]["access_token"].as_str().unwrap_or("").to_string();
-    let acct = auth["tokens"]["account_id"].as_str().unwrap_or("").to_string();
-    let due = force || (now - st["attempt"].as_f64().unwrap_or(0.0) >= 55.0 && now - st["error_at"].as_f64().unwrap_or(0.0) >= 300.0);
+    let token = auth["tokens"]["access_token"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    let acct = auth["tokens"]["account_id"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    let due = force
+        || (now - st["attempt"].as_f64().unwrap_or(0.0) >= 55.0
+            && now - st["error_at"].as_f64().unwrap_or(0.0) >= 300.0);
     let mut error = st["error"].as_str().map(str::to_string);
     if due && !token.is_empty() {
         st["attempt"] = now.into();
@@ -641,17 +856,45 @@ fn codex_account(label: &str, home: &Path, force: bool) -> Account {
     let mut windows = Vec::new();
     fn add_win(windows: &mut Vec<Window>, now: f64, name: &str, w: &Value) {
         if let Some(pct) = w["used_percent"].as_f64() {
-            let span = w["limit_window_seconds"].as_f64().or_else(|| w["window_minutes"].as_f64().map(|m| m * 60.0)).unwrap_or(0.0);
+            let span = w["limit_window_seconds"]
+                .as_f64()
+                .or_else(|| w["window_minutes"].as_f64().map(|m| m * 60.0))
+                .unwrap_or(0.0);
             let reset = w["reset_at"].as_f64().or_else(|| w["resets_at"].as_f64());
-            let (pct, reset) = if reset.is_some_and(|r| r <= now) { (0.0, None) } else { (pct, reset) };
-            let name = if span >= 86400.0 * 6.5 { format!("{}d", (span / 86400.0).round()) } else if span > 0.0 { format!("{}h", (span / 3600.0).round()) } else { name.to_string() };
-            windows.push(Window { name, pct, reset, span: span.max(1.0) });
+            let (pct, reset) = if reset.is_some_and(|r| r <= now) {
+                (0.0, None)
+            } else {
+                (pct, reset)
+            };
+            let name = if span >= 86400.0 * 6.5 {
+                format!("{}d", (span / 86400.0).round())
+            } else if span > 0.0 {
+                format!("{}h", (span / 3600.0).round())
+            } else {
+                name.to_string()
+            };
+            windows.push(Window {
+                name,
+                pct,
+                reset,
+                span: span.max(1.0),
+            });
         }
     }
     let (mut source, mut fetched) = ("live".to_string(), st["fetched"].as_f64().unwrap_or(0.0));
     if d.is_object() {
-        add_win(&mut windows, now, "primary", &d["rate_limit"]["primary_window"]);
-        add_win(&mut windows, now, "secondary", &d["rate_limit"]["secondary_window"]);
+        add_win(
+            &mut windows,
+            now,
+            "primary",
+            &d["rate_limit"]["primary_window"],
+        );
+        add_win(
+            &mut windows,
+            now,
+            "secondary",
+            &d["rate_limit"]["secondary_window"],
+        );
     }
     if windows.is_empty() {
         // newest rollout's own record of the limits
@@ -664,8 +907,20 @@ fn codex_account(label: &str, home: &Path, force: bool) -> Account {
     }
     let plan = d["plan_type"].as_str().unwrap_or("").to_string();
     let email = d["email"].as_str().unwrap_or("").to_string();
-    let detail = [plan, email].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
-    Account { label: label.into(), detail, windows, extra: None, source, fetched, error }
+    let detail = [plan, email]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ");
+    Account {
+        label: label.into(),
+        detail,
+        windows,
+        extra: None,
+        source,
+        fetched,
+        error,
+    }
 }
 
 fn newest_rollout_limits(home: &Path) -> Option<(Value, f64)> {
@@ -691,8 +946,17 @@ fn newest_rollout_limits(home: &Path) -> Option<(Value, f64)> {
     let line = text.lines().rev().find(|l| l.contains("\"rate_limits\""))?;
     let v: Value = serde_json::from_str(line).ok()?;
     let rl = v["payload"]["rate_limits"].clone();
-    let rl = if rl.is_object() { rl } else { v["rate_limits"].clone() };
-    Some((rl, t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)))
+    let rl = if rl.is_object() {
+        rl
+    } else {
+        v["rate_limits"].clone()
+    };
+    Some((
+        rl,
+        t.duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0),
+    ))
 }
 
 fn agy_usage(force: bool) -> Account {
@@ -700,7 +964,12 @@ fn agy_usage(force: bool) -> Account {
     let mut snap = util::read_json(&path).unwrap_or_default();
     let mut error = None;
     if force || util::now() - snap["fetched"].as_f64().unwrap_or(0.0) >= 110.0 {
-        match util::run_in(&["agy", "-p", "/usage", "--log-file", "/dev/null"], Duration::from_secs(45), None, Some(Path::new("/tmp"))) {
+        match util::run_in(
+            &["agy", "-p", "/usage", "--log-file", "/dev/null"],
+            Duration::from_secs(45),
+            None,
+            Some(Path::new("/tmp")),
+        ) {
             Some(o) => {
                 let rows: Vec<Value> = o
                     .stdout
@@ -711,7 +980,15 @@ fn agy_usage(force: bool) -> Account {
                     })
                     .collect();
                 if rows.is_empty() {
-                    error = Some(o.stderr.lines().last().unwrap_or("agy returned no usage").chars().take(80).collect::<String>());
+                    error = Some(
+                        o.stderr
+                            .lines()
+                            .last()
+                            .unwrap_or("agy returned no usage")
+                            .chars()
+                            .take(80)
+                            .collect::<String>(),
+                    );
                 } else {
                     snap = serde_json::json!({"rows": rows, "fetched": util::now()});
                     if let Ok(s) = serde_json::to_string(&snap) {
@@ -728,12 +1005,39 @@ fn agy_usage(force: bool) -> Account {
         let short = if label.contains("five") { "5h" } else { "week" };
         let g = r["group"].as_str().unwrap_or("").to_lowercase();
         // "Gemini Models" / "Claude and GPT models" / "Gemini 4 Argon"
-        let group = if g.contains("argon") { "argon".to_string() } else if g.contains("claude") { "claude/gpt".into() } else { g.replace(" models", "") };
+        let group = if g.contains("argon") {
+            "argon".to_string()
+        } else if g.contains("claude") {
+            "claude/gpt".into()
+        } else {
+            g.replace(" models", "")
+        };
         let reset = r["reset"].as_f64();
-        let pct = if reset.is_some_and(|x| x < util::now()) { 0.0 } else { 100.0 - r["remaining"].as_f64().unwrap_or(100.0) };
-        windows.push(Window { name: format!("{group} {short}"), pct, reset: reset.filter(|x| *x > util::now()), span: if short == "5h" { 5.0 * 3600.0 } else { 7.0 * 86400.0 } });
+        let pct = if reset.is_some_and(|x| x < util::now()) {
+            0.0
+        } else {
+            100.0 - r["remaining"].as_f64().unwrap_or(100.0)
+        };
+        windows.push(Window {
+            name: format!("{group} {short}"),
+            pct,
+            reset: reset.filter(|x| *x > util::now()),
+            span: if short == "5h" {
+                5.0 * 3600.0
+            } else {
+                7.0 * 86400.0
+            },
+        });
     }
-    Account { label: "antigravity".into(), detail: String::new(), windows, extra: None, source: "agy".into(), fetched: snap["fetched"].as_f64().unwrap_or(0.0), error }
+    Account {
+        label: "antigravity".into(),
+        detail: String::new(),
+        windows,
+        extra: None,
+        source: "agy".into(),
+        fetched: snap["fetched"].as_f64().unwrap_or(0.0),
+        error,
+    }
 }
 
 #[derive(Clone, Default, PartialEq)]
@@ -782,12 +1086,22 @@ impl Ai {
         let o = ctx.opts("ai");
         let home = util::home();
         // claude1 is logged out: off unless listed
-        let claude_names = o.list("claude").unwrap_or_else(|| vec!["claude2".into(), "claude3".into()]);
+        let claude_names = o
+            .list("claude")
+            .unwrap_or_else(|| vec!["claude2".into(), "claude3".into()]);
         let claude = claude_names
             .iter()
             .map(|n| {
-                let dir = if n == "claude" { home.join(".claude") } else { home.join(format!(".claude-account{}", n.trim_start_matches("claude"))) };
-                let cj = if n == "claude" { home.join(".claude.json") } else { dir.join(".claude.json") };
+                let dir = if n == "claude" {
+                    home.join(".claude")
+                } else {
+                    home.join(format!(".claude-account{}", n.trim_start_matches("claude")))
+                };
+                let cj = if n == "claude" {
+                    home.join(".claude.json")
+                } else {
+                    dir.join(".claude.json")
+                };
                 (n.clone(), dir, cj)
             })
             .collect();
@@ -845,10 +1159,14 @@ impl Ai {
             }
         });
         let w = Rc::downgrade(&inner);
-        inner.line.tooltip(move || w.upgrade().map(|i| i.agents_tip()));
+        inner
+            .line
+            .tooltip(move || w.upgrade().map(|i| i.agents_tip()));
         inner.poll_agents();
         inner.fetch_usage(false);
-        util::every(o.num("agents_interval", 2.0) as u64 * 1000, &inner, |i| i.poll_agents());
+        util::every(o.num("agents_interval", 2.0) as u64 * 1000, &inner, |i| {
+            i.poll_agents()
+        });
         util::every(60_000, &inner, |i| i.fetch_usage(false));
         util::every(400, &inner, |i| i.tick());
         Ai(inner)
@@ -870,7 +1188,15 @@ impl Inner {
                 for ag in a.iter().filter(|a| a.needs_you()) {
                     if !seen.contains(&ag.sid) {
                         seen.push(ag.sid.clone());
-                        util::spawn(&["notify-send", "-u", "critical", "-a", "vector-bar", "Agent needs you", &format!("{} · {}", ag.name, ag.label())]);
+                        util::spawn(&[
+                            "notify-send",
+                            "-u",
+                            "critical",
+                            "-a",
+                            "vector-bar",
+                            "Agent needs you",
+                            &format!("{} · {}", ag.name, ag.label()),
+                        ]);
                     }
                 }
                 seen.retain(|s| a.iter().any(|x| &x.sid == s && x.needs_you()));
@@ -894,16 +1220,30 @@ impl Inner {
         util::bg(
             move || {
                 let cl = std::thread::scope(|s| {
-                    let hs: Vec<_> = claude.iter().map(|(l, d, j)| s.spawn(move || claude_account(l, d, j, force))).collect();
-                    let cx: Vec<_> = codex.iter().map(|(l, h)| s.spawn(move || codex_account(l, h, force))).collect();
+                    let hs: Vec<_> = claude
+                        .iter()
+                        .map(|(l, d, j)| s.spawn(move || claude_account(l, d, j, force)))
+                        .collect();
+                    let cx: Vec<_> = codex
+                        .iter()
+                        .map(|(l, h)| s.spawn(move || codex_account(l, h, force)))
+                        .collect();
                     let ag = agy.then(|| s.spawn(move || agy_usage(force)));
                     (
-                        hs.into_iter().filter_map(|h| h.join().ok()).collect::<Vec<_>>(),
-                        cx.into_iter().filter_map(|h| h.join().ok()).collect::<Vec<_>>(),
+                        hs.into_iter()
+                            .filter_map(|h| h.join().ok())
+                            .collect::<Vec<_>>(),
+                        cx.into_iter()
+                            .filter_map(|h| h.join().ok())
+                            .collect::<Vec<_>>(),
                         ag.and_then(|h| h.join().ok()),
                     )
                 });
-                Usage { claude: cl.0, codex: cl.1, agy: cl.2 }
+                Usage {
+                    claude: cl.0,
+                    codex: cl.1,
+                    agy: cl.2,
+                }
             },
             move |u| {
                 let Some(i) = w.upgrade() else { return };
@@ -936,7 +1276,11 @@ impl Inner {
         }
         self.slot.set_markup(&text);
         // tint when every Claude account is (nearly) out
-        let best = u.claude.iter().filter_map(|c| c.worst()).fold(None, |m: Option<f64>, p| Some(m.map_or(p, |x| x.min(p))));
+        let best = u
+            .claude
+            .iter()
+            .filter_map(|c| c.worst())
+            .fold(None, |m: Option<f64>, p| Some(m.map_or(p, |x| x.min(p))));
         let cls = if waiting > 0 {
             "crit"
         } else if best.is_some_and(|b| b >= 100.0) {
@@ -955,12 +1299,21 @@ impl Inner {
     /// that changed last, else one that finished in the last two minutes.
     fn pick(a: &[Agent]) -> Option<&Agent> {
         fn latest<'a>(it: impl Iterator<Item = &'a Agent>) -> Option<&'a Agent> {
-            it.max_by(|x, y| x.changed.partial_cmp(&y.changed).unwrap_or(std::cmp::Ordering::Equal))
+            it.max_by(|x, y| {
+                x.changed
+                    .partial_cmp(&y.changed)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
         }
         a.iter()
             .find(|x| x.needs_you())
             .or_else(|| latest(a.iter().filter(|x| x.busy())))
-            .or_else(|| latest(a.iter().filter(|x| !x.busy() && util::now() - x.since < DONE_SHOWN)))
+            .or_else(|| {
+                latest(
+                    a.iter()
+                        .filter(|x| !x.busy() && util::now() - x.since < DONE_SHOWN),
+                )
+            })
     }
 
     fn render_line(&self, a: &[Agent]) {
@@ -970,15 +1323,28 @@ impl Inner {
             return;
         };
         if t.needs_you() {
-            self.line.set_markup(&format!("󰀦  {}  {}", util::esc(&short(&t.label(), 40)), "needs your answer"));
+            self.line.set_markup(&format!(
+                "󰀦  {}  {}",
+                util::esc(&short(&t.label(), 40)),
+                "needs your answer"
+            ));
             self.line.set_classes(&["crit"]);
             self.line.set_visible(true);
             return;
         }
         let others = a.iter().filter(|x| x.busy() && x.sid != t.sid).count();
-        let more = if others > 0 { format!("  {}", ui::dim(&format!("+{others}"))) } else { String::new() };
+        let more = if others > 0 {
+            format!("  {}", ui::dim(&format!("+{others}")))
+        } else {
+            String::new()
+        };
         let text = if t.busy() {
-            let what = t.subs.first().filter(|s| s.changed > t.changed - 1.0).map(|s| s.description.clone()).unwrap_or_else(|| t.doing.clone());
+            let what = t
+                .subs
+                .first()
+                .filter(|s| s.changed > t.changed - 1.0)
+                .map(|s| s.description.clone())
+                .unwrap_or_else(|| t.doing.clone());
             format!(
                 "{}  {}  {}  {}{more}",
                 SPIN[self.spin.get()],
@@ -987,7 +1353,12 @@ impl Inner {
                 ui::dim(&util::dur((now - t.since).max(0.0) as u64)),
             )
         } else {
-            format!("{}  {}  {}{more}", ui::dim("󰄬"), util::esc(&short(&t.label(), 38)), ui::dim(&format!("done, {}", util::ago(t.since))))
+            format!(
+                "{}  {}  {}{more}",
+                ui::dim("󰄬"),
+                util::esc(&short(&t.label(), 38)),
+                ui::dim(&format!("done, {}", util::ago(t.since)))
+            )
         };
         self.line.set_markup(&text);
         self.line.set_classes(&[]);
@@ -1002,12 +1373,22 @@ impl Inner {
         for ag in a.iter() {
             s.append(&agent_line(ag, &self.theme, true).tap(|w| w.set_margin_top(4)));
             if ag.busy() && !ag.doing.is_empty() {
-                let d = ui::label(&ui::dim(&format!("now  {}", util::esc(&short(&ag.doing, 56)))), &[]);
+                let d = ui::label(
+                    &ui::dim(&format!("now  {}", util::esc(&short(&ag.doing, 56)))),
+                    &[],
+                );
                 d.set_margin_start(22);
                 s.append(&d);
             }
             for sa in &ag.subs {
-                let l = ui::label(&ui::dim(&format!("└ {}  {}", util::esc(&sa.kind), util::esc(&short(&sa.description, 44)))), &[]);
+                let l = ui::label(
+                    &ui::dim(&format!(
+                        "└ {}  {}",
+                        util::esc(&sa.kind),
+                        util::esc(&short(&sa.description, 44))
+                    )),
+                    &[],
+                );
                 l.set_margin_start(22);
                 s.append(&l);
             }
@@ -1044,15 +1425,35 @@ impl Inner {
                     m.set_size_request(80, -1);
                     m.set_hexpand(false);
                     grid.attach(&m, 2, row, 1, 1);
-                    grid.attach(&ui::text(&format!("{:.0}%", w.pct), &[cls]).tap(|l| l.set_xalign(1.0)), 3, row, 1, 1);
+                    grid.attach(
+                        &ui::text(&format!("{:.0}%", w.pct), &[cls]).tap(|l| l.set_xalign(1.0)),
+                        3,
+                        row,
+                        1,
+                        1,
+                    );
                     let reset = w.reset.map(util::until).unwrap_or_default();
                     grid.attach(&ui::text(&reset, &["dim"]), 4, row, 1, 1);
                 }
-                None => grid.attach(&ui::text(err.unwrap_or("no data yet"), &["dim"]), 1, row, 4, 1),
+                None => grid.attach(
+                    &ui::text(err.unwrap_or("no data yet"), &["dim"]),
+                    1,
+                    row,
+                    4,
+                    1,
+                ),
             }
             row += 1;
         };
-        let worst = |ws: &[Window]| ws.iter().max_by(|a, b| a.pct.partial_cmp(&b.pct).unwrap_or(std::cmp::Ordering::Equal)).cloned();
+        let worst = |ws: &[Window]| {
+            ws.iter()
+                .max_by(|a, b| {
+                    a.pct
+                        .partial_cmp(&b.pct)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .cloned()
+        };
         for c in u.claude.iter().chain(u.codex.iter()) {
             add(&c.label, worst(&c.windows).as_ref(), c.error.as_deref());
         }
@@ -1060,13 +1461,26 @@ impl Inner {
             // per model group: its own binding window
             let mut groups: Vec<String> = Vec::new();
             for w in &g.windows {
-                let grp = w.name.rsplit_once(' ').map(|x| x.0).unwrap_or(&w.name).to_string();
+                let grp = w
+                    .name
+                    .rsplit_once(' ')
+                    .map(|x| x.0)
+                    .unwrap_or(&w.name)
+                    .to_string();
                 if !groups.contains(&grp) {
                     groups.push(grp);
                 }
             }
             for grp in groups {
-                let ws: Vec<Window> = g.windows.iter().filter(|w| w.name.starts_with(&format!("{grp} "))).map(|w| Window { name: w.name.rsplit(' ').next().unwrap_or("").to_string(), ..w.clone() }).collect();
+                let ws: Vec<Window> = g
+                    .windows
+                    .iter()
+                    .filter(|w| w.name.starts_with(&format!("{grp} ")))
+                    .map(|w| Window {
+                        name: w.name.rsplit(' ').next().unwrap_or("").to_string(),
+                        ..w.clone()
+                    })
+                    .collect();
                 add(&grp, worst(&ws).as_ref(), g.error.as_deref());
             }
         }
@@ -1078,18 +1492,41 @@ impl Inner {
 
 fn short(s: &str, n: usize) -> String {
     let one = s.split_whitespace().collect::<Vec<_>>().join(" ");
-    if one.chars().count() > n { one.chars().take(n - 1).collect::<String>() + "…" } else { one }
+    if one.chars().count() > n {
+        one.chars().take(n - 1).collect::<String>() + "…"
+    } else {
+        one
+    }
 }
 
 fn agent_line(a: &Agent, t: &Theme, long: bool) -> gtk::Widget {
     let row = ui::hbox(8, &[]);
-    let (icon, cls) = if a.needs_you() { ("󰀦", "crit") } else if a.busy() { ("󰔟", "ok") } else { ("󰄬", "dim") };
+    let (icon, cls) = if a.needs_you() {
+        ("󰀦", "crit")
+    } else if a.busy() {
+        ("󰔟", "ok")
+    } else {
+        ("󰄬", "dim")
+    };
     row.append(&ui::text(icon, &[cls]));
-    let title = ui::text(&short(&a.label(), if long { 44 } else { 34 }), if a.busy() || a.needs_you() { &[] } else { &["dim"] });
+    let title = ui::text(
+        &short(&a.label(), if long { 44 } else { 34 }),
+        if a.busy() || a.needs_you() {
+            &[]
+        } else {
+            &["dim"]
+        },
+    );
     title.set_hexpand(true);
     row.append(&title);
     let since = util::dur((util::now() - a.since).max(0.0) as u64);
-    let state = if a.needs_you() { ui::colored("needs you", &t.color1) } else if a.busy() { format!("busy {since}") } else { ui::dim(&format!("done {since} ago")) };
+    let state = if a.needs_you() {
+        ui::colored("needs you", &t.color1)
+    } else if a.busy() {
+        format!("busy {since}")
+    } else {
+        ui::dim(&format!("done {since} ago"))
+    };
     row.append(&ui::label(&state, &["dim"]));
     row.upcast()
 }
@@ -1147,16 +1584,32 @@ fn usage_block(acc: &Account, mark: &str, t: &Theme) -> gtk::Widget {
     }
     b.append(&head);
     // one label column per account, as wide as its longest label (antigravity's are long)
-    let kw = acc.windows.iter().map(|w| w.name.chars().count()).max().unwrap_or(4).max(6) as i32;
+    let kw = acc
+        .windows
+        .iter()
+        .map(|w| w.name.chars().count())
+        .max()
+        .unwrap_or(4)
+        .max(6) as i32;
     for w in &acc.windows {
         let mut detail = String::new();
         if let Some(r) = w.reset {
-            detail = format!("{} · {}", util::until(r), util::local(r, "%a %H:%M").to_lowercase());
+            detail = format!(
+                "{} · {}",
+                util::until(r),
+                util::local(r, "%a %H:%M").to_lowercase()
+            );
         }
         if let (Some(p), true) = (w.pace(), w.span > 86400.0) {
             detail += &format!(" · {}{:.0}", if p >= 0.0 { "+" } else { "−" }, p.abs());
         }
-        let row = ui::meter_row(&w.name, w.pct / 100.0, &format!("{:.0}%", w.pct), &detail, ui::pct_class(w.pct));
+        let row = ui::meter_row(
+            &w.name,
+            w.pct / 100.0,
+            &format!("{:.0}%", w.pct),
+            &detail,
+            ui::pct_class(w.pct),
+        );
         if let Some(k) = row.first_child().and_downcast::<gtk::Label>() {
             k.set_width_chars(kw);
         }
@@ -1165,9 +1618,15 @@ fn usage_block(acc: &Account, mark: &str, t: &Theme) -> gtk::Widget {
     if let Some(e) = &acc.extra {
         b.append(&ui::kv("extra", e).0);
     }
-    let note = if acc.fetched > 0.0 { format!("{}, {}", acc.source, util::ago(acc.fetched)) } else { "no data yet".into() };
+    let note = if acc.fetched > 0.0 {
+        format!("{}, {}", acc.source, util::ago(acc.fetched))
+    } else {
+        "no data yet".into()
+    };
     let note = match &acc.error {
-        Some(e) if acc.source != "live" || util::now() - acc.fetched > 600.0 => format!("{note} · {e}"),
+        Some(e) if acc.source != "live" || util::now() - acc.fetched > 600.0 => {
+            format!("{note} · {e}")
+        }
         _ => note,
     };
     b.append(&ui::kv("data", &ui::dim(&util::esc(&note))).0);
@@ -1183,7 +1642,12 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
     card.body.append(&usage_box);
 
     let fill_agents = {
-        let (i, b, detail, pc) = (Rc::downgrade(i), agents_box.clone(), card.detail.clone(), p.clone());
+        let (i, b, detail, pc) = (
+            Rc::downgrade(i),
+            agents_box.clone(),
+            card.detail.clone(),
+            p.clone(),
+        );
         move || {
             let Some(i) = i.upgrade() else { return };
             ui::clear(&b);
@@ -1203,16 +1667,40 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
                 let (icon, meta) = if ag.needs_you() {
                     ("󰀦", ui::colored("needs you", &i.theme.color1))
                 } else if ag.busy() {
-                    (SPIN[i.spin.get()], format!("busy {}", util::dur((util::now() - ag.since).max(0.0) as u64)))
+                    (
+                        SPIN[i.spin.get()],
+                        format!(
+                            "busy {}",
+                            util::dur((util::now() - ag.since).max(0.0) as u64)
+                        ),
+                    )
                 } else {
-                    ("󰒲", ui::dim(&format!("idle {}", util::dur((util::now() - ag.since).max(0.0) as u64))))
+                    (
+                        "󰒲",
+                        ui::dim(&format!(
+                            "idle {}",
+                            util::dur((util::now() - ag.since).max(0.0) as u64)
+                        )),
+                    )
                 };
                 let row = ui::vbox(1, &["row"]);
                 if ag.needs_you() || ag.busy() {
                     row.add_css_class("active");
                 }
                 let top = ui::hbox(8, &[]);
-                top.append(&ui::text(icon, &["icon", if ag.needs_you() { "crit" } else if ag.busy() { "ok" } else { "dim" }]));
+                top.append(&ui::text(
+                    icon,
+                    &[
+                        "icon",
+                        if ag.needs_you() {
+                            "crit"
+                        } else if ag.busy() {
+                            "ok"
+                        } else {
+                            "dim"
+                        },
+                    ],
+                ));
                 let t = ui::text(&ag.label(), &[]);
                 t.set_hexpand(true);
                 ui::ellipsize(&t, 32);
@@ -1225,7 +1713,11 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
                         ag.name,
                         ag.account,
                         ag.cwd.replace(&*util::home().to_string_lossy(), "~"),
-                        if ag.doing.is_empty() { String::new() } else { format!(" · {}", short(&ag.doing, 40)) }
+                        if ag.doing.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" · {}", short(&ag.doing, 40))
+                        }
                     ))),
                     &[],
                 );
@@ -1254,9 +1746,19 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
                 for a in &u.claude {
                     b.append(&usage_block(a, SPARK, &i.theme));
                 }
-                let best = u.claude.iter().filter_map(|c| c.worst().map(|w| (w, c.label.clone()))).min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+                let best = u
+                    .claude
+                    .iter()
+                    .filter_map(|c| c.worst().map(|w| (w, c.label.clone())))
+                    .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
                 if let Some((_, l)) = best {
-                    b.append(&ui::kv("best", &format!("{l} {}", ui::dim("has the most headroom now"))).0);
+                    b.append(
+                        &ui::kv(
+                            "best",
+                            &format!("{l} {}", ui::dim("has the most headroom now")),
+                        )
+                        .0,
+                    );
                 }
             }
             if !u.codex.is_empty() {

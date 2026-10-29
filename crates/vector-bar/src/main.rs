@@ -11,8 +11,8 @@ mod bar;
 mod config;
 mod dbus;
 mod hypr;
-mod mako;
 mod lua;
+mod mako;
 mod mode;
 mod modules;
 mod panel;
@@ -87,8 +87,17 @@ fn main() -> glib::ExitCode {
     });
 
     app.connect_command_line(|app, cl| {
-        let args: Vec<String> = cl.arguments().iter().map(|a| a.to_string_lossy().to_string()).collect();
-        let words: Vec<&str> = args.iter().skip(1).map(String::as_str).filter(|a| *a != "--test").collect();
+        let args: Vec<String> = cl
+            .arguments()
+            .iter()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        let words: Vec<&str> = args
+            .iter()
+            .skip(1)
+            .map(String::as_str)
+            .filter(|a| *a != "--test")
+            .collect();
         if words.first() == Some(&"quit") {
             app.quit();
             return glib::ExitCode::SUCCESS;
@@ -105,7 +114,10 @@ fn main() -> glib::ExitCode {
     // a command (toggle, refresh, ...) must talk to a running bar, never become one
     let words: Vec<&String> = args.iter().skip(1).filter(|a| *a != "--test").collect();
     if !words.is_empty() && !running(if test { TEST_ID } else { APP_ID }) {
-        eprintln!("vector-bar is not running{}", if test { " (test instance)" } else { "" });
+        eprintln!(
+            "vector-bar is not running{}",
+            if test { " (test instance)" } else { "" }
+        );
         std::process::exit(1);
     }
     app.run()
@@ -113,11 +125,23 @@ fn main() -> glib::ExitCode {
 
 /// Does a bar own its D-Bus name? (Asked without registering ourselves.)
 fn running(id: &str) -> bool {
-    let Ok(c) = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE) else { return false };
-    c.call_sync(Some("org.freedesktop.DBus"), "/org/freedesktop/DBus", "org.freedesktop.DBus", "NameHasOwner", Some(&(id,).to_variant()), None, gio::DBusCallFlags::NONE, 1000, gio::Cancellable::NONE)
-        .ok()
-        .and_then(|v| v.child_value(0).get::<bool>())
-        .unwrap_or(false)
+    let Ok(c) = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE) else {
+        return false;
+    };
+    c.call_sync(
+        Some("org.freedesktop.DBus"),
+        "/org/freedesktop/DBus",
+        "org.freedesktop.DBus",
+        "NameHasOwner",
+        Some(&(id,).to_variant()),
+        None,
+        gio::DBusCallFlags::NONE,
+        1000,
+        gio::Cancellable::NONE,
+    )
+    .ok()
+    .and_then(|v| v.child_value(0).get::<bool>())
+    .unwrap_or(false)
 }
 
 fn command(words: &[&str]) -> String {
@@ -176,14 +200,19 @@ fn command(words: &[&str]) -> String {
 fn find_slot(name: &str) -> Option<slot::Slot> {
     let (direct, all) = STATE.with(|s| {
         let s = s.borrow();
-        (s.modules.get(name).cloned(), s.modules.values().cloned().collect::<Vec<_>>())
+        (
+            s.modules.get(name).cloned(),
+            s.modules.values().cloned().collect::<Vec<_>>(),
+        )
     });
     if let Some(m) = direct {
         if let Some(s) = m.slots().into_iter().find(|s| s.has_panel()) {
             return Some(s);
         }
     }
-    all.iter().flat_map(|m| m.slots()).find(|s| s.name() == name)
+    all.iter()
+        .flat_map(|m| m.slots())
+        .find(|s| s.name() == name)
 }
 
 fn set_open(name: &str, open: bool) {
@@ -202,11 +231,15 @@ fn reload(app: &gtk::Application) {
     panel::close();
     let (cfg, err) = Config::load();
     let theme = Theme::load(cfg.warn.as_deref(), cfg.crit.as_deref());
-    let Some(display) = gdk::Display::default() else { return };
+    let Some(display) = gdk::Display::default() else {
+        return;
+    };
 
     // styles: built-in sheet, then the user's on top
     let css = gtk::CssProvider::new();
-    css.connect_parsing_error(|_, sec, err| eprintln!("vector-bar: built-in css {}: {err}", sec.to_str()));
+    css.connect_parsing_error(|_, sec, err| {
+        eprintln!("vector-bar: built-in css {}: {err}", sec.to_str())
+    });
     css.load_from_string(&theme.css(&cfg.font, cfg.font_size, cfg.height));
     let user = gtk::CssProvider::new();
     let mut error = err;
@@ -214,7 +247,8 @@ fn reload(app: &gtk::Application) {
         let e = Rc::new(RefCell::new(None::<String>));
         let e2 = e.clone();
         user.connect_parsing_error(move |_, _, err| {
-            e2.borrow_mut().get_or_insert_with(|| format!("style.css: {err}"));
+            e2.borrow_mut()
+                .get_or_insert_with(|| format!("style.css: {err}"));
         });
         user.load_from_string(&text);
         if error.is_none() {
@@ -229,8 +263,16 @@ fn reload(app: &gtk::Application) {
         if let Some(old) = s.user_css.take() {
             gtk::style_context_remove_provider_for_display(&display, &old);
         }
-        gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
-        gtk::style_context_add_provider_for_display(&display, &user, gtk::STYLE_PROVIDER_PRIORITY_USER);
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &css,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &user,
+            gtk::STYLE_PROVIDER_PRIORITY_USER,
+        );
         s.css = Some(css);
         s.user_css = Some(user);
         s.error = error.clone();
@@ -252,7 +294,11 @@ fn reload(app: &gtk::Application) {
             });
         }
     }
-    let ctx = Ctx { cfg: Rc::new(cfg.clone()), theme: theme_rc.clone(), lua };
+    let ctx = Ctx {
+        cfg: Rc::new(cfg.clone()),
+        theme: theme_rc.clone(),
+        lua,
+    };
     let old = STATE.with(|s| std::mem::take(&mut s.borrow_mut().modules));
     drop(old);
     mode::reset();
@@ -291,7 +337,9 @@ fn reload(app: &gtk::Application) {
     let monitors = display.monitors();
     let mut bars = Vec::new();
     for i in 0..monitors.n_items() {
-        let Some(m) = monitors.item(i).and_downcast::<gdk::Monitor>() else { continue };
+        let Some(m) = monitors.item(i).and_downcast::<gdk::Monitor>() else {
+            continue;
+        };
         let w = bar::build(app, &m, &cfg, &theme_rc, &sections, test);
         w.present();
         bars.push(w);
@@ -350,7 +398,9 @@ fn watch_files(app: &gtk::Application) {
 
 fn watch_monitors(app: &gtk::Application) {
     let _ = app;
-    let Some(display) = gdk::Display::default() else { return };
+    let Some(display) = gdk::Display::default() else {
+        return;
+    };
     let list = display.monitors();
     list.connect_items_changed(|_, _, _, _| schedule_reload());
 }

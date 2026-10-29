@@ -5,8 +5,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use gtk::prelude::*;
 use gtk::gdk;
+use gtk::prelude::*;
 use gtk4_layer_shell::{Edge, Layer, LayerShell};
 
 use crate::config::Config;
@@ -56,7 +56,13 @@ fn half(cr: &gtk::cairo::Context, w: f64, h: f64, right: bool, tri: bool) {
 /// A slanted edge between two zones. `right`: the edge of a right-side
 /// zone (`/`), else of a left-side one (`\`). Both halves are painted here,
 /// so translucent segments don't stack up. `nb` is the block item beside it, if any.
-pub fn slant(right: bool, before: Kind, after: Kind, t: &Rc<Theme>, nb: Neighbour) -> gtk::DrawingArea {
+pub fn slant(
+    right: bool,
+    before: Kind,
+    after: Kind,
+    t: &Rc<Theme>,
+    nb: Neighbour,
+) -> gtk::DrawingArea {
     let d = gtk::DrawingArea::new();
     d.add_css_class("slant");
     d.set_content_width(10);
@@ -65,9 +71,19 @@ pub fn slant(right: bool, before: Kind, after: Kind, t: &Rc<Theme>, nb: Neighbou
     d.set_draw_func(move |area, cr, w, h| {
         let (w, h) = (w as f64, h as f64);
         // the triangle belongs to `before` on the left side, to `after` on the right
-        let (tri, rest) = if right { (after, before) } else { (before, after) };
+        let (tri, rest) = if right {
+            (after, before)
+        } else {
+            (before, after)
+        };
         let accent = area.has_css_class("accent-slant");
-        let color = |k: Kind| if accent && k == Kind::Block { Some(rgba(&t.accent, 1.0)) } else { kind_color(&t, k) };
+        let color = |k: Kind| {
+            if accent && k == Kind::Block {
+                Some(rgba(&t.accent, 1.0))
+            } else {
+                kind_color(&t, k)
+            }
+        };
         let paint = |cr: &gtk::cairo::Context, k: Kind, is_tri: bool| {
             half(cr, w, h, right, is_tri);
             match color(k) {
@@ -84,8 +100,15 @@ pub fn slant(right: bool, before: Kind, after: Kind, t: &Rc<Theme>, nb: Neighbou
         let item = nb.borrow().as_ref().and_then(|r| r.upgrade());
         if let Some(item) = item {
             let open = item.has_css_class("open");
-            let hover = item.state_flags().contains(gtk::StateFlags::PRELIGHT) && item.has_css_class("clickable");
-            let alpha = if open { 0.20 } else if hover { 0.14 } else { 0.0 };
+            let hover = item.state_flags().contains(gtk::StateFlags::PRELIGHT)
+                && item.has_css_class("clickable");
+            let alpha = if open {
+                0.20
+            } else if hover {
+                0.14
+            } else {
+                0.0
+            };
             if alpha > 0.0 {
                 half(cr, w, h, right, tri == Kind::Block);
                 cr.set_source_color(&rgba(&t.background, alpha));
@@ -126,7 +149,11 @@ pub fn build(
     win.add_css_class("vbar");
     win.init_layer_shell();
     win.set_layer(Layer::Top);
-    win.set_namespace(Some(if test { "vector-bar-test" } else { "vector-bar" }));
+    win.set_namespace(Some(if test {
+        "vector-bar-test"
+    } else {
+        "vector-bar"
+    }));
     win.set_monitor(Some(monitor));
     for e in [Edge::Top, Edge::Left, Edge::Right] {
         win.set_anchor(e, true);
@@ -138,7 +165,12 @@ pub fn build(
     }
     win.set_default_size(-1, cfg.height);
 
-    let info = BarInfo { connector: monitor.connector().map(|s| s.to_string()).unwrap_or_default() };
+    let info = BarInfo {
+        connector: monitor
+            .connector()
+            .map(|s| s.to_string())
+            .unwrap_or_default(),
+    };
     let kind = |name: &str| {
         if cfg.blocks.iter().any(|b| b == name) {
             Kind::Block
@@ -180,7 +212,13 @@ pub fn build(
             if prev != k && !at_edge {
                 // left side leans `\`, right side `/`; the centre opens with `/` and closes with `\`
                 let nb = Neighbour::default();
-                let s = slant(right || (i == 1 && prev == Kind::Plain), prev, k, theme, nb.clone());
+                let s = slant(
+                    right || (i == 1 && prev == Kind::Plain),
+                    prev,
+                    k,
+                    theme,
+                    nb.clone(),
+                );
                 if let (Kind::Block, Some(w)) = (prev, &prev_last) {
                     attach(&s, &nb, w);
                 }
@@ -288,7 +326,9 @@ fn fix_dividers(center: &gtk::Box) {
     let mut zc = center.first_child();
     while let Some(zone) = zc {
         zc = zone.next_sibling();
-        let Some(z) = zone.downcast_ref::<gtk::Box>() else { continue };
+        let Some(z) = zone.downcast_ref::<gtk::Box>() else {
+            continue;
+        };
         let mut seen = false;
         let mut pending: Option<gtk::Widget> = None;
         let mut c = z.first_child();

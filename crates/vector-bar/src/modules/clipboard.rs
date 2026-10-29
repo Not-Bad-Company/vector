@@ -43,12 +43,19 @@ struct Clip {
 }
 
 fn load() -> Vec<Clip> {
-    let Some(v) = util::read_json(clipse_file()) else { return Vec::new() };
-    let Some(arr) = v["clipboardHistory"].as_array() else { return Vec::new() };
+    let Some(v) = util::read_json(clipse_file()) else {
+        return Vec::new();
+    };
+    let Some(arr) = v["clipboardHistory"].as_array() else {
+        return Vec::new();
+    };
     arr.iter()
         .enumerate()
         .map(|(i, h)| {
-            let fp = h["filePath"].as_str().filter(|p| !p.is_empty() && *p != "null").map(str::to_string);
+            let fp = h["filePath"]
+                .as_str()
+                .filter(|p| !p.is_empty() && *p != "null")
+                .map(str::to_string);
             Clip {
                 index: i,
                 value: h["value"].as_str().unwrap_or("").to_string(),
@@ -61,7 +68,12 @@ fn load() -> Vec<Clip> {
 }
 
 fn age(recorded: &str) -> String {
-    let Ok(t) = chrono::NaiveDateTime::parse_from_str(recorded.get(..19).unwrap_or(""), "%Y-%m-%d %H:%M:%S") else { return String::new() };
+    let Ok(t) = chrono::NaiveDateTime::parse_from_str(
+        recorded.get(..19).unwrap_or(""),
+        "%Y-%m-%d %H:%M:%S",
+    ) else {
+        return String::new();
+    };
     let s = (chrono::Local::now().naive_local() - t).num_seconds();
     if s < 60 {
         "now".into()
@@ -75,7 +87,9 @@ fn age(recorded: &str) -> String {
 }
 
 fn mtime() -> Option<std::time::SystemTime> {
-    std::fs::metadata(clipse_file()).and_then(|m| m.modified()).ok()
+    std::fs::metadata(clipse_file())
+        .and_then(|m| m.modified())
+        .ok()
 }
 
 fn copy(c: &Clip) {
@@ -87,7 +101,13 @@ fn copy(c: &Clip) {
         None => (c.value.as_bytes().to_vec(), vec!["wl-copy"]),
     };
     std::thread::spawn(move || {
-        if let Ok(mut ch) = Command::new(args[0]).args(&args[1..]).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+        if let Ok(mut ch) = Command::new(args[0])
+            .args(&args[1..])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
             if let Some(mut si) = ch.stdin.take() {
                 let _ = si.write_all(&data);
             }
@@ -100,8 +120,12 @@ fn copy(c: &Clip) {
 /// Returns false when the file changed underneath (a new copy came in).
 fn edit(c: &Clip, delete: bool) -> bool {
     let path = clipse_file();
-    let Some(mut doc) = util::read_json(&path) else { return false };
-    let Some(hist) = doc["clipboardHistory"].as_array_mut() else { return false };
+    let Some(mut doc) = util::read_json(&path) else {
+        return false;
+    };
+    let Some(hist) = doc["clipboardHistory"].as_array_mut() else {
+        return false;
+    };
     if c.index >= hist.len() || hist[c.index]["recorded"].as_str() != Some(&c.recorded) {
         return false;
     }
@@ -128,7 +152,13 @@ impl Clipboard {
         slot.tooltip(|| {
             let s = ui::sheet();
             let n = load().len();
-            s.append(&ui::head("clipboard", &format!("{n} item{}", if n == 1 { "" } else { "s" })).0);
+            s.append(
+                &ui::head(
+                    "clipboard",
+                    &format!("{n} item{}", if n == 1 { "" } else { "s" }),
+                )
+                .0,
+            );
             s.append(&ui::thint("click open  ·  super alt v"));
             Some(s.upcast())
         });
@@ -167,7 +197,14 @@ fn panel(p: &Panel) -> gtk::Widget {
     }));
     let list = ui::vbox(0, &[]);
     card.body.append(&list);
-    let st = Rc::new(RefCell::new(PState { all: load(), shown: vec![], sel: 0, query: String::new(), mtime: mtime(), thumbs: HashMap::new() }));
+    let st = Rc::new(RefCell::new(PState {
+        all: load(),
+        shown: vec![],
+        sel: 0,
+        query: String::new(),
+        mtime: mtime(),
+        thumbs: HashMap::new(),
+    }));
     let draw: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::default();
     let redraw = {
         let d = draw.clone();
@@ -180,20 +217,49 @@ fn panel(p: &Panel) -> gtk::Widget {
     };
 
     let render = {
-        let (st, list, detail, pc, rr) = (st.clone(), list.clone(), card.detail.clone(), p.clone(), redraw.clone());
+        let (st, list, detail, pc, rr) = (
+            st.clone(),
+            list.clone(),
+            card.detail.clone(),
+            p.clone(),
+            redraw.clone(),
+        );
         move || {
             let mut s = st.borrow_mut();
             let q = s.query.to_lowercase();
-            let matches: Vec<Clip> = s.all.iter().filter(|h| q.is_empty() || if h.image.is_some() { "image".contains(&q) } else { h.value.to_lowercase().contains(&q) }).cloned().collect();
+            let matches: Vec<Clip> = s
+                .all
+                .iter()
+                .filter(|h| {
+                    q.is_empty()
+                        || if h.image.is_some() {
+                            "image".contains(&q)
+                        } else {
+                            h.value.to_lowercase().contains(&q)
+                        }
+                })
+                .cloned()
+                .collect();
             let mut shown: Vec<Clip> = matches.iter().filter(|h| h.pinned).cloned().collect();
             let pinned_n = shown.len();
             shown.extend(matches.iter().filter(|h| !h.pinned).take(SHOWN).cloned());
             s.sel = s.sel.min(shown.len().saturating_sub(1));
             let total = s.all.len();
-            detail.set_markup(&if total > 0 { format!("{total} item{}", if total == 1 { "" } else { "s" }) } else { String::new() });
+            detail.set_markup(&if total > 0 {
+                format!("{total} item{}", if total == 1 { "" } else { "s" })
+            } else {
+                String::new()
+            });
             ui::clear(&list);
             if shown.is_empty() {
-                list.append(&ui::text(if q.is_empty() { "nothing copied yet" } else { "nothing matches" }, &["empty-note"]));
+                list.append(&ui::text(
+                    if q.is_empty() {
+                        "nothing copied yet"
+                    } else {
+                        "nothing matches"
+                    },
+                    &["empty-note"],
+                ));
             }
             for (idx, h) in shown.iter().enumerate() {
                 if pinned_n > 0 && idx == 0 {
@@ -205,8 +271,22 @@ fn panel(p: &Panel) -> gtk::Widget {
                 let (icon, name) = match &h.image {
                     Some(_) => ("\u{f02e9}", "image".to_string()),
                     None => {
-                        let one: String = h.value.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(200).collect();
-                        ("\u{f014c}", if one.is_empty() { "(blank)".into() } else { one })
+                        let one: String = h
+                            .value
+                            .split_whitespace()
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                            .chars()
+                            .take(200)
+                            .collect();
+                        (
+                            "\u{f014c}",
+                            if one.is_empty() {
+                                "(blank)".into()
+                            } else {
+                                one
+                            },
+                        )
                     }
                 };
                 let row = ui::Row::new(icon, &name, &age(&h.recorded));
@@ -214,7 +294,14 @@ fn panel(p: &Panel) -> gtk::Widget {
                 if idx == s.sel {
                     row.root.add_css_class("sel");
                 }
-                for (glyph, tip, delete) in [(if h.pinned { "\u{f0404}" } else { "\u{f0403}" }, if h.pinned { "unpin" } else { "pin" }, false), ("\u{f0156}", "delete", true)] {
+                for (glyph, tip, delete) in [
+                    (
+                        if h.pinned { "\u{f0404}" } else { "\u{f0403}" },
+                        if h.pinned { "unpin" } else { "pin" },
+                        false,
+                    ),
+                    ("\u{f0156}", "delete", true),
+                ] {
                     let (h2, st2, rr2) = (h.clone(), st.clone(), rr.clone());
                     let b = ui::icon_button(glyph, tip, move || {
                         edit(&h2, delete);
@@ -234,7 +321,11 @@ fn panel(p: &Panel) -> gtk::Widget {
                 });
                 list.append(&row.root);
                 if let Some(path) = &h.image {
-                    let tex = s.thumbs.entry(path.clone()).or_insert_with(|| gdk::Texture::from_filename(path).ok()).clone();
+                    let tex = s
+                        .thumbs
+                        .entry(path.clone())
+                        .or_insert_with(|| gdk::Texture::from_filename(path).ok())
+                        .clone();
                     if let Some(tex) = tex {
                         let (w, hh) = (tex.width().max(1) as f64, tex.height().max(1) as f64);
                         let scale = (320.0 / w).min(120.0 / hh).min(1.0);
@@ -287,7 +378,11 @@ fn panel(p: &Panel) -> gtk::Widget {
             match k {
                 gdk::Key::Down | gdk::Key::Up if n > 0 => {
                     let mut s = st.borrow_mut();
-                    s.sel = if k == gdk::Key::Down { (s.sel + 1) % n } else { (s.sel + n - 1) % n };
+                    s.sel = if k == gdk::Key::Down {
+                        (s.sel + 1) % n
+                    } else {
+                        (s.sel + n - 1) % n
+                    };
                     drop(s);
                     rr();
                     true

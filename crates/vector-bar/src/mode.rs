@@ -14,7 +14,11 @@ pub struct State {
     pub rank: u8,
 }
 
-pub const NORMAL: State = State { key: "normal", label: "NORMAL", rank: 255 };
+pub const NORMAL: State = State {
+    key: "normal",
+    label: "NORMAL",
+    rank: 255,
+};
 
 thread_local! {
     static ACTIVE: RefCell<Vec<State>> = const { RefCell::new(Vec::new()) };

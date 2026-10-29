@@ -48,10 +48,20 @@ fn parse(line: &str, json: bool) -> Out {
             };
             let classes = match &v["class"] {
                 serde_json::Value::String(s) => vec![s.clone()],
-                serde_json::Value::Array(a) => a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect(),
+                serde_json::Value::Array(a) => a
+                    .iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect(),
                 _ => vec![],
             };
-            return Out { text: s("text"), tooltip: s("tooltip"), classes, alt: s("alt"), percentage: v["percentage"].as_f64(), raw: v };
+            return Out {
+                text: s("text"),
+                tooltip: s("tooltip"),
+                classes,
+                alt: s("alt"),
+                percentage: v["percentage"].as_f64(),
+                raw: v,
+            };
         }
     }
     let mut it = line.lines();
@@ -89,10 +99,21 @@ impl Custom {
         let name = format!("custom-{}", spec.name);
         let slot = ctx.slot(&format!("custom:{}", spec.name), &[]);
         let _ = name;
-        let inner = Rc::new(Inner { slot, spec: spec.clone(), out: RefCell::default(), busy: Cell::new(false), child: Cell::new(None), me: RefCell::default() });
+        let inner = Rc::new(Inner {
+            slot,
+            spec: spec.clone(),
+            out: RefCell::default(),
+            busy: Cell::new(false),
+            child: Cell::new(None),
+            me: RefCell::default(),
+        });
         *inner.me.borrow_mut() = Rc::downgrade(&inner);
         let s = &inner.spec;
-        for (cmd, which) in [(&s.on_click, 1), (&s.on_click_middle, 2), (&s.on_click_right, 3)] {
+        for (cmd, which) in [
+            (&s.on_click, 1),
+            (&s.on_click_middle, 2),
+            (&s.on_click_right, 3),
+        ] {
             if let Some(c) = cmd.clone() {
                 let w = Rc::downgrade(&inner);
                 let f = move || {
@@ -110,8 +131,13 @@ impl Custom {
             }
         }
         if s.on_scroll_up.is_some() || s.on_scroll_down.is_some() {
-            let (u, d) = (s.on_scroll_up.clone().unwrap_or_default(), s.on_scroll_down.clone().unwrap_or_default());
-            inner.slot.on_scroll(move || util::spawn_sh(&u), move || util::spawn_sh(&d));
+            let (u, d) = (
+                s.on_scroll_up.clone().unwrap_or_default(),
+                s.on_scroll_down.clone().unwrap_or_default(),
+            );
+            inner
+                .slot
+                .on_scroll(move || util::spawn_sh(&u), move || util::spawn_sh(&d));
         }
         let w = Rc::downgrade(&inner);
         inner.slot.tooltip(move || {
@@ -148,14 +174,21 @@ impl Inner {
                 .replace("{}", &o.text)
                 .replace("{text}", &o.text)
                 .replace("{alt}", &o.alt)
-                .replace("{percentage}", &o.percentage.map(|p| format!("{p:.0}")).unwrap_or_default());
+                .replace(
+                    "{percentage}",
+                    &o.percentage.map(|p| format!("{p:.0}")).unwrap_or_default(),
+                );
         }
         if let Some(max) = self.spec.max_length {
             if text.chars().count() > max {
                 text = text.chars().take(max.saturating_sub(1)).collect::<String>() + "…";
             }
         }
-        let markup = if self.spec.markup { text.clone() } else { util::esc(&text) };
+        let markup = if self.spec.markup {
+            text.clone()
+        } else {
+            util::esc(&text)
+        };
         self.slot.set_visible(!o.text.trim().is_empty());
         self.slot.set_markup(&markup);
         let cls: Vec<&str> = o.classes.iter().map(String::as_str).collect();
@@ -165,7 +198,10 @@ impl Inner {
             let me = self.me.borrow().clone();
             self.slot.panel(move |_| {
                 let call: crate::sheet::Call = Rc::new(|_: &str| {});
-                let v = me.upgrade().map(|i| i.out.borrow().raw["panel"].clone()).unwrap_or_default();
+                let v = me
+                    .upgrade()
+                    .map(|i| i.out.borrow().raw["panel"].clone())
+                    .unwrap_or_default();
                 crate::sheet::card(&v, &call).root.upcast()
             });
         }
@@ -177,7 +213,13 @@ impl Inner {
             return;
         }
         let cmd = util::expand(&self.spec.exec).to_string_lossy().to_string();
-        let cmd = if self.spec.exec.starts_with("~/") { cmd } else { self.spec.exec.replace("~/", &format!("{}/", util::home().display())) };
+        let cmd = if self.spec.exec.starts_with("~/") {
+            cmd
+        } else {
+            self.spec
+                .exec
+                .replace("~/", &format!("{}/", util::home().display()))
+        };
         let json = self.spec.json;
         let w = Rc::downgrade(self);
         util::bg(
@@ -193,13 +235,20 @@ impl Inner {
     }
 
     fn stream(self: &Rc<Self>) {
-        let cmd = self.spec.exec.replace("~/", &format!("{}/", util::home().display()));
+        let cmd = self
+            .spec
+            .exec
+            .replace("~/", &format!("{}/", util::home().display()));
         let (tx, rx) = async_channel::unbounded::<Option<String>>();
         let (ptx, prx) = std::sync::mpsc::channel::<u32>();
         std::thread::spawn(move || {
             loop {
                 let mut c = Command::new("sh");
-                c.arg("-c").arg(&cmd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+                c.arg("-c")
+                    .arg(&cmd)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null());
                 unsafe {
                     use std::os::unix::process::CommandExt;
                     c.pre_exec(|| {
@@ -274,7 +323,9 @@ impl ErrorMark {
             l.set_max_width_chars(60);
             l.set_margin_top(6);
             sh.append(&l);
-            sh.append(&ui::thint("fix the file; the bar reloads by itself  ·  click opens it"));
+            sh.append(&ui::thint(
+                "fix the file; the bar reloads by itself  ·  click opens it",
+            ));
             Some(sh.upcast())
         });
         s.on_left(|| util::spawn(&["xdg-open", &config::path().to_string_lossy()]));

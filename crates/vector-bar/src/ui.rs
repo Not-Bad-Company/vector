@@ -79,12 +79,25 @@ pub fn sheet() -> gtk::Box {
 /// slanted edge, then the detail. Returns (box, detail label).
 pub fn head(title: &str, detail: &str) -> (gtk::Box, gtk::Label) {
     let b = hbox(0, &["thead"]);
-    let shown = if title.chars().any(|c| c.is_uppercase()) { title.to_string() } else { title.to_uppercase() };
+    let shown = if title.chars().any(|c| c.is_uppercase()) {
+        title.to_string()
+    } else {
+        title.to_uppercase()
+    };
     let t = text(&shown, &["htitle"]);
     t.set_valign(gtk::Align::Fill);
     b.append(&t);
     let theme = crate::panel::current_theme();
-    b.append(&crate::bar::slant(false, crate::bar::Kind::Block, crate::bar::Kind::Plain, &theme, Default::default()).tap(|s| s.set_mode_accent()));
+    b.append(
+        &crate::bar::slant(
+            false,
+            crate::bar::Kind::Block,
+            crate::bar::Kind::Plain,
+            &theme,
+            Default::default(),
+        )
+        .tap(|s| s.set_mode_accent()),
+    );
     let d = label(detail, &["hdetail"]);
     ellipsize(&d, 44);
     d.set_hexpand(true);
@@ -231,11 +244,14 @@ pub fn on_click(w: &impl IsA<gtk::Widget>, f: impl Fn() + 'static) {
     });
     // bar widgets (workspaces) must also react when the panel overlay caught the click
     if w.root().is_none_or(|r| r.has_css_class("vbar")) {
-        crate::slot::register_click(w, Rc::new(move |b, _| {
-            if b == gdk::BUTTON_PRIMARY {
-                f()
-            }
-        }));
+        crate::slot::register_click(
+            w,
+            Rc::new(move |b, _| {
+                if b == gdk::BUTTON_PRIMARY {
+                    f()
+                }
+            }),
+        );
     }
     w.add_controller(g);
     w.add_css_class("clickable");
@@ -278,7 +294,11 @@ pub fn chip(t: &str, on: bool, f: impl Fn() + 'static) -> gtk::Button {
 
 /// A row of mutually exclusive chips. `pick` gets the chosen key; the row
 /// marks the clicked chip at once (optimistic), the next state refresh corrects it.
-pub fn segmented(options: &[(&str, &str)], current: &str, pick: impl Fn(&str) + 'static) -> gtk::Box {
+pub fn segmented(
+    options: &[(&str, &str)],
+    current: &str,
+    pick: impl Fn(&str) + 'static,
+) -> gtk::Box {
     let b = hbox(0, &["seg"]);
     let pick = Rc::new(pick);
     let buttons: Rc<RefCell<Vec<(String, gtk::Button)>>> = Rc::default();
@@ -340,7 +360,13 @@ impl Row {
         root.append(&nm);
         root.append(&mt);
         root.append(&trail);
-        Row { root, icon: ic, name: nm, meta: mt, trail }
+        Row {
+            root,
+            icon: ic,
+            name: nm,
+            meta: mt,
+            trail,
+        }
     }
 
     pub fn set_active(&self, on: bool) {
@@ -395,7 +421,12 @@ pub type Item = (String, String, Box<dyn Fn() -> gtk::Widget>);
 impl KeyedList {
     pub fn new() -> Rc<KeyedList> {
         let root = vbox(0, &[]);
-        let l = Rc::new(KeyedList { root, rows: RefCell::default(), hovered: Rc::default(), pending: RefCell::default() });
+        let l = Rc::new(KeyedList {
+            root,
+            rows: RefCell::default(),
+            hovered: Rc::default(),
+            pending: RefCell::default(),
+        });
         let m = gtk::EventControllerMotion::new();
         let h = l.hovered.clone();
         m.connect_enter(move |_, _, _| h.set(true));
@@ -424,12 +455,21 @@ impl KeyedList {
 
     fn sync_now(&self, mut items: Vec<Item>, frozen: bool) {
         if frozen {
-            let pos: std::collections::HashMap<String, usize> =
-                self.rows.borrow().iter().enumerate().map(|(i, (k, _, _))| (k.clone(), i)).collect();
+            let pos: std::collections::HashMap<String, usize> = self
+                .rows
+                .borrow()
+                .iter()
+                .enumerate()
+                .map(|(i, (k, _, _))| (k.clone(), i))
+                .collect();
             items.sort_by_key(|(k, _, _)| pos.get(k).copied().unwrap_or(usize::MAX));
         }
-        let mut old: std::collections::HashMap<String, (String, gtk::Widget)> =
-            self.rows.borrow_mut().drain(..).map(|(k, s, w)| (k, (s, w))).collect();
+        let mut old: std::collections::HashMap<String, (String, gtk::Widget)> = self
+            .rows
+            .borrow_mut()
+            .drain(..)
+            .map(|(k, s, w)| (k, (s, w)))
+            .collect();
         let mut new_rows = Vec::new();
         let mut prev: Option<gtk::Widget> = None;
         for (key, sig, build) in &items {

@@ -42,10 +42,18 @@ pub struct Sample {
 
 impl Sample {
     fn mem_pct(&self) -> f64 {
-        if self.mem_total == 0 { 0.0 } else { self.mem_used as f64 * 100.0 / self.mem_total as f64 }
+        if self.mem_total == 0 {
+            0.0
+        } else {
+            self.mem_used as f64 * 100.0 / self.mem_total as f64
+        }
     }
     fn disk_pct(&self) -> f64 {
-        if self.disk_total == 0 { 0.0 } else { self.disk_used as f64 * 100.0 / self.disk_total as f64 }
+        if self.disk_total == 0 {
+            0.0
+        } else {
+            self.disk_used as f64 * 100.0 / self.disk_total as f64
+        }
     }
 }
 
@@ -72,7 +80,9 @@ fn meminfo() -> HashMap<String, u64> {
 }
 
 fn statvfs_kb(path: &str) -> (u64, u64) {
-    let Ok(c) = std::ffi::CString::new(path) else { return (0, 0) };
+    let Ok(c) = std::ffi::CString::new(path) else {
+        return (0, 0);
+    };
     let mut s: libc::statvfs = unsafe { std::mem::zeroed() };
     if unsafe { libc::statvfs(c.as_ptr(), &mut s) } != 0 {
         return (0, 0);
@@ -86,7 +96,12 @@ fn statvfs_kb(path: &str) -> (u64, u64) {
 fn cpu_times() -> (u64, u64) {
     let line = util::read("/proc/stat").unwrap_or_default();
     let first = line.lines().next().unwrap_or("");
-    let v: Vec<u64> = first.split_whitespace().skip(1).take(8).filter_map(|x| x.parse().ok()).collect();
+    let v: Vec<u64> = first
+        .split_whitespace()
+        .skip(1)
+        .take(8)
+        .filter_map(|x| x.parse().ok())
+        .collect();
     if v.len() < 8 {
         return (0, 0);
     }
@@ -112,7 +127,11 @@ fn gpu_status() -> String {
             ui::dim("switching")
         } else if util::read_trim(dev.join("power/runtime_status")).as_deref() == Some("active") {
             match util::run(
-                &["nvidia-smi", "--query-gpu=temperature.gpu,utilization.gpu", "--format=csv,noheader,nounits"],
+                &[
+                    "nvidia-smi",
+                    "--query-gpu=temperature.gpu,utilization.gpu",
+                    "--format=csv,noheader,nounits",
+                ],
                 Duration::from_secs(2),
             ) {
                 Some(o) if o.ok => {
@@ -160,7 +179,9 @@ impl Sysmon {
         let state_file = util::home().join(".local/state/vector-bar/sysmon-expanded");
         // first run: carry over Waybar's expanded mode
         let expanded = state_file.exists()
-            || (!state_file.parent().is_some_and(|p| p.join(".migrated").exists())
+            || (!state_file
+                .parent()
+                .is_some_and(|p| p.join(".migrated").exists())
                 && util::cache_dir().join("waybar-sysmon-expanded").exists());
         let inner = Rc::new(Inner {
             slot: ctx.slot("sysmon", &[]),
@@ -233,12 +254,23 @@ impl Inner {
     fn sample(&self) {
         let (total, busy) = cpu_times();
         let (pt, pb) = self.prev.replace((total, busy));
-        let cpu = if total > pt { (busy - pb) as f64 * 100.0 / (total - pt) as f64 } else { 0.0 };
-        let raw_temp = hwmon("coretemp").and_then(|d| util::read_num(d.join("temp1_input"))).unwrap_or(0) / 1000;
+        let cpu = if total > pt {
+            (busy - pb) as f64 * 100.0 / (total - pt) as f64
+        } else {
+            0.0
+        };
+        let raw_temp = hwmon("coretemp")
+            .and_then(|d| util::read_num(d.join("temp1_input")))
+            .unwrap_or(0)
+            / 1000;
         // package temp is a hotspot that spikes for a second: average with the
         // previous value so a turbo burst doesn't flash the bar
         let prev_temp = self.last.borrow().temp;
-        let temp = if prev_temp > 0 { (prev_temp + raw_temp + 1) / 2 } else { raw_temp };
+        let temp = if prev_temp > 0 {
+            (prev_temp + raw_temp + 1) / 2
+        } else {
+            raw_temp
+        };
         let mi = meminfo();
         let g = |k: &str| mi.get(k).copied().unwrap_or(0);
         let mut freqs = Vec::new();
@@ -249,9 +281,17 @@ impl Inner {
                 }
             }
         }
-        let freq_ghz = if freqs.is_empty() { 0.0 } else { freqs.iter().sum::<f64>() / freqs.len() as f64 / 1e6 };
+        let freq_ghz = if freqs.is_empty() {
+            0.0
+        } else {
+            freqs.iter().sum::<f64>() / freqs.len() as f64 / 1e6
+        };
         let fans = hwmon("asus")
-            .map(|d| (1..=4).filter_map(|n| util::read_num(d.join(format!("fan{n}_input")))).collect())
+            .map(|d| {
+                (1..=4)
+                    .filter_map(|n| util::read_num(d.join(format!("fan{n}_input"))))
+                    .collect()
+            })
             .unwrap_or_default();
         let (du, dt) = statvfs_kb("/");
         let bat = hwmon("BAT0");
@@ -266,11 +306,20 @@ impl Inner {
             disk_used: du,
             disk_total: dt,
             fans,
-            watts: bat.and_then(|d| util::read_num(d.join("power1_input"))).unwrap_or(0) as f64 / 1e6,
-            bat_status: util::read_trim("/sys/class/power_supply/BAT0/status").unwrap_or_default().to_lowercase(),
+            watts: bat
+                .and_then(|d| util::read_num(d.join("power1_input")))
+                .unwrap_or(0) as f64
+                / 1e6,
+            bat_status: util::read_trim("/sys/class/power_supply/BAT0/status")
+                .unwrap_or_default()
+                .to_lowercase(),
             profile: util::read_trim("/sys/firmware/acpi/platform_profile").unwrap_or_default(),
             uptime: util::read("/proc/uptime")
-                .and_then(|s| s.split_whitespace().next().and_then(|x| x.parse::<f64>().ok()))
+                .and_then(|s| {
+                    s.split_whitespace()
+                        .next()
+                        .and_then(|x| x.parse::<f64>().ok())
+                })
                 .unwrap_or(0.0) as u64,
             gpu: self.gpu.borrow().clone(),
             load: util::read("/proc/loadavg")
@@ -326,26 +375,94 @@ impl Inner {
     fn tooltip(&self) -> gtk::Widget {
         let s = self.last.borrow();
         let sh = ui::sheet();
-        sh.append(&ui::head("VectorOS", &format!("up {}{}", util::dur(s.uptime), if s.profile.is_empty() { String::new() } else { format!(" · {}", s.profile) })).0);
+        sh.append(
+            &ui::head(
+                "VectorOS",
+                &format!(
+                    "up {}{}",
+                    util::dur(s.uptime),
+                    if s.profile.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" · {}", s.profile)
+                    }
+                ),
+            )
+            .0,
+        );
         // last 90 samples of cpu
         let hist: Vec<f64> = self.cpu_hist.borrow().iter().copied().collect();
         let g = spark(Rc::new(move || hist.clone()), 100.0, &self.theme.accent, 28);
         g.set_size_request(260, 28);
         sh.append(&g);
-        let tcls = if s.temp >= self.crit_temp { "crit" } else if s.temp >= self.warn_temp { "warn" } else { "" };
-        sh.append(&ui::tmeter("cpu", s.cpu / 100.0, &format!("{:.0}%", s.cpu), &format!("{:.1} GHz · load {}", s.freq_ghz, s.load), ui::pct_class(s.cpu)));
-        sh.append(&ui::tmeter("temp", s.temp as f64 / 100.0, &format!("{}°", s.temp), &format!("fans {}", fans(&s.fans)), tcls));
+        let tcls = if s.temp >= self.crit_temp {
+            "crit"
+        } else if s.temp >= self.warn_temp {
+            "warn"
+        } else {
+            ""
+        };
+        sh.append(&ui::tmeter(
+            "cpu",
+            s.cpu / 100.0,
+            &format!("{:.0}%", s.cpu),
+            &format!("{:.1} GHz · load {}", s.freq_ghz, s.load),
+            ui::pct_class(s.cpu),
+        ));
+        sh.append(&ui::tmeter(
+            "temp",
+            s.temp as f64 / 100.0,
+            &format!("{}°", s.temp),
+            &format!("fans {}", fans(&s.fans)),
+            tcls,
+        ));
         let mp = s.mem_pct();
-        sh.append(&ui::tmeter("mem", mp / 100.0, &format!("{mp:.0}%"), &of(s.mem_used, s.mem_total), if mp >= 95.0 { "crit" } else if mp >= 85.0 { "warn" } else { "" }));
+        sh.append(&ui::tmeter(
+            "mem",
+            mp / 100.0,
+            &format!("{mp:.0}%"),
+            &of(s.mem_used, s.mem_total),
+            if mp >= 95.0 {
+                "crit"
+            } else if mp >= 85.0 {
+                "warn"
+            } else {
+                ""
+            },
+        ));
         let dp = s.disk_pct();
-        sh.append(&ui::tmeter("disk", dp / 100.0, &format!("{dp:.0}%"), &of(s.disk_used, s.disk_total), if dp >= 92.0 { "crit" } else if dp >= 80.0 { "warn" } else { "" }));
+        sh.append(&ui::tmeter(
+            "disk",
+            dp / 100.0,
+            &format!("{dp:.0}%"),
+            &of(s.disk_used, s.disk_total),
+            if dp >= 92.0 {
+                "crit"
+            } else if dp >= 80.0 {
+                "warn"
+            } else {
+                ""
+            },
+        ));
         sh.append(&ui::tsection("hardware"));
         if !s.gpu.is_empty() {
             sh.append(&ui::tkv("gpu", &s.gpu));
         }
-        sh.append(&ui::tkv("swap", &format!("{}  {}", util::size_kb(s.swap_used), ui::dim(&format!("· {} committed", util::size_kb(s.committed))))));
-        sh.append(&ui::tkv("power", &format!("{:.1} W {}", s.watts, ui::dim(&s.bat_status))));
-        sh.append(&ui::thint("click details  ·  middle btop  ·  right cpu and mem on the bar"));
+        sh.append(&ui::tkv(
+            "swap",
+            &format!(
+                "{}  {}",
+                util::size_kb(s.swap_used),
+                ui::dim(&format!("· {} committed", util::size_kb(s.committed)))
+            ),
+        ));
+        sh.append(&ui::tkv(
+            "power",
+            &format!("{:.1} W {}", s.watts, ui::dim(&s.bat_status)),
+        ));
+        sh.append(&ui::thint(
+            "click details  ·  middle btop  ·  right cpu and mem on the bar",
+        ));
         sh.upcast()
     }
 }
@@ -358,7 +475,14 @@ fn fans(f: &[i64]) -> String {
     if f.iter().all(|x| *x == 0) {
         ui::dim("off")
     } else {
-        format!("{} {}", f.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" / "), ui::dim("rpm"))
+        format!(
+            "{} {}",
+            f.iter()
+                .map(|x| x.to_string())
+                .collect::<Vec<_>>()
+                .join(" / "),
+            ui::dim("rpm")
+        )
     }
 }
 
@@ -376,7 +500,12 @@ impl Module for Sysmon {
 }
 
 /// A line graph of recent values (0..max).
-pub fn spark(hist: Rc<dyn Fn() -> Vec<f64>>, max: f64, color: &str, height: i32) -> gtk::DrawingArea {
+pub fn spark(
+    hist: Rc<dyn Fn() -> Vec<f64>>,
+    max: f64,
+    color: &str,
+    height: i32,
+) -> gtk::DrawingArea {
     let d = gtk::DrawingArea::new();
     d.set_content_height(height);
     d.set_hexpand(true);
@@ -385,7 +514,12 @@ pub fn spark(hist: Rc<dyn Fn() -> Vec<f64>>, max: f64, color: &str, height: i32)
         let v = hist();
         let (w, h) = (w as f64, h as f64);
         // faint baseline, so a fresh (still empty) graph reads as one
-        cr.set_source_rgba(rgba.red() as f64, rgba.green() as f64, rgba.blue() as f64, 0.25);
+        cr.set_source_rgba(
+            rgba.red() as f64,
+            rgba.green() as f64,
+            rgba.blue() as f64,
+            0.25,
+        );
         cr.set_line_width(1.0);
         cr.move_to(0.0, h - 0.5);
         cr.line_to(w, h - 0.5);
@@ -402,13 +536,27 @@ pub fn spark(hist: Rc<dyn Fn() -> Vec<f64>>, max: f64, color: &str, height: i32)
         }
         cr.line_to(w, h);
         cr.close_path();
-        cr.set_source_rgba(rgba.red() as f64, rgba.green() as f64, rgba.blue() as f64, 0.16);
+        cr.set_source_rgba(
+            rgba.red() as f64,
+            rgba.green() as f64,
+            rgba.blue() as f64,
+            0.16,
+        );
         let _ = cr.fill();
         for (i, val) in v.iter().enumerate() {
             let x = x0 + i as f64 / n * w;
-            if i == 0 { cr.move_to(x, y(*val)) } else { cr.line_to(x, y(*val)) }
+            if i == 0 {
+                cr.move_to(x, y(*val))
+            } else {
+                cr.line_to(x, y(*val))
+            }
         }
-        cr.set_source_rgba(rgba.red() as f64, rgba.green() as f64, rgba.blue() as f64, 0.9);
+        cr.set_source_rgba(
+            rgba.red() as f64,
+            rgba.green() as f64,
+            rgba.blue() as f64,
+            0.9,
+        );
         cr.set_line_width(1.2);
         let _ = cr.stroke();
     });
@@ -425,11 +573,19 @@ struct Proc {
 
 fn procs() -> Vec<Proc> {
     let mut out = Vec::new();
-    let Ok(rd) = std::fs::read_dir("/proc") else { return out };
+    let Ok(rd) = std::fs::read_dir("/proc") else {
+        return out;
+    };
     for e in rd.flatten() {
-        let Some(pid) = e.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else { continue };
-        let Some(stat) = util::read(e.path().join("stat")) else { continue };
-        let (Some(a), Some(b)) = (stat.find('('), stat.rfind(')')) else { continue };
+        let Some(pid) = e.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else {
+            continue;
+        };
+        let Some(stat) = util::read(e.path().join("stat")) else {
+            continue;
+        };
+        let (Some(a), Some(b)) = (stat.find('('), stat.rfind(')')) else {
+            continue;
+        };
         let name = stat[a + 1..b].to_string();
         let f: Vec<&str> = stat[b + 2..].split_whitespace().collect();
         if f.len() < 22 {
@@ -437,7 +593,12 @@ fn procs() -> Vec<Proc> {
         }
         let ticks = f[11].parse::<u64>().unwrap_or(0) + f[12].parse::<u64>().unwrap_or(0);
         let rss_kb = f[21].parse::<u64>().unwrap_or(0) * 4;
-        out.push(Proc { pid, name, ticks, rss_kb });
+        out.push(Proc {
+            pid,
+            name,
+            ticks,
+            rss_kb,
+        });
     }
     out
 }
@@ -459,7 +620,16 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
     body.append(&ui::section("cpu").tap(|l| l.add_css_class("first")));
     // one graph: the last few minutes of cpu, under its heading
     let w = Rc::downgrade(i);
-    let g_cpu = spark(Rc::new(move || w.upgrade().map(|i| i.cpu_hist.borrow().iter().copied().collect()).unwrap_or_default()), 100.0, &t.accent, 40);
+    let g_cpu = spark(
+        Rc::new(move || {
+            w.upgrade()
+                .map(|i| i.cpu_hist.borrow().iter().copied().collect())
+                .unwrap_or_default()
+        }),
+        100.0,
+        &t.accent,
+        40,
+    );
     body.append(&ui::hbox(0, &["spark"]).tap(|b| {
         b.set_margin_top(2);
         b.set_margin_bottom(6);
@@ -475,7 +645,6 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
     let mem_box = ui::vbox(0, &[]);
     body.append(&mem_box);
 
-
     // hardware
     body.append(&ui::section("hardware"));
     let hw = ui::vbox(0, &[]);
@@ -485,7 +654,9 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
     body.append(&ui::section("top processes"));
     let top = ui::vbox(0, &[]);
     body.append(&top);
-    let prev: Rc<RefCell<HashMap<u32, u64>>> = Rc::new(RefCell::new(procs().into_iter().map(|p| (p.pid, p.ticks)).collect()));
+    let prev: Rc<RefCell<HashMap<u32, u64>>> = Rc::new(RefCell::new(
+        procs().into_iter().map(|p| (p.pid, p.ticks)).collect(),
+    ));
     let prev_total = Rc::new(Cell::new(cpu_times().0));
 
     let fill = {
@@ -497,20 +668,76 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
         move || {
             let Some(i) = i.upgrade() else { return };
             let s = i.last.borrow().clone();
-            detail.set_markup(&format!("up {}{}", util::dur(s.uptime), if s.profile.is_empty() { String::new() } else { format!(" · {}", s.profile) }));
-            cpu_v.set_markup(&format!("{:.0}%  {}", s.cpu, ui::dim(&format!("· {:.1} GHz · load {}", s.freq_ghz, s.load))));
-            temp_v.set_markup(&format!("{}  {}", i.temp_markup(s.temp), ui::dim(&format!("· fans {}", fans(&s.fans)))));
+            detail.set_markup(&format!(
+                "up {}{}",
+                util::dur(s.uptime),
+                if s.profile.is_empty() {
+                    String::new()
+                } else {
+                    format!(" · {}", s.profile)
+                }
+            ));
+            cpu_v.set_markup(&format!(
+                "{:.0}%  {}",
+                s.cpu,
+                ui::dim(&format!("· {:.1} GHz · load {}", s.freq_ghz, s.load))
+            ));
+            temp_v.set_markup(&format!(
+                "{}  {}",
+                i.temp_markup(s.temp),
+                ui::dim(&format!("· fans {}", fans(&s.fans)))
+            ));
             ui::clear(&mem_box);
             let mp = s.mem_pct();
-            mem_box.append(&ui::meter_row("ram", mp / 100.0, &format!("{mp:.0}%"), &of(s.mem_used, s.mem_total), if mp >= 95.0 { "crit" } else if mp >= 85.0 { "warn" } else { "" }));
+            mem_box.append(&ui::meter_row(
+                "ram",
+                mp / 100.0,
+                &format!("{mp:.0}%"),
+                &of(s.mem_used, s.mem_total),
+                if mp >= 95.0 {
+                    "crit"
+                } else if mp >= 85.0 {
+                    "warn"
+                } else {
+                    ""
+                },
+            ));
             let dp = s.disk_pct();
-            mem_box.append(&ui::meter_row("disk", dp / 100.0, &format!("{dp:.0}%"), &of(s.disk_used, s.disk_total), if dp >= 92.0 { "crit" } else if dp >= 80.0 { "warn" } else { "" }));
-            mem_box.append(&ui::kv("swap", &format!("{}  {}", util::size_kb(s.swap_used), ui::dim(&format!("· {} committed", util::size_kb(s.committed))))).0);
+            mem_box.append(&ui::meter_row(
+                "disk",
+                dp / 100.0,
+                &format!("{dp:.0}%"),
+                &of(s.disk_used, s.disk_total),
+                if dp >= 92.0 {
+                    "crit"
+                } else if dp >= 80.0 {
+                    "warn"
+                } else {
+                    ""
+                },
+            ));
+            mem_box.append(
+                &ui::kv(
+                    "swap",
+                    &format!(
+                        "{}  {}",
+                        util::size_kb(s.swap_used),
+                        ui::dim(&format!("· {} committed", util::size_kb(s.committed)))
+                    ),
+                )
+                .0,
+            );
             ui::clear(&hw);
             if !s.gpu.is_empty() {
                 hw.append(&ui::kv("gpu", &s.gpu).0);
             }
-            hw.append(&ui::kv("power", &format!("{:.1} W {}", s.watts, ui::dim(&s.bat_status))).0);
+            hw.append(
+                &ui::kv(
+                    "power",
+                    &format!("{:.1} W {}", s.watts, ui::dim(&s.bat_status)),
+                )
+                .0,
+            );
             g_cpu.queue_draw();
         }
     };
@@ -526,7 +753,9 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
             let now = procs();
             let total = cpu_times().0;
             let dt = total.saturating_sub(prev_total.replace(total)).max(1) as f64;
-            let ncpu = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1) as f64;
+            let ncpu = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1) as f64;
             let mut rows: Vec<(f64, Proc)> = {
                 let pv = prev.borrow();
                 now.iter()
@@ -538,10 +767,18 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
                     .collect()
             };
             *prev.borrow_mut() = now.iter().map(|p| (p.pid, p.ticks)).collect();
-            rows.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal).then(b.1.rss_kb.cmp(&a.1.rss_kb)));
+            rows.sort_by(|a, b| {
+                b.0.partial_cmp(&a.0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then(b.1.rss_kb.cmp(&a.1.rss_kb))
+            });
             ui::clear(&top);
             for (pct, pr) in rows.into_iter().take(6) {
-                let row = ui::Row::new("", &pr.name, &format!("{pct:>3.0}%  {}", util::size_kb(pr.rss_kb)));
+                let row = ui::Row::new(
+                    "",
+                    &pr.name,
+                    &format!("{pct:>3.0}%  {}", util::size_kb(pr.rss_kb)),
+                );
                 row.icon.set_visible(false);
                 let pid = pr.pid;
                 let name = pr.name.clone();

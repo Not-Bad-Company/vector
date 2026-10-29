@@ -45,12 +45,21 @@ fn render(slot: &Slot, m: &Mako) {
 
 /// The notification-center TUI's "hide copy notifications" switch.
 fn hide_copy() -> bool {
-    let p = std::env::var_os("XDG_STATE_HOME").map(std::path::PathBuf::from).unwrap_or_else(|| util::home().join(".local/state"));
-    util::read_json(p.join("notification-center.json")).and_then(|v| v["hide_copy"].as_bool()).unwrap_or(true)
+    let p = std::env::var_os("XDG_STATE_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| util::home().join(".local/state"));
+    util::read_json(p.join("notification-center.json"))
+        .and_then(|v| v["hide_copy"].as_bool())
+        .unwrap_or(true)
 }
 
 fn keep(n: &Note, hide: bool) -> bool {
-    !hide || !(n.app == "clipboard" || n.summary.to_lowercase().split(|c: char| !c.is_alphanumeric()).any(|w| w == "copied"))
+    !hide
+        || !(n.app == "clipboard"
+            || n.summary
+                .to_lowercase()
+                .split(|c: char| !c.is_alphanumeric())
+                .any(|w| w == "copied"))
 }
 
 impl Notifications {
@@ -75,7 +84,14 @@ impl Notifications {
             let notes = m.on_screen();
             let s = ui::sheet();
             let detail = if m.dnd() {
-                format!("silenced{}", if notes.is_empty() { String::new() } else { format!(", {} on screen", notes.len()) })
+                format!(
+                    "silenced{}",
+                    if notes.is_empty() {
+                        String::new()
+                    } else {
+                        format!(", {} on screen", notes.len())
+                    }
+                )
             } else if notes.is_empty() {
                 "all caught up".into()
             } else {
@@ -89,14 +105,23 @@ impl Notifications {
                     s.append(&ui::tkv(&app, &util::esc(&clean(&n.summary))));
                 }
                 if notes.len() > 6 {
-                    s.append(&ui::text(&format!("and {} more", notes.len() - 6), &["dim"]));
+                    s.append(&ui::text(
+                        &format!("and {} more", notes.len() - 6),
+                        &["dim"],
+                    ));
                 }
             }
-            s.append(&ui::thint("click notifications  ·  middle clear all  ·  right silence"));
+            s.append(&ui::thint(
+                "click notifications  ·  middle clear all  ·  right silence",
+            ));
             Some(s.upcast())
         });
         slot.panel(panel);
-        Notifications(Rc::new(Inner { slot, mako: m, listener }))
+        Notifications(Rc::new(Inner {
+            slot,
+            mako: m,
+            listener,
+        }))
     }
 }
 
@@ -124,7 +149,12 @@ fn clean(t: &str) -> String {
             _ => {}
         }
     }
-    let out = out.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'");
+    let out = out
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'");
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
@@ -135,7 +165,10 @@ fn note_row(n: &Note, live: bool, m: &Rc<Mako>) -> gtk::Widget {
     // "Bluetooth · Bluetooth connected" -> "Bluetooth · connected"
     if summary.eq_ignore_ascii_case(&app) {
         summary.clear();
-    } else if summary.to_lowercase().starts_with(&format!("{} ", app.to_lowercase())) {
+    } else if summary
+        .to_lowercase()
+        .starts_with(&format!("{} ", app.to_lowercase()))
+    {
         summary = summary[app.len() + 1..].to_string();
     }
     if app.is_empty() || app == "notify-send" || app == "notification" {
@@ -143,7 +176,10 @@ fn note_row(n: &Note, live: bool, m: &Rc<Mako>) -> gtk::Widget {
         app = std::mem::take(&mut summary);
     }
     let top = ui::hbox(8, &[]);
-    top.append(&ui::text(&app.to_lowercase(), &[if n.urgency >= 2 { "crit" } else { "app" }]));
+    top.append(&ui::text(
+        &app.to_lowercase(),
+        &[if n.urgency >= 2 { "crit" } else { "app" }],
+    ));
     let sum = ui::text(&summary, &[]);
     sum.set_hexpand(true);
     ui::ellipsize(&sum, 30);
@@ -172,7 +208,9 @@ fn note_row(n: &Note, live: bool, m: &Rc<Mako>) -> gtk::Widget {
             let row = ui::hbox(4, &[]);
             for (k, label) in acts {
                 let (m2, id, k) = (m.clone(), n.id, k.clone());
-                row.append(&ui::link(&label.to_lowercase(), &["primary"], move || m2.invoke(id, &k)));
+                row.append(&ui::link(&label.to_lowercase(), &["primary"], move || {
+                    m2.invoke(id, &k)
+                }));
             }
             b.append(&row);
         }
@@ -200,10 +238,15 @@ fn panel(p: &Panel) -> gtk::Widget {
     let hide = hide_copy();
 
     let fill = {
-        let (live, hist, detail, sw) = (live.clone(), hist.clone(), card.detail.clone(), sw.clone());
+        let (live, hist, detail, sw) =
+            (live.clone(), hist.clone(), card.detail.clone(), sw.clone());
         move || {
             let m = mako::get();
-            let notes: Vec<Note> = m.on_screen().into_iter().filter(|n| keep(n, hide)).collect();
+            let notes: Vec<Note> = m
+                .on_screen()
+                .into_iter()
+                .filter(|n| keep(n, hide))
+                .collect();
             detail.set_markup(&if m.dnd() {
                 "silenced".to_string()
             } else if notes.is_empty() {
@@ -221,10 +264,18 @@ fn panel(p: &Panel) -> gtk::Widget {
                     live.append(&note_row(n, true, &m));
                 }
             }
-            let (hist, m2, on_screen) = (hist.clone(), m.clone(), notes.iter().map(|n| n.id).collect::<Vec<_>>());
+            let (hist, m2, on_screen) = (
+                hist.clone(),
+                m.clone(),
+                notes.iter().map(|n| n.id).collect::<Vec<_>>(),
+            );
             m.history(move |h| {
                 ui::clear(&hist);
-                let h: Vec<_> = h.into_iter().filter(|n| keep(n, hide) && !on_screen.contains(&n.id)).take(15).collect();
+                let h: Vec<_> = h
+                    .into_iter()
+                    .filter(|n| keep(n, hide) && !on_screen.contains(&n.id))
+                    .take(15)
+                    .collect();
                 if h.is_empty() && on_screen.is_empty() {
                     hist.append(&ui::text("all caught up", &["empty-note"]));
                     return;
@@ -235,7 +286,10 @@ fn panel(p: &Panel) -> gtk::Widget {
                     let mut i = 0;
                     while i < h.len() {
                         let mut j = i + 1;
-                        while j < h.len() && h[j].app == h[i].app && clean(&h[j].summary) == clean(&h[i].summary) {
+                        while j < h.len()
+                            && h[j].app == h[i].app
+                            && clean(&h[j].summary) == clean(&h[i].summary)
+                        {
                             j += 1;
                         }
                         let row = note_row(&h[i], false, &m2);
@@ -256,7 +310,9 @@ fn panel(p: &Panel) -> gtk::Widget {
     let f2 = fill.clone();
     p.watch(&m.changed, move || f2());
 
-    card.foot_add(&ui::link("clear all", &["danger"], || mako::get().dismiss_all()));
+    card.foot_add(&ui::link("clear all", &["danger"], || {
+        mako::get().dismiss_all()
+    }));
     let f3 = fill.clone();
     card.foot_add(&ui::link("restore last", &[], move || {
         mako::get().restore();

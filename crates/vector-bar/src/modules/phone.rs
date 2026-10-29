@@ -45,7 +45,15 @@ fn bars(level: Option<i64>) -> String {
     let Some(l) = level else { return String::new() };
     let g = ["▂", "▄", "▆", "█"];
     let n = l.clamp(0, 4) as usize;
-    format!("{}{}", g[..n].concat(), if n < 4 { ui::dim(&g[n..].concat()) } else { String::new() })
+    format!(
+        "{}{}",
+        g[..n].concat(),
+        if n < 4 {
+            ui::dim(&g[n..].concat())
+        } else {
+            String::new()
+        }
+    )
 }
 
 fn since(ts: i64) -> String {
@@ -85,9 +93,13 @@ impl Phone {
         });
         inner.slot.set_visible(false);
         inner.slot.on_right(|| util::spawn(&["phonectl", "clip"]));
-        inner.slot.on_middle(|| util::spawn(&["phonectl", "connect"]));
+        inner
+            .slot
+            .on_middle(|| util::spawn(&["phonectl", "connect"]));
         let w = Rc::downgrade(&inner);
-        inner.slot.tooltip(move || w.upgrade().and_then(|i| i.tooltip()));
+        inner
+            .slot
+            .tooltip(move || w.upgrade().and_then(|i| i.tooltip()));
         let w = Rc::downgrade(&inner);
         inner.slot.panel(move |p| match w.upgrade() {
             Some(i) => panel(&i, p),
@@ -116,13 +128,23 @@ impl Phone {
                                 Ok(0) => break,
                                 Ok(_) => {
                                     if let Ok(v) = serde_json::from_str::<Value>(&line) {
-                                        if v["type"] == "status" && tx.send_blocking(Some(v["data"].clone())).is_err() {
+                                        if v["type"] == "status"
+                                            && tx.send_blocking(Some(v["data"].clone())).is_err()
+                                        {
                                             return;
                                         }
                                     }
                                 }
                                 // read timeout: just check `stop` again
-                                Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => continue,
+                                Err(e)
+                                    if matches!(
+                                        e.kind(),
+                                        std::io::ErrorKind::WouldBlock
+                                            | std::io::ErrorKind::TimedOut
+                                    ) =>
+                                {
+                                    continue;
+                                }
                                 Err(_) => break,
                             }
                         }
@@ -210,17 +232,34 @@ impl Inner {
             "suspended" => "laptop suspended".into(),
             _ => "offline".into(),
         };
-        sh.append(&ui::head(&s["phone"]["name"].as_str().unwrap_or("phone").to_lowercase(), &detail).0);
+        sh.append(
+            &ui::head(
+                &s["phone"]["name"]
+                    .as_str()
+                    .unwrap_or("phone")
+                    .to_lowercase(),
+                &detail,
+            )
+            .0,
+        );
         let st = &s["status"];
         if !st.is_null() {
-            sh.append(&ui::tsection(if state == "connected" { "status" } else { "last known" }));
+            sh.append(&ui::tsection(if state == "connected" {
+                "status"
+            } else {
+                "last known"
+            }));
             if let Some(l) = st["battery"]["level"].as_i64() {
                 sh.append(&ui::tkv("battery", &self.batt(l, st)));
             }
             let net = &st["network"];
             let n = match net["type"].as_str() {
                 Some("wifi") => format!("wi-fi {}", bars(net["wifi_level"].as_i64())),
-                Some("cellular") => format!("{} {}", net["cellular"].as_str().unwrap_or("mobile"), bars(net["cellular_level"].as_i64())),
+                Some("cellular") => format!(
+                    "{} {}",
+                    net["cellular"].as_str().unwrap_or("mobile"),
+                    bars(net["cellular_level"].as_i64())
+                ),
                 _ => ui::dim("no network"),
             };
             sh.append(&ui::tkv("network", &n));
@@ -228,17 +267,31 @@ impl Inner {
                 sh.append(&ui::tkv("notifs", &format!("{n} on the phone")));
             }
         }
-        sh.append(&ui::thint("click phone  ·  right send clipboard  ·  middle reconnect"));
+        sh.append(&ui::thint(
+            "click phone  ·  right send clipboard  ·  middle reconnect",
+        ));
         Some(sh.upcast())
     }
 
     fn batt(&self, l: i64, st: &Value) -> String {
         let pct = format!("{l}%");
-        let pct = if l <= 10 { ui::colored(&pct, &self.theme.color1) } else if l <= 20 { ui::colored(&pct, &self.theme.color3) } else { pct };
+        let pct = if l <= 10 {
+            ui::colored(&pct, &self.theme.color1)
+        } else if l <= 20 {
+            ui::colored(&pct, &self.theme.color3)
+        } else {
+            pct
+        };
         let how = if st["battery"]["full"].as_bool() == Some(true) {
             ui::dim(" · full")
         } else if st["battery"]["charging"].as_bool() == Some(true) {
-            ui::dim(&format!(" · charging{}", st["battery"]["plugged"].as_str().map(|p| format!(" ({p})")).unwrap_or_default()))
+            ui::dim(&format!(
+                " · charging{}",
+                st["battery"]["plugged"]
+                    .as_str()
+                    .map(|p| format!(" ({p})"))
+                    .unwrap_or_default()
+            ))
         } else {
             String::new()
         };
@@ -281,14 +334,18 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
             errors.borrow_mut().remove(key);
             rr();
             let req = json!({"method": "call", "params": {"method": method, "params": params}});
-            let (busy, errors, rr, key) = (busy.clone(), errors.clone(), rr.clone(), key.to_string());
+            let (busy, errors, rr, key) =
+                (busy.clone(), errors.clone(), rr.clone(), key.to_string());
             util::bg(
                 move || request(&req, Duration::from_secs(12)),
                 move |r| {
                     busy.borrow_mut().remove(&key);
                     let ok = r.as_ref().is_some_and(|v| v["ok"] == true);
                     if !ok {
-                        let e = r.as_ref().and_then(|v| v["error"].as_str().map(str::to_string)).unwrap_or_else(|| "phonectl daemon is not running".into());
+                        let e = r
+                            .as_ref()
+                            .and_then(|v| v["error"].as_str().map(str::to_string))
+                            .unwrap_or_else(|| "phonectl daemon is not running".into());
                         errors.borrow_mut().insert(key, e);
                     }
                     rr();
@@ -298,24 +355,47 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
     };
 
     let render = {
-        let (i, body, detail, busy, errors, call, pc) = (Rc::downgrade(i), body.clone(), card.detail.clone(), busy.clone(), errors.clone(), call.clone(), p.clone());
+        let (i, body, detail, busy, errors, call, pc) = (
+            Rc::downgrade(i),
+            body.clone(),
+            card.detail.clone(),
+            busy.clone(),
+            errors.clone(),
+            call.clone(),
+            p.clone(),
+        );
         move || {
             let Some(i) = i.upgrade() else { return };
             ui::clear(&body);
             let d = i.data.borrow().clone();
             let Some(s) = d else {
                 detail.set_markup("phonectl is not running");
-                body.append(&ui::text("systemctl --user start phonectl", &["empty-note"]));
+                body.append(&ui::text(
+                    "systemctl --user start phonectl",
+                    &["empty-note"],
+                ));
                 return;
             };
             let state = s["state"].as_str().unwrap_or("disconnected");
             let st = &s["status"];
             let connected = state == "connected";
-            let name = s["phone"]["name"].as_str().unwrap_or("phone").to_lowercase();
+            let name = s["phone"]["name"]
+                .as_str()
+                .unwrap_or("phone")
+                .to_lowercase();
             detail.set_markup(&format!(
                 "{} · {}",
                 util::esc(&name),
-                if connected { s["transport"].as_str().unwrap_or("connected").to_string() } else { match state { "connecting" => "connecting…".into(), "suspended" => "laptop suspended".into(), "unpaired" => "not paired".into(), _ => "offline".into() } }
+                if connected {
+                    s["transport"].as_str().unwrap_or("connected").to_string()
+                } else {
+                    match state {
+                        "connecting" => "connecting…".into(),
+                        "suspended" => "laptop suspended".into(),
+                        "unpaired" => "not paired".into(),
+                        _ => "offline".into(),
+                    }
+                }
             ));
             if state == "unpaired" {
                 body.append(&ui::text("run: phonectl setup", &["empty-note"]));
@@ -330,37 +410,92 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
             };
             body.append(&ui::section(&title).tap(|l| l.add_css_class("first")));
             if let Some(l) = st["battery"]["level"].as_i64() {
-                let cls = if l <= 10 { "crit" } else if l <= 20 { "warn" } else { "" };
+                let cls = if l <= 10 {
+                    "crit"
+                } else if l <= 20 {
+                    "warn"
+                } else {
+                    ""
+                };
                 let charging = st["battery"]["charging"].as_bool() == Some(true);
-                let note = if st["battery"]["full"].as_bool() == Some(true) { "full".to_string() } else if charging { "charging".into() } else { String::new() };
-                body.append(&ui::meter_row("battery", l as f64 / 100.0, &format!("{l}%"), &note, cls));
+                let note = if st["battery"]["full"].as_bool() == Some(true) {
+                    "full".to_string()
+                } else if charging {
+                    "charging".into()
+                } else {
+                    String::new()
+                };
+                body.append(&ui::meter_row(
+                    "battery",
+                    l as f64 / 100.0,
+                    &format!("{l}%"),
+                    &note,
+                    cls,
+                ));
             }
             let net = &st["network"];
             if net["type"] == "wifi" {
                 body.append(&ui::kv("wi-fi", &bars(net["wifi_level"].as_i64())).0);
             }
             if net["cellular"].is_string() || net["cellular_level"].is_i64() {
-                body.append(&ui::kv("mobile", &format!("{} {}  {}", net["cellular"].as_str().unwrap_or(""), bars(net["cellular_level"].as_i64()), ui::dim(&util::esc(net["operator"].as_str().unwrap_or(""))))).0);
+                body.append(
+                    &ui::kv(
+                        "mobile",
+                        &format!(
+                            "{} {}  {}",
+                            net["cellular"].as_str().unwrap_or(""),
+                            bars(net["cellular_level"].as_i64()),
+                            ui::dim(&util::esc(net["operator"].as_str().unwrap_or("")))
+                        ),
+                    )
+                    .0,
+                );
             }
             if let Some(n) = s["notifications"].as_i64() {
                 body.append(&ui::kv("notifs", &format!("{n} {}", ui::dim("on the phone"))).0);
             }
             if st["call"].as_str().unwrap_or("idle") != "idle" {
-                body.append(&ui::kv("call", if st["call"] == "ringing" { "ringing" } else { "in a call · laptop media paused" }).0);
+                body.append(
+                    &ui::kv(
+                        "call",
+                        if st["call"] == "ringing" {
+                            "ringing"
+                        } else {
+                            "in a call · laptop media paused"
+                        },
+                    )
+                    .0,
+                );
             }
 
             if connected && st["media"].is_object() {
                 let m = &st["media"];
-                body.append(&ui::section(&format!("playing on the phone · {}", m["app"].as_str().unwrap_or("").to_lowercase())));
+                body.append(&ui::section(&format!(
+                    "playing on the phone · {}",
+                    m["app"].as_str().unwrap_or("").to_lowercase()
+                )));
                 let mut t = m["title"].as_str().unwrap_or("").to_string();
                 if let Some(a) = m["artist"].as_str() {
                     t += &format!(" · {a}");
                 }
                 let row = ui::Row::new("\u{f075a}", &t, "");
                 row.set_active(m["playing"] == true);
-                for (g, act) in [("\u{f04ae}", "previous"), (if m["playing"] == true { "\u{f03e4}" } else { "\u{f040a}" }, "play_pause"), ("\u{f04ad}", "next")] {
+                for (g, act) in [
+                    ("\u{f04ae}", "previous"),
+                    (
+                        if m["playing"] == true {
+                            "\u{f03e4}"
+                        } else {
+                            "\u{f040a}"
+                        },
+                        "play_pause",
+                    ),
+                    ("\u{f04ad}", "next"),
+                ] {
                     let c = call.clone();
-                    row.trail.append(&ui::icon_button(g, act, move || c("media", "media_action", json!({"action": act}))));
+                    row.trail.append(&ui::icon_button(g, act, move || {
+                        c("media", "media_action", json!({"action": act}))
+                    }));
                 }
                 body.append(&row.root);
             }
@@ -368,7 +503,15 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
             if connected {
                 body.append(&ui::section("phone"));
                 let ringing = st["ringing"] == true;
-                let r = ui::Row::new("\u{f009e}", if ringing { "stop ringing" } else { "find my phone" }, if ringing { "" } else { "rings even on silent" });
+                let r = ui::Row::new(
+                    "\u{f009e}",
+                    if ringing {
+                        "stop ringing"
+                    } else {
+                        "find my phone"
+                    },
+                    if ringing { "" } else { "rings even on silent" },
+                );
                 r.set_active(ringing);
                 let c = call.clone();
                 ui::on_click(&r.root, move || c("ring", "ring", json!({"on": !ringing})));
@@ -377,13 +520,24 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
                 let rr = ui::hbox(0, &["kv"]);
                 rr.append(&ui::text("ringer", &["k"]));
                 let c = call.clone();
-                rr.append(&ui::segmented(&[("normal", "ring"), ("vibrate", "vibrate"), ("silent", "silent")], &ringer, move |m| c("ringer", "ringer", json!({"mode": m}))));
+                rr.append(&ui::segmented(
+                    &[
+                        ("normal", "ring"),
+                        ("vibrate", "vibrate"),
+                        ("silent", "silent"),
+                    ],
+                    &ringer,
+                    move |m| c("ringer", "ringer", json!({"mode": m})),
+                ));
                 body.append(&rr);
                 let r = ui::Row::new("\u{f0147}", "send clipboard to phone", "");
                 let pc2 = pc.clone();
                 ui::on_click(&r.root, move || {
                     pc2.close();
-                    util::bg(|| request(&json!({"method": "clip"}), Duration::from_secs(5)), |_| {});
+                    util::bg(
+                        || request(&json!({"method": "clip"}), Duration::from_secs(5)),
+                        |_| {},
+                    );
                 });
                 body.append(&r.root);
             } else if let Some(e) = s["error"].as_str() {
@@ -396,11 +550,18 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
                 body.append(&ui::text(v, &["msg", "crit"]).tap(|l| l.set_wrap(true)));
             }
             let perms = &st["permissions"];
-            let missing: Vec<&str> = [("notifications", "notification access"), ("phone_state", "phone state"), ("clipboard_auto", "automatic clipboard (tap its notification)")]
-                .iter()
-                .filter(|(k, _)| perms[*k] == false)
-                .map(|(_, l)| *l)
-                .collect();
+            let missing: Vec<&str> = [
+                ("notifications", "notification access"),
+                ("phone_state", "phone state"),
+                (
+                    "clipboard_auto",
+                    "automatic clipboard (tap its notification)",
+                ),
+            ]
+            .iter()
+            .filter(|(k, _)| perms[*k] == false)
+            .map(|(_, l)| *l)
+            .collect();
             if connected && !missing.is_empty() {
                 body.append(&ui::section("needs a tap on the phone"));
                 for m in missing {
@@ -416,6 +577,11 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
     redraw();
     let rr = redraw.clone();
     p.watch(&i.changed, move || rr());
-    card.foot_add(&ui::link("reconnect", &[], || util::bg(|| request(&json!({"method": "poke"}), Duration::from_secs(5)), |_| {})));
+    card.foot_add(&ui::link("reconnect", &[], || {
+        util::bg(
+            || request(&json!({"method": "poke"}), Duration::from_secs(5)),
+            |_| {},
+        )
+    }));
     card.root.upcast()
 }

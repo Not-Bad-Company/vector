@@ -33,7 +33,12 @@ impl Drop for Menu {
 
 /// The active states, joined; empty when nothing is on (then only the mark shows).
 fn label_text() -> String {
-    crate::mode::active().iter().filter(|s| s.key != "normal").map(|s| s.label).collect::<Vec<_>>().join(" · ")
+    crate::mode::active()
+        .iter()
+        .filter(|s| s.key != "normal")
+        .map(|s| s.label)
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 impl Menu {
@@ -45,22 +50,48 @@ impl Menu {
             s2.set_markup(&label_text());
             s2.bump();
         });
-        let on_bar = |n: &str| ctx.cfg.left.iter().chain(&ctx.cfg.center).chain(&ctx.cfg.right).any(|x| x == n);
+        let on_bar = |n: &str| {
+            ctx.cfg
+                .left
+                .iter()
+                .chain(&ctx.cfg.center)
+                .chain(&ctx.cfg.right)
+                .any(|x| x == n)
+        };
         let _indicators = (!on_bar("indicators")).then(|| super::indicators::Indicators::new(ctx));
         let right = ctx.opts("menu").str("on_right", "xdg-terminal-exec");
         slot.on_right(move || util::spawn_sh(&right));
         slot.tooltip(|| {
             let s = ui::sheet();
             let states = crate::mode::active();
-            let on: Vec<String> = states.iter().filter(|x| x.key != "normal").map(|x| x.label.to_lowercase()).collect();
-            s.append(&ui::head("VectorOS", &if on.is_empty() { "menu".to_string() } else { on.join(" · ") }).0);
+            let on: Vec<String> = states
+                .iter()
+                .filter(|x| x.key != "normal")
+                .map(|x| x.label.to_lowercase())
+                .collect();
+            s.append(
+                &ui::head(
+                    "VectorOS",
+                    &if on.is_empty() {
+                        "menu".to_string()
+                    } else {
+                        on.join(" · ")
+                    },
+                )
+                .0,
+            );
             s.append(&ui::thint("click menu  ·  right terminal"));
             Some(s.upcast())
         });
         let theme = ctx.theme.clone();
         let t2 = theme.clone();
         slot.panel(move |p| menu_panel(p, &t2));
-        Menu { slot, theme, _indicators, listener }
+        Menu {
+            slot,
+            theme,
+            _indicators,
+            listener,
+        }
     }
 }
 
@@ -91,13 +122,23 @@ pub fn mark(_t: &Theme, size: i32) -> gtk::DrawingArea {
         let u = s / 16.0;
         let (ox, oy) = (2.5 * u, 13.5 * u);
         cr.set_line_cap(gtk::cairo::LineCap::Square);
-        cr.set_source_rgba(c.red() as f64, c.green() as f64, c.blue() as f64, c.alpha() as f64 * 0.7);
+        cr.set_source_rgba(
+            c.red() as f64,
+            c.green() as f64,
+            c.blue() as f64,
+            c.alpha() as f64 * 0.7,
+        );
         cr.set_line_width(1.5 * u);
         cr.move_to(ox, 2.0 * u);
         cr.line_to(ox, oy);
         cr.line_to(14.5 * u, oy);
         let _ = cr.stroke();
-        cr.set_source_rgba(c.red() as f64, c.green() as f64, c.blue() as f64, c.alpha() as f64);
+        cr.set_source_rgba(
+            c.red() as f64,
+            c.green() as f64,
+            c.blue() as f64,
+            c.alpha() as f64,
+        );
         cr.set_line_width(2.2 * u);
         cr.move_to(ox, oy);
         cr.line_to(10.0 * u, 6.0 * u);
@@ -178,35 +219,70 @@ fn menu_panel(p: &Panel, t: &Rc<Theme>) -> gtk::Widget {
     p.set_width(330);
     let host = util::read_trim("/proc/sys/kernel/hostname").unwrap_or_default();
     let up = util::read("/proc/uptime")
-        .and_then(|s| s.split_whitespace().next().and_then(|x| x.parse::<f64>().ok()))
+        .and_then(|s| {
+            s.split_whitespace()
+                .next()
+                .and_then(|x| x.parse::<f64>().ok())
+        })
         .map(|s| util::dur(s as u64))
         .unwrap_or_default();
-    let theme_name = util::read_trim(util::config_dir().join("omarchy/current/theme.name")).unwrap_or_default().replace('-', " ");
+    let theme_name = util::read_trim(util::config_dir().join("omarchy/current/theme.name"))
+        .unwrap_or_default()
+        .replace('-', " ");
     let _ = host;
-    let card = Card::new("VectorOS", &format!("up {up}{}", if theme_name.is_empty() { String::new() } else { format!(" · {theme_name}") }));
+    let card = Card::new(
+        "VectorOS",
+        &format!(
+            "up {up}{}",
+            if theme_name.is_empty() {
+                String::new()
+            } else {
+                format!(" · {theme_name}")
+            }
+        ),
+    );
     let _ = t;
     let b = &card.body;
 
-    b.append(&action_row(p, "󰀻", "apps", "super space", "omarchy-launch-walker"));
+    b.append(&action_row(
+        p,
+        "󰀻",
+        "apps",
+        "super space",
+        "omarchy-launch-walker",
+    ));
     b.append(&action_row(p, "", "files", "", "vector-find"));
     b.append(&action_row(p, "", "terminal", "", "xdg-terminal-exec"));
-    b.append(&action_row(p, "", "keybindings", "", "omarchy-menu-keybindings"));
+    b.append(&action_row(
+        p,
+        "",
+        "keybindings",
+        "",
+        "omarchy-menu-keybindings",
+    ));
 
     b.append(&ui::section("capture"));
     let cap = ui::hbox(0, &["chips"]);
     for (label, cmd) in [
         ("󰹑 shot", "omarchy-capture-screenshot"),
-        ("󰻃 record", "omarchy-capture-screenrecording --with-desktop-audio"),
+        (
+            "󰻃 record",
+            "omarchy-capture-screenrecording --with-desktop-audio",
+        ),
         ("󰴑 text", "omarchy-capture-text-extraction"),
         ("󰃉 color", "pkill hyprpicker || hyprpicker -a"),
     ] {
         let p = p.clone();
-        cap.append(&ui::chip(label, false, move || {
-            p.close();
-            // let the panel go away before anything is captured
-            glib::timeout_add_local_once(Duration::from_millis(180), move || util::spawn_sh(cmd));
-        })
-        .tap(|c| c.set_margin_end(4)));
+        cap.append(
+            &ui::chip(label, false, move || {
+                p.close();
+                // let the panel go away before anything is captured
+                glib::timeout_add_local_once(Duration::from_millis(180), move || {
+                    util::spawn_sh(cmd)
+                });
+            })
+            .tap(|c| c.set_margin_end(4)),
+        );
     }
     b.append(&cap);
 
@@ -214,7 +290,11 @@ fn menu_panel(p: &Panel, t: &Rc<Theme>) -> gtk::Widget {
     for (icon, name, cmd) in [
         ("󰔎", "nightlight", "omarchy-toggle-nightlight"),
         ("󱫖", "idle lock", "omarchy-toggle-idle"),
-        ("󰂛", "do not disturb", "omarchy-toggle-notification-silencing"),
+        (
+            "󰂛",
+            "do not disturb",
+            "omarchy-toggle-notification-silencing",
+        ),
         ("󱄄", "screensaver", "omarchy-toggle-screensaver"),
         ("", "window gaps", "omarchy-hyprland-window-gaps-toggle"),
     ] {
@@ -225,8 +305,12 @@ fn menu_panel(p: &Panel, t: &Rc<Theme>) -> gtk::Widget {
 
     b.append(&ui::section("style"));
     let themes = ui::vbox(0, &[]);
-    let current = util::sh_out("omarchy-theme-current", Duration::from_millis(600)).unwrap_or_default();
-    for name in util::sh_out("omarchy-theme-list", Duration::from_secs(1)).unwrap_or_default().lines() {
+    let current =
+        util::sh_out("omarchy-theme-current", Duration::from_millis(600)).unwrap_or_default();
+    for name in util::sh_out("omarchy-theme-list", Duration::from_secs(1))
+        .unwrap_or_default()
+        .lines()
+    {
         let r = ui::Row::new(if name == current { "󰄬" } else { "" }, name, "");
         r.root.set_margin_start(22);
         r.set_active(name == current);
@@ -238,8 +322,19 @@ fn menu_panel(p: &Panel, t: &Rc<Theme>) -> gtk::Widget {
         });
         themes.append(&r.root);
     }
-    b.append(&fold("󰸌", "theme", &current.to_lowercase(), themes.upcast_ref()));
-    b.append(&action_row(p, "", "next background", "", "omarchy-theme-bg-next"));
+    b.append(&fold(
+        "󰸌",
+        "theme",
+        &current.to_lowercase(),
+        themes.upcast_ref(),
+    ));
+    b.append(&action_row(
+        p,
+        "",
+        "next background",
+        "",
+        "omarchy-theme-bg-next",
+    ));
     let glass_on = t.glass;
     let glass = ui::Row::new("󰂵", "glass", if glass_on { "on" } else { "off" });
     glass.set_active(glass_on);
@@ -247,16 +342,32 @@ fn menu_panel(p: &Panel, t: &Rc<Theme>) -> gtk::Widget {
         let pc = p.clone();
         ui::on_click(&glass.root, move || {
             pc.close();
-            util::spawn(&["desktop-glass", if glass_on { "off" } else { "on" }, "glass"]);
+            util::spawn(&[
+                "desktop-glass",
+                if glass_on { "off" } else { "on" },
+                "glass",
+            ]);
         });
     }
     b.append(&glass.root);
 
     b.append(&ui::section("VectorOS"));
-    b.append(&action_row(p, "󰚰", "update", "", "omarchy-launch-floating-terminal-with-presentation omarchy-update"));
+    b.append(&action_row(
+        p,
+        "󰚰",
+        "update",
+        "",
+        "omarchy-launch-floating-terminal-with-presentation omarchy-update",
+    ));
     b.append(&action_row(p, "", "setup", "", "omarchy-menu setup"));
     let more = ui::vbox(0, &[]);
-    for (name, arg) in [("install", "install"), ("remove", "remove"), ("trigger", "trigger"), ("learn", "learn"), ("omarchy menu", "")] {
+    for (name, arg) in [
+        ("install", "install"),
+        ("remove", "remove"),
+        ("trigger", "trigger"),
+        ("learn", "learn"),
+        ("omarchy menu", ""),
+    ] {
         let r = action_row(p, "", name, "", &format!("omarchy-menu {arg}"));
         r.set_margin_start(22);
         more.append(&r);
@@ -277,7 +388,11 @@ fn menu_panel(p: &Panel, t: &Rc<Theme>) -> gtk::Widget {
             pc.close();
             util::spawn_sh(cmd);
         };
-        session.append(&if confirm { confirm_button(icon, tip, run) } else { ui::icon_button(icon, tip, run) });
+        session.append(&if confirm {
+            confirm_button(icon, tip, run)
+        } else {
+            ui::icon_button(icon, tip, run)
+        });
     }
     card.foot_add(&ui::text("session", &["dim"]).tap(|l| {
         l.set_hexpand(true);

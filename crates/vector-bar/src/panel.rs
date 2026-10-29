@@ -6,8 +6,8 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use gtk::prelude::*;
 use gtk::gdk;
+use gtk::prelude::*;
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 
 use crate::slot::{Notify, PanelFn};
@@ -77,7 +77,9 @@ fn notify_open(name: &str, open: bool) {
 }
 
 pub fn close() {
-    let Some(open) = OPEN.with(|o| o.borrow_mut().take()) else { return };
+    let Some(open) = OPEN.with(|o| o.borrow_mut().take()) else {
+        return;
+    };
     open.panel.shutdown();
     open.win.close();
     notify_open(&open.name, false);
@@ -93,7 +95,9 @@ pub fn toggle(name: &str, build: PanelFn, anchor: Option<gtk::Widget>, center: b
 }
 
 fn open(name: &str, build: PanelFn, anchor: Option<gtk::Widget>, center: bool) {
-    let Some(app) = APP.with(|a| a.borrow().clone()) else { return };
+    let Some(app) = APP.with(|a| a.borrow().clone()) else {
+        return;
+    };
     let win = gtk::ApplicationWindow::new(&app);
     win.add_css_class("vpanel");
     win.init_layer_shell();
@@ -129,13 +133,22 @@ fn open(name: &str, build: PanelFn, anchor: Option<gtk::Widget>, center: bool) {
         .and_then(|n| n.surface())
         .and_then(|s| display.as_ref().and_then(|d| d.monitor_at_surface(&s)))
         .or_else(|| {
-            display.as_ref().and_then(|d| d.monitors().item(0)).and_then(|m| m.downcast::<gdk::Monitor>().ok())
+            display
+                .as_ref()
+                .and_then(|d| d.monitors().item(0))
+                .and_then(|m| m.downcast::<gdk::Monitor>().ok())
         });
     if let Some(m) = &monitor {
         win.set_monitor(Some(m));
     }
-    let mon_w = monitor.as_ref().map(|m| m.geometry().width()).unwrap_or(1920);
-    let mon_h = monitor.as_ref().map(|m| m.geometry().height()).unwrap_or(1080);
+    let mon_w = monitor
+        .as_ref()
+        .map(|m| m.geometry().width())
+        .unwrap_or(1920);
+    let mon_h = monitor
+        .as_ref()
+        .map(|m| m.geometry().height())
+        .unwrap_or(1080);
     // bar, gaps, header and footer: the rest is for the body
     MAXB.with(|m| m.set((mon_h - 26 - top_offset() - 2 * GAP - 110).max(300)));
 
@@ -160,7 +173,10 @@ fn open(name: &str, build: PanelFn, anchor: Option<gtk::Widget>, center: bool) {
 
     let anchor_x = anchor.as_ref().and_then(|a| {
         let root = a.root()?;
-        let p = a.compute_point(&root, &gtk::graphene::Point::new(a.width() as f32 / 2.0, 0.0))?;
+        let p = a.compute_point(
+            &root,
+            &gtk::graphene::Point::new(a.width() as f32 / 2.0, 0.0),
+        )?;
         Some(p.x() as i32)
     });
     let x = match (center, anchor_x) {
@@ -175,14 +191,22 @@ fn open(name: &str, build: PanelFn, anchor: Option<gtk::Widget>, center: bool) {
     card.set_halign(gtk::Align::Start);
     card.set_valign(gtk::Align::Start);
     card.set_margin_start(x);
-    let bar_h = anchor.as_ref().and_then(|a| a.root()).map(|r| r.height()).filter(|h| *h > 0).unwrap_or(26);
+    let bar_h = anchor
+        .as_ref()
+        .and_then(|a| a.root())
+        .map(|r| r.height())
+        .filter(|h| *h > 0)
+        .unwrap_or(26);
     card.set_margin_top(bar_h + GAP + top_offset());
     fixed.append(&card);
     let outside = gtk::GestureClick::new();
     outside.set_button(0);
     let card_w = card.downgrade();
     let fixed_w = fixed.downgrade();
-    let bar_root = anchor.as_ref().and_then(|a| a.root()).map(|r| r.upcast::<gtk::Widget>().downgrade());
+    let bar_root = anchor
+        .as_ref()
+        .and_then(|a| a.root())
+        .map(|r| r.upcast::<gtk::Widget>().downgrade());
     outside.connect_released(move |g, _, px, py| {
         if let (Some(c), Some(f)) = (card_w.upgrade(), fixed_w.upgrade()) {
             if let Some(b) = c.compute_bounds(&f) {
@@ -225,7 +249,13 @@ fn open(name: &str, build: PanelFn, anchor: Option<gtk::Widget>, center: bool) {
     });
     win.add_controller(keys);
 
-    OPEN.with(|o| *o.borrow_mut() = Some(Open { name: name.to_string(), win: win.clone(), panel }));
+    OPEN.with(|o| {
+        *o.borrow_mut() = Some(Open {
+            name: name.to_string(),
+            win: win.clone(),
+            panel,
+        })
+    });
     notify_open(name, true);
     win.present();
 }
@@ -312,11 +342,21 @@ impl Card {
         let head = ui::hbox(0, &["head"]);
         let t = theme();
         // titles are uppercase like nvim's mode names, except proper names (VectorOS)
-        let shown = if title.chars().any(|c| c.is_uppercase()) { title.to_string() } else { title.to_uppercase() };
+        let shown = if title.chars().any(|c| c.is_uppercase()) {
+            title.to_string()
+        } else {
+            title.to_uppercase()
+        };
         let block = ui::text(&shown, &["htitle"]);
         block.set_valign(gtk::Align::Fill);
         head.append(&block);
-        head.append(&crate::bar::slant(false, crate::bar::Kind::Block, crate::bar::Kind::Plain, &t, Default::default()));
+        head.append(&crate::bar::slant(
+            false,
+            crate::bar::Kind::Block,
+            crate::bar::Kind::Plain,
+            &t,
+            Default::default(),
+        ));
         let d = ui::label("", &["hdetail"]);
         d.set_margin_start(6);
         d.set_hexpand(true);
@@ -336,7 +376,14 @@ impl Card {
         let foot = ui::hbox(2, &["foot"]);
         foot.set_visible(false);
         root.append(&foot);
-        let card = Card { root, head, detail: d, controls, body, foot };
+        let card = Card {
+            root,
+            head,
+            detail: d,
+            controls,
+            body,
+            foot,
+        };
         card.set_detail(detail);
         card
     }

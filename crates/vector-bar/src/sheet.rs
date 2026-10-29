@@ -54,17 +54,38 @@ pub fn items(b: &gtk::Box, items: &Value, call: &Call, tooltip: bool) {
     let Some(arr) = items.as_array() else { return };
     for it in arr {
         if let Some(t) = it.get("section") {
-            b.append(&if tooltip { ui::tsection(&s(t)) } else { ui::section(&s(t)) });
+            b.append(&if tooltip {
+                ui::tsection(&s(t))
+            } else {
+                ui::section(&s(t))
+            });
         } else if let Some(kv) = it.get("kv").and_then(Value::as_array) {
-            let (k, v) = (kv.first().map(s).unwrap_or_default(), kv.get(1).map(s).unwrap_or_default());
-            b.append(&if tooltip { ui::tkv(&k, &v) } else { ui::kv(&k, &v).0 });
+            let (k, v) = (
+                kv.first().map(s).unwrap_or_default(),
+                kv.get(1).map(s).unwrap_or_default(),
+            );
+            b.append(&if tooltip {
+                ui::tkv(&k, &v)
+            } else {
+                ui::kv(&k, &v).0
+            });
         } else if let Some(m) = it.get("meter").and_then(Value::as_array) {
             let k = m.first().map(s).unwrap_or_default();
             let f = m.get(1).and_then(Value::as_f64).unwrap_or(0.0);
-            let v = m.get(2).map(s).unwrap_or_else(|| format!("{:.0}%", f * 100.0));
+            let v = m
+                .get(2)
+                .map(s)
+                .unwrap_or_else(|| format!("{:.0}%", f * 100.0));
             let d = m.get(3).map(s).unwrap_or_default();
-            let cls = it.get("class").map(s).unwrap_or_else(|| ui::pct_class(f * 100.0).to_string());
-            b.append(&if tooltip { ui::tmeter(&k, f, &v, &d, &cls) } else { ui::meter_row(&k, f, &v, &d, &cls) });
+            let cls = it
+                .get("class")
+                .map(s)
+                .unwrap_or_else(|| ui::pct_class(f * 100.0).to_string());
+            b.append(&if tooltip {
+                ui::tmeter(&k, f, &v, &d, &cls)
+            } else {
+                ui::meter_row(&k, f, &v, &d, &cls)
+            });
         } else if let Some(r) = it.get("row") {
             let row = ui::Row::new(&s(&r["icon"]), &s(&r["name"]), &s(&r["meta"]));
             row.set_active(r["active"] == true);
@@ -90,7 +111,11 @@ pub fn items(b: &gtk::Box, items: &Value, call: &Call, tooltip: bool) {
             }
             b.append(&row);
         } else if let Some(h) = it.get("hint") {
-            b.append(&if tooltip { ui::thint(&s(h)) } else { ui::hint(&s(h)) });
+            b.append(&if tooltip {
+                ui::thint(&s(h))
+            } else {
+                ui::hint(&s(h))
+            });
         }
     }
 }

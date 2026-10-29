@@ -67,20 +67,32 @@ pub struct State {
 
 async fn collect(c: &gio::DBusConnection) -> State {
     let objs = dbus::managed(c, BLUEZ, "/").await;
-    let Some((ap, ai)) = objs.iter().find(|(_, i)| i.contains_key("org.bluez.Adapter1")) else { return State::default() };
+    let Some((ap, ai)) = objs
+        .iter()
+        .find(|(_, i)| i.contains_key("org.bluez.Adapter1"))
+    else {
+        return State::default();
+    };
     let a = &ai["org.bluez.Adapter1"];
     let mut devs = Vec::new();
     for (p, i) in &objs {
-        let Some(d) = i.get("org.bluez.Device1") else { continue };
+        let Some(d) = i.get("org.bluez.Device1") else {
+            continue;
+        };
         if !p.starts_with(&format!("{ap}/")) {
             continue;
         }
         let name = {
             let a = dbus::get_str(d, "Alias");
-            if a.is_empty() { dbus::get_str(d, "Name") } else { a }
+            if a.is_empty() {
+                dbus::get_str(d, "Name")
+            } else {
+                a
+            }
         };
         // anonymous beacons: no name of their own and never paired
-        if name.is_empty() || (!dbus::get_bool(d, "Paired") && dbus::get_str(d, "Name").is_empty()) {
+        if name.is_empty() || (!dbus::get_bool(d, "Paired") && dbus::get_str(d, "Name").is_empty())
+        {
             continue;
         }
         devs.push(Dev {
@@ -89,13 +101,20 @@ async fn collect(c: &gio::DBusConnection) -> State {
             icon: dbus::get_str(d, "Icon"),
             paired: dbus::get_bool(d, "Paired"),
             connected: dbus::get_bool(d, "Connected"),
-            battery: i.get("org.bluez.Battery1").and_then(|b| dbus::get_i64(b, "Percentage")),
+            battery: i
+                .get("org.bluez.Battery1")
+                .and_then(|b| dbus::get_i64(b, "Percentage")),
             rssi: dbus::get_i64(d, "RSSI"),
             address: dbus::get_str(d, "Address"),
         });
     }
     devs.sort_by_key(|d| (!d.connected, d.name.to_lowercase()));
-    State { adapter: Some(ap.clone()), powered: dbus::get_bool(a, "Powered"), discovering: dbus::get_bool(a, "Discovering"), devs }
+    State {
+        adapter: Some(ap.clone()),
+        powered: dbus::get_bool(a, "Powered"),
+        discovering: dbus::get_bool(a, "Discovering"),
+        devs,
+    }
 }
 
 fn bt_error(f: &Fail) -> String {
@@ -110,7 +129,9 @@ fn bt_error(f: &Fail) -> String {
         return "nothing on it this laptop can use (audio not running?)".into();
     }
     match f.name.as_str() {
-        "AuthenticationFailed" | "AuthenticationRejected" | "Rejected" => "pairing refused: put it in pairing mode".into(),
+        "AuthenticationFailed" | "AuthenticationRejected" | "Rejected" => {
+            "pairing refused: put it in pairing mode".into()
+        }
         "AuthenticationCanceled" => "pairing cancelled".into(),
         "AuthenticationTimeout" => "pairing timed out".into(),
         "ConnectionAttemptFailed" => "couldn't reach it".into(),
@@ -135,7 +156,14 @@ pub struct Bluetooth(Rc<Inner>);
 impl Bluetooth {
     pub fn new(ctx: &Ctx) -> Bluetooth {
         let o = ctx.opts("bluetooth");
-        let inner = Rc::new(Inner { slot: ctx.slot("bluetooth", &[]), conn: dbus::system(), state: RefCell::default(), changed: Notify::default(), pending: Cell::new(false), _sub: RefCell::default() });
+        let inner = Rc::new(Inner {
+            slot: ctx.slot("bluetooth", &[]),
+            conn: dbus::system(),
+            state: RefCell::default(),
+            changed: Notify::default(),
+            pending: Cell::new(false),
+            _sub: RefCell::default(),
+        });
         let right = o.str("on_right", "omarchy-launch-bluetooth");
         inner.slot.on_right(move || util::spawn_sh(&right));
         let w = Rc::downgrade(&inner);
@@ -193,7 +221,13 @@ impl Inner {
         }
         self.slot.set_visible(true);
         let conn = s.devs.iter().filter(|d| d.connected).count();
-        let (icon, cls) = if !s.powered { ("󰂲", "dim") } else if conn > 0 { ("󰂱", "") } else { ("\u{f294}", "") };
+        let (icon, cls) = if !s.powered {
+            ("󰂲", "dim")
+        } else if conn > 0 {
+            ("󰂱", "")
+        } else {
+            ("\u{f294}", "")
+        };
         self.slot.set_markup(icon);
         self.slot.set_classes(&[cls]);
         self.slot.bump();
@@ -203,7 +237,13 @@ impl Inner {
         let s = self.state.borrow();
         let sh = ui::sheet();
         let conn: Vec<&Dev> = s.devs.iter().filter(|d| d.connected).collect();
-        let detail = if !s.powered { "off".to_string() } else if conn.is_empty() { "on".into() } else { format!("{} connected", conn.len()) };
+        let detail = if !s.powered {
+            "off".to_string()
+        } else if conn.is_empty() {
+            "on".into()
+        } else {
+            format!("{} connected", conn.len())
+        };
         sh.append(&ui::head("bluetooth", &detail).0);
         if !conn.is_empty() {
             sh.append(&ui::tsection("devices"));
@@ -214,7 +254,13 @@ impl Inner {
                 n.set_hexpand(true);
                 row.append(&n);
                 if let Some(b) = d.battery {
-                    let cls = if b <= 10 { "crit" } else if b <= 20 { "warn" } else { "" };
+                    let cls = if b <= 10 {
+                        "crit"
+                    } else if b <= 20 {
+                        "warn"
+                    } else {
+                        ""
+                    };
                     let m = ui::meter(b as f64 / 100.0, cls);
                     m.set_size_request(48, -1);
                     m.set_hexpand(false);
@@ -264,7 +310,8 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
     p.set_width(350);
     let card = Card::new("bluetooth", "");
     let Some(conn) = i.conn.clone() else {
-        card.body.append(&ui::text("no system bus", &["empty-note"]));
+        card.body
+            .append(&ui::text("no system bus", &["empty-note"]));
         return card.root.upcast();
     };
     let ps: Rc<RefCell<PState>> = Rc::default();
@@ -315,31 +362,51 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
             let reg = conn
                 .register_object(AGENT_PATH, &iface)
                 .method_call(move |_, _, _, _, method, params, inv| {
-                    let dev = (params.n_children() > 0).then(|| params.child_value(0).str().unwrap_or("").to_string()).unwrap_or_default();
+                    let dev = (params.n_children() > 0)
+                        .then(|| params.child_value(0).str().unwrap_or("").to_string())
+                        .unwrap_or_default();
                     let ours = ps2.borrow().pairing.contains(&dev);
                     {
                         let mut s = ps2.borrow_mut();
                         match method {
                             "DisplayPasskey" => {
                                 let k = params.child_value(1).get::<u32>().unwrap_or(0);
-                                s.codes.insert(dev.clone(), format!("type {k:06} on the device, then enter"));
+                                s.codes.insert(
+                                    dev.clone(),
+                                    format!("type {k:06} on the device, then enter"),
+                                );
                             }
                             "DisplayPinCode" => {
                                 let k = params.child_value(1).str().unwrap_or("").to_string();
-                                s.codes.insert(dev.clone(), format!("type {k} on the device, then enter"));
+                                s.codes.insert(
+                                    dev.clone(),
+                                    format!("type {k} on the device, then enter"),
+                                );
                             }
                             "RequestConfirmation" if ours => {
                                 let k = params.child_value(1).get::<u32>().unwrap_or(0);
-                                s.codes.insert(dev.clone(), format!("code {k:06}: confirm on the device if it asks"));
+                                s.codes.insert(
+                                    dev.clone(),
+                                    format!("code {k:06}: confirm on the device if it asks"),
+                                );
                             }
                             _ => {}
                         }
                     }
                     match method {
-                        "Release" | "Cancel" | "DisplayPinCode" | "DisplayPasskey" => inv.return_value(None),
-                        "RequestConfirmation" | "RequestAuthorization" | "AuthorizeService" if ours => inv.return_value(None),
+                        "Release" | "Cancel" | "DisplayPinCode" | "DisplayPasskey" => {
+                            inv.return_value(None)
+                        }
+                        "RequestConfirmation" | "RequestAuthorization" | "AuthorizeService"
+                            if ours =>
+                        {
+                            inv.return_value(None)
+                        }
                         "RequestPinCode" if ours => inv.return_value(Some(&("0000",).to_variant())),
-                        _ => inv.return_dbus_error("org.bluez.Error.Rejected", "not started from the panel"),
+                        _ => inv.return_dbus_error(
+                            "org.bluez.Error.Rejected",
+                            "not started from the panel",
+                        ),
                     }
                     rr2();
                 })
@@ -348,9 +415,20 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
                 ps.borrow_mut().agent = Some(id);
                 let (c2, ps3) = (conn.clone(), ps.clone());
                 glib::spawn_future_local(async move {
-                    let path = glib::variant::ObjectPath::try_from(AGENT_PATH).expect("static path");
-                    let r = dbus::call(&c2, BLUEZ, "/org/bluez", "org.bluez.AgentManager1", "RegisterAgent", Some((path, "DisplayYesNo").to_variant()), 3000).await;
-                    ps3.borrow_mut().agent_ok = r.is_ok() || r.err().is_some_and(|f| f.name == "AlreadyExists");
+                    let path =
+                        glib::variant::ObjectPath::try_from(AGENT_PATH).expect("static path");
+                    let r = dbus::call(
+                        &c2,
+                        BLUEZ,
+                        "/org/bluez",
+                        "org.bluez.AgentManager1",
+                        "RegisterAgent",
+                        Some((path, "DisplayYesNo").to_variant()),
+                        3000,
+                    )
+                    .await;
+                    ps3.borrow_mut().agent_ok =
+                        r.is_ok() || r.err().is_some_and(|f| f.name == "AlreadyExists");
                 });
             }
         }
@@ -361,7 +439,18 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
             let mut s = ps2.borrow_mut();
             if s.by_us {
                 if let Some(a) = i2.upgrade().and_then(|i| i.state.borrow().adapter.clone()) {
-                    c2.call(Some(BLUEZ), &a, "org.bluez.Adapter1", "StopDiscovery", None, None, gio::DBusCallFlags::NONE, 2000, gio::Cancellable::NONE, |_| {});
+                    c2.call(
+                        Some(BLUEZ),
+                        &a,
+                        "org.bluez.Adapter1",
+                        "StopDiscovery",
+                        None,
+                        None,
+                        gio::DBusCallFlags::NONE,
+                        2000,
+                        gio::Cancellable::NONE,
+                        |_| {},
+                    );
                 }
             }
             // tell the daemon first (async: closing must not wait on it), then drop our object
@@ -375,7 +464,18 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
                 }
             };
             if registered {
-                c2.call(Some(BLUEZ), "/org/bluez", "org.bluez.AgentManager1", "UnregisterAgent", Some(&(path,).to_variant()), None, gio::DBusCallFlags::NONE, 1000, gio::Cancellable::NONE, done);
+                c2.call(
+                    Some(BLUEZ),
+                    "/org/bluez",
+                    "org.bluez.AgentManager1",
+                    "UnregisterAgent",
+                    Some(&(path,).to_variant()),
+                    None,
+                    gio::DBusCallFlags::NONE,
+                    1000,
+                    gio::Cancellable::NONE,
+                    done,
+                );
             } else {
                 done(Ok(().to_variant()));
             }
@@ -402,12 +502,33 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
             rr();
             let (c, ps, rr) = (c.clone(), ps.clone(), rr.clone());
             glib::spawn_future_local(async move {
-                if let Err(f) = dbus::call(&c, BLUEZ, &a, "org.bluez.Adapter1", if on { "StartDiscovery" } else { "StopDiscovery" }, None, 5000).await {
+                if let Err(f) = dbus::call(
+                    &c,
+                    BLUEZ,
+                    &a,
+                    "org.bluez.Adapter1",
+                    if on {
+                        "StartDiscovery"
+                    } else {
+                        "StopDiscovery"
+                    },
+                    None,
+                    5000,
+                )
+                .await
+                {
                     if f.name != "InProgress" {
                         let mut s = ps.borrow_mut();
                         s.scan_hold = None;
                         s.by_us = false;
-                        s.errors.insert("scan".into(), if on { format!("couldn't start scanning: {}", bt_error(&f)) } else { "another app started this scan: stop it there".into() });
+                        s.errors.insert(
+                            "scan".into(),
+                            if on {
+                                format!("couldn't start scanning: {}", bt_error(&f))
+                            } else {
+                                "another app started this scan: stop it there".into()
+                            },
+                        );
                     }
                 }
                 rr();
@@ -423,7 +544,18 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
                 s.by_us = false;
                 s.scan_hold = None;
                 if let Some(a) = adapter() {
-                    c.call(Some(BLUEZ), &a, "org.bluez.Adapter1", "StopDiscovery", None, None, gio::DBusCallFlags::NONE, 2000, gio::Cancellable::NONE, |_| {});
+                    c.call(
+                        Some(BLUEZ),
+                        &a,
+                        "org.bluez.Adapter1",
+                        "StopDiscovery",
+                        None,
+                        None,
+                        gio::DBusCallFlags::NONE,
+                        2000,
+                        gio::Cancellable::NONE,
+                        |_| {},
+                    );
                 }
             }
         }
@@ -433,15 +565,30 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
         let me: Rc<RefCell<Option<Rc<dyn Fn(String, bool)>>>> = Rc::default();
         let me2 = me.clone();
         let f: Rc<dyn Fn(String, bool)> = Rc::new(move |key: String, retry: bool| {
-            ps.borrow_mut().busy.insert(key.clone(), "connecting".into());
+            ps.borrow_mut()
+                .busy
+                .insert(key.clone(), "connecting".into());
             rr();
             let (c, ps, rr, me) = (c.clone(), ps.clone(), rr.clone(), me2.clone());
             glib::spawn_future_local(async move {
-                let r = dbus::call(&c, BLUEZ, &key, "org.bluez.Device1", "Connect", None, 45_000).await;
+                let r = dbus::call(
+                    &c,
+                    BLUEZ,
+                    &key,
+                    "org.bluez.Device1",
+                    "Connect",
+                    None,
+                    45_000,
+                )
+                .await;
                 let err = r.err().filter(|f| f.name != "AlreadyConnected");
                 if let Some(f) = &err {
                     let m = f.message.to_lowercase();
-                    if retry && (m.contains("profile-unavailable") || m.contains("abort-by-local") || f.name == "InProgress") {
+                    if retry
+                        && (m.contains("profile-unavailable")
+                            || m.contains("abort-by-local")
+                            || f.name == "InProgress")
+                    {
                         // common right after pairing or while audio profiles come up
                         glib::timeout_add_local_once(Duration::from_millis(1500), move || {
                             let f = me.borrow().clone();
@@ -465,11 +612,26 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
         f
     };
     let act: Act = {
-        let (c, ps, rr, i, connect) = (conn.clone(), ps.clone(), rr.clone(), Rc::downgrade(i), connect.clone());
+        let (c, ps, rr, i, connect) = (
+            conn.clone(),
+            ps.clone(),
+            rr.clone(),
+            Rc::downgrade(i),
+            connect.clone(),
+        );
         let quiet = Rc::new(quiet);
         Rc::new(move |key: String| {
             let Some(i) = i.upgrade() else { return };
-            let Some(d) = i.state.borrow().devs.iter().find(|d| d.path == key).cloned() else { return };
+            let Some(d) = i
+                .state
+                .borrow()
+                .devs
+                .iter()
+                .find(|d| d.path == key)
+                .cloned()
+            else {
+                return;
+            };
             if ps.borrow().busy.contains_key(&key) {
                 return;
             }
@@ -479,11 +641,22 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
                 s.expanded = None;
             }
             if d.connected {
-                ps.borrow_mut().busy.insert(key.clone(), "disconnecting".into());
+                ps.borrow_mut()
+                    .busy
+                    .insert(key.clone(), "disconnecting".into());
                 rr();
                 let (c, ps, rr) = (c.clone(), ps.clone(), rr.clone());
                 glib::spawn_future_local(async move {
-                    let r = dbus::call(&c, BLUEZ, &key, "org.bluez.Device1", "Disconnect", None, 15_000).await;
+                    let r = dbus::call(
+                        &c,
+                        BLUEZ,
+                        &key,
+                        "org.bluez.Device1",
+                        "Disconnect",
+                        None,
+                        15_000,
+                    )
+                    .await;
                     let mut s = ps.borrow_mut();
                     s.busy.remove(&key);
                     if let Err(f) = r {
@@ -505,7 +678,8 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
                 rr();
                 let (c, ps, rr, connect) = (c.clone(), ps.clone(), rr.clone(), connect.clone());
                 glib::spawn_future_local(async move {
-                    let r = dbus::call(&c, BLUEZ, &key, "org.bluez.Device1", "Pair", None, 90_000).await;
+                    let r = dbus::call(&c, BLUEZ, &key, "org.bluez.Device1", "Pair", None, 90_000)
+                        .await;
                     {
                         let mut s = ps.borrow_mut();
                         s.codes.remove(&key);
@@ -520,7 +694,15 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
                             rr();
                         }
                         _ => {
-                            let _ = dbus::set_prop(&c, BLUEZ, &key, "org.bluez.Device1", "Trusted", true.to_variant()).await;
+                            let _ = dbus::set_prop(
+                                &c,
+                                BLUEZ,
+                                &key,
+                                "org.bluez.Device1",
+                                "Trusted",
+                                true.to_variant(),
+                            )
+                            .await;
                             connect(key, true);
                         }
                     }
@@ -537,7 +719,17 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
             glib::spawn_future_local(async move {
                 let path = glib::variant::ObjectPath::try_from(key.clone()).ok();
                 if let Some(path) = path {
-                    if let Err(f) = dbus::call(&c, BLUEZ, &a, "org.bluez.Adapter1", "RemoveDevice", Some((path,).to_variant()), 5000).await {
+                    if let Err(f) = dbus::call(
+                        &c,
+                        BLUEZ,
+                        &a,
+                        "org.bluez.Adapter1",
+                        "RemoveDevice",
+                        Some((path,).to_variant()),
+                        5000,
+                    )
+                    .await
+                    {
                         ps.borrow_mut().errors.insert(key, bt_error(&f));
                     }
                 }
@@ -548,12 +740,20 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
 
     // power
     {
-        let (c, i, ps, guard, rr) = (conn.clone(), Rc::downgrade(i), ps.clone(), guard.clone(), rr.clone());
+        let (c, i, ps, guard, rr) = (
+            conn.clone(),
+            Rc::downgrade(i),
+            ps.clone(),
+            guard.clone(),
+            rr.clone(),
+        );
         sw.connect_state_set(move |_, on| {
             if guard.get() {
                 return glib::Propagation::Proceed;
             }
-            let Some(a) = i.upgrade().and_then(|i| i.state.borrow().adapter.clone()) else { return glib::Propagation::Proceed };
+            let Some(a) = i.upgrade().and_then(|i| i.state.borrow().adapter.clone()) else {
+                return glib::Propagation::Proceed;
+            };
             ps.borrow_mut().switch_hold = Some((on, std::time::Instant::now()));
             ps.borrow_mut().errors.remove("power");
             if on {
@@ -564,7 +764,16 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
                 // the adapter can take a moment after an rfkill unblock
                 let mut last = None;
                 for _ in 0..3 {
-                    match dbus::set_prop(&c, BLUEZ, &a, "org.bluez.Adapter1", "Powered", on.to_variant()).await {
+                    match dbus::set_prop(
+                        &c,
+                        BLUEZ,
+                        &a,
+                        "org.bluez.Adapter1",
+                        "Powered",
+                        on.to_variant(),
+                    )
+                    .await
+                    {
                         Ok(_) => {
                             last = None;
                             break;
@@ -577,7 +786,14 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
                 }
                 if let Some(f) = last {
                     let mut s = ps.borrow_mut();
-                    s.errors.insert("power".into(), format!("couldn't turn bluetooth {}: {}", if on { "on" } else { "off" }, f.message));
+                    s.errors.insert(
+                        "power".into(),
+                        format!(
+                            "couldn't turn bluetooth {}: {}",
+                            if on { "on" } else { "off" },
+                            f.message
+                        ),
+                    );
                     s.switch_hold = None;
                 }
                 rr();
@@ -588,14 +804,25 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
     {
         let (scan, ps, i) = (scan.clone(), ps.clone(), Rc::downgrade(i));
         let toggle = Rc::new(move || {
-            let discovering = i.upgrade().map(|i| i.state.borrow().discovering).unwrap_or(false);
-            let held = ps.borrow().scan_hold.filter(|(_, t)| t.elapsed() < Duration::from_secs(4)).map(|(w, _)| w);
+            let discovering = i
+                .upgrade()
+                .map(|i| i.state.borrow().discovering)
+                .unwrap_or(false);
+            let held = ps
+                .borrow()
+                .scan_hold
+                .filter(|(_, t)| t.elapsed() < Duration::from_secs(4))
+                .map(|(w, _)| w);
             scan(!held.unwrap_or(discovering));
         });
         let t2 = toggle.clone();
         scan_btn.connect_clicked(move |_| t2());
         p.on_key(move |k, m| {
-            if (k == gtk::gdk::Key::s || k == gtk::gdk::Key::S) && !m.intersects(gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::ALT_MASK) {
+            if (k == gtk::gdk::Key::s || k == gtk::gdk::Key::S)
+                && !m.intersects(
+                    gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::ALT_MASK,
+                )
+            {
                 toggle();
                 return true;
             }
@@ -605,7 +832,17 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
 
     let render = {
         let i = Rc::downgrade(i);
-        let (ps, sw, guard, msgs, list, detail, spin, scan_l, scan_btn) = (ps.clone(), sw.clone(), guard.clone(), msgs.clone(), list.clone(), card.detail.clone(), spin.clone(), scan_l.clone(), scan_btn.clone());
+        let (ps, sw, guard, msgs, list, detail, spin, scan_l, scan_btn) = (
+            ps.clone(),
+            sw.clone(),
+            guard.clone(),
+            msgs.clone(),
+            list.clone(),
+            card.detail.clone(),
+            spin.clone(),
+            scan_l.clone(),
+            scan_btn.clone(),
+        );
         let (act, forget, rr) = (act.clone(), forget.clone(), rr.clone());
         move || {
             let Some(i) = i.upgrade() else { return };
@@ -650,7 +887,11 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
             } else {
                 spin.stop();
             }
-            scan_l.set_text(if scanning { "scanning… · stop" } else { "scan for devices" });
+            scan_l.set_text(if scanning {
+                "scanning… · stop"
+            } else {
+                "scan for devices"
+            });
             scan_btn.set_visible(s.powered);
             ui::clear(&msgs);
             for k in ["power", "scan"] {
@@ -659,7 +900,13 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
                 }
             }
             let mut items: Vec<ui::Item> = Vec::new();
-            let empty = |key: &str, t: &'static str| -> ui::Item { (key.to_string(), t.to_string(), Box::new(move || ui::text(t, &["empty-note"]).upcast())) };
+            let empty = |key: &str, t: &'static str| -> ui::Item {
+                (
+                    key.to_string(),
+                    t.to_string(),
+                    Box::new(move || ui::text(t, &["empty-note"]).upcast()),
+                )
+            };
             if s.adapter.is_none() {
                 items.push(empty("e", "no bluetooth adapter found"));
             } else if !s.powered {
@@ -669,14 +916,38 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
                 let mut nearby: Vec<Dev> = s.devs.iter().filter(|d| !d.paired).cloned().collect();
                 nearby.sort_by_key(|d| -d.rssi.unwrap_or(-999));
                 let mut group = |title: &'static str, devs: Vec<Dev>, items: &mut Vec<ui::Item>| {
-                    items.push((format!("sec-{title}"), String::new(), Box::new(move || ui::section(title).upcast())));
+                    items.push((
+                        format!("sec-{title}"),
+                        String::new(),
+                        Box::new(move || ui::section(title).upcast()),
+                    ));
                     for d in devs {
                         let busy = st.busy.get(&d.path).cloned();
-                        let note = st.errors.get(&d.path).map(|e| (e.clone(), "crit")).or_else(|| st.codes.get(&d.path).map(|c| (c.clone(), "warn")));
+                        let note = st
+                            .errors
+                            .get(&d.path)
+                            .map(|e| (e.clone(), "crit"))
+                            .or_else(|| st.codes.get(&d.path).map(|c| (c.clone(), "warn")));
                         let exp = st.expanded.as_deref() == Some(&d.path);
                         let sig = format!("{d:?}{busy:?}{note:?}{exp}");
-                        let (act, forget, ps, rr) = (act.clone(), forget.clone(), ps.clone(), rr.clone());
-                        items.push((d.path.clone(), sig, Box::new(move || dev_row(&d, busy.as_deref(), note.as_ref(), exp, &act, &forget, &ps, &rr))));
+                        let (act, forget, ps, rr) =
+                            (act.clone(), forget.clone(), ps.clone(), rr.clone());
+                        items.push((
+                            d.path.clone(),
+                            sig,
+                            Box::new(move || {
+                                dev_row(
+                                    &d,
+                                    busy.as_deref(),
+                                    note.as_ref(),
+                                    exp,
+                                    &act,
+                                    &forget,
+                                    &ps,
+                                    &rr,
+                                )
+                            }),
+                        ));
                     }
                 };
                 if !paired.is_empty() {
@@ -687,7 +958,14 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
                     let none = nearby.is_empty();
                     group("nearby", nearby.into_iter().take(12).collect(), &mut items);
                     if none {
-                        items.push(empty("none", if scanning { "looking for devices…" } else { "nothing found · s to scan again" }));
+                        items.push(empty(
+                            "none",
+                            if scanning {
+                                "looking for devices…"
+                            } else {
+                                "nothing found · s to scan again"
+                            },
+                        ));
                     }
                 } else if paired.is_empty() {
                     items.push(empty("e", "no devices yet · s to scan"));
@@ -705,10 +983,28 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn dev_row(d: &Dev, busy: Option<&str>, note: Option<&(String, &str)>, expanded: bool, act: &Act, forget: &Act, ps: &Rc<RefCell<PState>>, rr: &Rc<dyn Fn()>) -> gtk::Widget {
+fn dev_row(
+    d: &Dev,
+    busy: Option<&str>,
+    note: Option<&(String, &str)>,
+    expanded: bool,
+    act: &Act,
+    forget: &Act,
+    ps: &Rc<RefCell<PState>>,
+    rr: &Rc<dyn Fn()>,
+) -> gtk::Widget {
     let b = ui::vbox(0, &[]);
     let (meta, cls) = match d.battery {
-        Some(x) => (format!("{x}%"), if x <= 10 { "crit" } else if x <= 20 { "warn" } else { "" }),
+        Some(x) => (
+            format!("{x}%"),
+            if x <= 10 {
+                "crit"
+            } else if x <= 20 {
+                "warn"
+            } else {
+                ""
+            },
+        ),
         None if d.connected => ("connected".into(), ""),
         None if !d.paired => ("pair".into(), ""),
         None => (String::new(), ""),
@@ -727,7 +1023,11 @@ fn dev_row(d: &Dev, busy: Option<&str>, note: Option<&(String, &str)>, expanded:
         let (ps, rr, key) = (ps.clone(), rr.clone(), d.path.clone());
         let more = ui::icon_button("\u{f01d9}", "more", move || {
             let mut s = ps.borrow_mut();
-            s.expanded = if s.expanded.as_deref() == Some(&key) { None } else { Some(key.clone()) };
+            s.expanded = if s.expanded.as_deref() == Some(&key) {
+                None
+            } else {
+                Some(key.clone())
+            };
             drop(s);
             rr();
         });
@@ -743,7 +1043,11 @@ fn dev_row(d: &Dev, busy: Option<&str>, note: Option<&(String, &str)>, expanded:
     if expanded {
         let ex = ui::hbox(4, &["expand"]);
         let (a, key) = (act.clone(), d.path.clone());
-        ex.append(&ui::link(if d.connected { "disconnect" } else { "connect" }, &[], move || a(key.clone())));
+        ex.append(&ui::link(
+            if d.connected { "disconnect" } else { "connect" },
+            &[],
+            move || a(key.clone()),
+        ));
         let (f, key) = (forget.clone(), d.path.clone());
         ex.append(&ui::link("forget", &["danger"], move || f(key.clone())));
         ex.append(&ui::spacer());

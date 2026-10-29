@@ -42,7 +42,13 @@ impl Workspaces {
         let o = ctx.opts("workspaces");
         let mut labels = BTreeMap::new();
         labels.insert(10, "0".to_string());
-        if let Some(t) = ctx.cfg.modules.get("workspaces").and_then(|t| t.get("names")).and_then(|v| v.as_table()) {
+        if let Some(t) = ctx
+            .cfg
+            .modules
+            .get("workspaces")
+            .and_then(|t| t.get("names"))
+            .and_then(|v| v.as_table())
+        {
             for (k, v) in t {
                 if let (Ok(id), Some(s)) = (k.parse::<i64>(), v.as_str()) {
                     labels.insert(id, s.to_string());
@@ -72,7 +78,10 @@ impl Workspaces {
                     util::bg(
                         move || {
                             hypr::json("clients").and_then(|c| {
-                                c.as_array()?.iter().find(|x| x["address"] == addr.as_str())?["workspace"]["id"].as_i64()
+                                c.as_array()?
+                                    .iter()
+                                    .find(|x| x["address"] == addr.as_str())?["workspace"]["id"]
+                                    .as_i64()
                             })
                         },
                         move |id| {
@@ -84,9 +93,10 @@ impl Workspaces {
                     );
                 }
                 "workspace" | "workspacev2" | "focusedmon" | "focusedmonv2" | "createworkspace"
-                | "createworkspacev2" | "destroyworkspace" | "destroyworkspacev2" | "moveworkspace"
-                | "moveworkspacev2" | "renameworkspace" | "openwindow" | "closewindow" | "movewindow"
-                | "movewindowv2" | "activespecial" | "activespecialv2" | "monitoradded" | "monitorremoved" => {
+                | "createworkspacev2" | "destroyworkspace" | "destroyworkspacev2"
+                | "moveworkspace" | "moveworkspacev2" | "renameworkspace" | "openwindow"
+                | "closewindow" | "movewindow" | "movewindowv2" | "activespecial"
+                | "activespecialv2" | "monitoradded" | "monitorremoved" => {
                     i.schedule();
                 }
                 _ => {}
@@ -137,13 +147,16 @@ impl Inner {
                     }
                     let sp = m["specialWorkspace"]["name"].as_str().unwrap_or("");
                     if !sp.is_empty() {
-                        s.special.insert(name, sp.trim_start_matches("special:").to_string());
+                        s.special
+                            .insert(name, sp.trim_start_matches("special:").to_string());
                     }
                 }
                 Some(s)
             },
             move |s| {
-                let (Some(me), Some(s)) = (me.upgrade(), s) else { return };
+                let (Some(me), Some(s)) = (me.upgrade(), s) else {
+                    return;
+                };
                 // visiting a workspace clears its urgency
                 {
                     let mut u = me.urgent.borrow_mut();
@@ -163,7 +176,9 @@ impl Inner {
         let views: Vec<_> = {
             let mut v = self.views.borrow_mut();
             v.retain(|(_, w)| w.upgrade().is_some());
-            v.iter().filter_map(|(m, w)| w.upgrade().map(|b| (m.clone(), b))).collect()
+            v.iter()
+                .filter_map(|(m, w)| w.upgrade().map(|b| (m.clone(), b)))
+                .collect()
         };
         for (mon, b) in views {
             self.render_into(&mon, &b);
@@ -180,7 +195,11 @@ impl Inner {
             }
         }
         ids.sort();
-        let active = s.active.get(mon).copied().or_else(|| s.active.get(&s.focused).copied());
+        let active = s
+            .active
+            .get(mon)
+            .copied()
+            .or_else(|| s.active.get(&s.focused).copied());
         let special = s.special.get(mon).cloned();
 
         // reuse buttons when the id list is unchanged (no flicker, hover survives)
@@ -212,16 +231,29 @@ impl Inner {
             }
         }
         for (w, id) in existing.iter().zip(ids.iter()) {
-            let Some(l) = w.first_child().and_downcast::<gtk::Label>() else { continue };
+            let Some(l) = w.first_child().and_downcast::<gtk::Label>() else {
+                continue;
+            };
             let is_active = Some(*id) == active;
             let windows = s.spaces.get(id).map(|x| x.2).unwrap_or(0);
-            let name = self.labels.get(id).cloned().unwrap_or_else(|| id.to_string());
-            l.set_text(if is_active && !self.active_glyph.is_empty() { &self.active_glyph } else { &name });
+            let name = self
+                .labels
+                .get(id)
+                .cloned()
+                .unwrap_or_else(|| id.to_string());
+            l.set_text(if is_active && !self.active_glyph.is_empty() {
+                &self.active_glyph
+            } else {
+                &name
+            });
             set(w, "active", is_active);
             set(w, "empty", windows == 0 && !is_active);
             set(w, "urgent", urgent.contains(id));
             let tip = match s.spaces.get(id) {
-                Some((_, _, n)) if *n > 0 => format!("workspace {name} · {n} window{}", if *n == 1 { "" } else { "s" }),
+                Some((_, _, n)) if *n > 0 => format!(
+                    "workspace {name} · {n} window{}",
+                    if *n == 1 { "" } else { "s" }
+                ),
                 _ => format!("workspace {name} · empty"),
             };
             w.set_tooltip_text(Some(&tip));
@@ -251,12 +283,19 @@ impl Module for Workspaces {
             gtk::EventControllerScrollFlags::VERTICAL | gtk::EventControllerScrollFlags::DISCRETE,
         );
         sc.connect_scroll(|_, _, dy| {
-            hypr::dispatch(if dy > 0.0 { "workspace m+1" } else { "workspace m-1" });
+            hypr::dispatch(if dy > 0.0 {
+                "workspace m+1"
+            } else {
+                "workspace m-1"
+            });
             glib::Propagation::Stop
         });
         b.add_controller(sc);
         self.0.render_into(&bar.connector, &b);
-        self.0.views.borrow_mut().push((bar.connector.clone(), b.downgrade()));
+        self.0
+            .views
+            .borrow_mut()
+            .push((bar.connector.clone(), b.downgrade()));
         b.upcast()
     }
     fn refresh(&self) {

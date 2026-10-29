@@ -53,7 +53,11 @@ pub fn glass_file() -> std::path::PathBuf {
 impl Theme {
     /// Colour of a mode key (see `mode::COLORS`).
     pub fn mode_color(&self, key: &str) -> &str {
-        let name = crate::mode::COLORS.iter().find(|(k, _)| *k == key).map(|(_, c)| *c).unwrap_or("accent");
+        let name = crate::mode::COLORS
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, c)| *c)
+            .unwrap_or("accent");
         match name {
             "red" => &self.color1,
             "green" => &self.color2,
@@ -83,9 +87,14 @@ impl Theme {
         }
         if let Some(text) = text {
             for line in text.lines() {
-                let Some((k, v)) = line.split_once('=') else { continue };
+                let Some((k, v)) = line.split_once('=') else {
+                    continue;
+                };
                 let v = v.trim().trim_matches('"').to_lowercase();
-                if !(v.len() == 7 && v.starts_with('#') && v[1..].chars().all(|c| c.is_ascii_hexdigit())) {
+                if !(v.len() == 7
+                    && v.starts_with('#')
+                    && v[1..].chars().all(|c| c.is_ascii_hexdigit()))
+                {
                     continue;
                 }
                 match k.trim() {
@@ -107,16 +116,39 @@ impl Theme {
         if let Some(c) = crit.map(str::to_string).or(bar_crit) {
             t.crit = c;
         }
-        t.glass = util::read(glass_file()).is_some_and(|s| s.contains("layerrule") && s.contains("blur"));
+        t.glass =
+            util::read(glass_file()).is_some_and(|s| s.contains("layerrule") && s.contains("blur"));
         t
     }
 
     /// The whole built-in stylesheet. User CSS is loaded on top of it.
     pub fn css(&self, font: &str, font_size: f64, height: i32) -> String {
-        let Theme { background: bg, foreground: fg, accent: acc, color1: red, color2: green, color3: yellow, warn, crit, .. } = self;
-        let bar_bg = if self.glass { format!("alpha({bg}, 0.35)") } else { bg.clone() };
-        let bar_edge = if self.glass { format!("border-bottom: 1px solid alpha({fg}, 0.08);") } else { String::new() };
-        let card_bg = if self.glass { format!("alpha({bg}, 0.96)") } else { format!("alpha({bg}, 0.97)") };
+        let Theme {
+            background: bg,
+            foreground: fg,
+            accent: acc,
+            color1: red,
+            color2: green,
+            color3: yellow,
+            warn,
+            crit,
+            ..
+        } = self;
+        let bar_bg = if self.glass {
+            format!("alpha({bg}, 0.35)")
+        } else {
+            bg.clone()
+        };
+        let bar_edge = if self.glass {
+            format!("border-bottom: 1px solid alpha({fg}, 0.08);")
+        } else {
+            String::new()
+        };
+        let card_bg = if self.glass {
+            format!("alpha({bg}, 0.96)")
+        } else {
+            format!("alpha({bg}, 0.97)")
+        };
         format!(
             r#"
 @define-color vb_bg {bg};

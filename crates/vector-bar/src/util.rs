@@ -6,7 +6,9 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub fn home() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/"))
 }
 
 pub fn config_dir() -> PathBuf {
@@ -36,7 +38,10 @@ pub fn expand(path: &str) -> PathBuf {
 }
 
 pub fn now() -> f64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
 }
 
 /// Runs a shell command line fully detached (own session, no stdio), like a
@@ -46,7 +51,11 @@ pub fn spawn_sh(cmd: &str) {
         return;
     }
     let mut c = Command::new("sh");
-    c.arg("-c").arg(cmd).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    c.arg("-c")
+        .arg(cmd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     unsafe {
         use std::os::unix::process::CommandExt;
         c.pre_exec(|| {
@@ -66,9 +75,14 @@ pub fn spawn_sh(cmd: &str) {
 
 /// Runs a program detached with arguments (no shell quoting involved).
 pub fn spawn(argv: &[&str]) {
-    let Some((prog, args)) = argv.split_first() else { return };
+    let Some((prog, args)) = argv.split_first() else {
+        return;
+    };
     let mut c = Command::new(prog);
-    c.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    c.args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     unsafe {
         use std::os::unix::process::CommandExt;
         c.pre_exec(|| {
@@ -100,11 +114,20 @@ pub fn run(argv: &[&str], timeout: Duration) -> Option<Out> {
 }
 
 /// [`run`] with optional stdin text and working directory.
-pub fn run_in(argv: &[&str], timeout: Duration, stdin: Option<&str>, cwd: Option<&Path>) -> Option<Out> {
+pub fn run_in(
+    argv: &[&str],
+    timeout: Duration,
+    stdin: Option<&str>,
+    cwd: Option<&Path>,
+) -> Option<Out> {
     let (prog, args) = argv.split_first()?;
     let mut c = Command::new(prog);
     c.args(args)
-        .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdin(if stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Some(d) = cwd {
@@ -141,7 +164,11 @@ pub fn run_in(argv: &[&str], timeout: Duration, stdin: Option<&str>, cwd: Option
     };
     let stdout = t_out.join().unwrap_or_default();
     let stderr = t_err.join().unwrap_or_default();
-    status.map(|st| Out { ok: st.success(), stdout, stderr })
+    status.map(|st| Out {
+        ok: st.success(),
+        stdout,
+        stderr,
+    })
 }
 
 /// Runs a shell line and returns trimmed stdout when it succeeded.
@@ -182,7 +209,11 @@ pub fn every<T: 'static>(ms: u64, owner: &std::rc::Rc<T>, f: impl Fn(&std::rc::R
 }
 
 /// Calls `f` once after `ms` if `owner` is still alive.
-pub fn after<T: 'static>(ms: u64, owner: &std::rc::Rc<T>, f: impl FnOnce(&std::rc::Rc<T>) + 'static) {
+pub fn after<T: 'static>(
+    ms: u64,
+    owner: &std::rc::Rc<T>,
+    f: impl FnOnce(&std::rc::Rc<T>) + 'static,
+) {
     let weak = std::rc::Rc::downgrade(owner);
     glib::timeout_add_local_once(Duration::from_millis(ms), move || {
         if let Some(t) = weak.upgrade() {
@@ -231,7 +262,11 @@ pub fn size_kb(kb: u64) -> String {
         return format!("{} TB", trim0(format!("{:.2}", t)));
     }
     if g >= 1.0 {
-        let s = if g >= 100.0 { format!("{:.0}", g) } else { format!("{:.1}", g) };
+        let s = if g >= 100.0 {
+            format!("{:.0}", g)
+        } else {
+            format!("{:.1}", g)
+        };
         return format!("{} GB", trim0(s));
     }
     format!("{:.0} MB", kb as f64 / 1024.0)
@@ -308,14 +343,18 @@ pub fn dur(secs: u64) -> String {
 pub fn local(ts: f64, fmt: &str) -> String {
     use chrono::TimeZone;
     match chrono::Local.timestamp_opt(ts as i64, 0) {
-        chrono::LocalResult::Single(t) | chrono::LocalResult::Ambiguous(t, _) => t.format(fmt).to_string(),
+        chrono::LocalResult::Single(t) | chrono::LocalResult::Ambiguous(t, _) => {
+            t.format(fmt).to_string()
+        }
         chrono::LocalResult::None => String::new(),
     }
 }
 
 /// ISO-8601 to unix seconds.
 pub fn parse_iso(s: &str) -> Option<f64> {
-    chrono::DateTime::parse_from_rfc3339(s).ok().map(|d| d.timestamp_millis() as f64 / 1000.0)
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|d| d.timestamp_millis() as f64 / 1000.0)
 }
 
 /// Human count: 1.2B, 3.4M, 12k.
@@ -340,10 +379,13 @@ pub fn which(prog: &str) -> bool {
 
 /// Does a process with exactly this comm name run?
 pub fn proc_running(comm: &str) -> bool {
-    let Ok(rd) = std::fs::read_dir("/proc") else { return false };
+    let Ok(rd) = std::fs::read_dir("/proc") else {
+        return false;
+    };
     rd.flatten().any(|e| {
         let n = e.file_name();
-        n.to_str().is_some_and(|s| s.bytes().all(|b| b.is_ascii_digit()))
+        n.to_str()
+            .is_some_and(|s| s.bytes().all(|b| b.is_ascii_digit()))
             && read_trim(e.path().join("comm")).as_deref() == Some(comm)
     })
 }
@@ -352,7 +394,9 @@ pub fn proc_running(comm: &str) -> bool {
 pub fn proc_cmdline_starts(prefix: &str) -> Option<u32> {
     let rd = std::fs::read_dir("/proc").ok()?;
     for e in rd.flatten() {
-        let Some(pid) = e.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else { continue };
+        let Some(pid) = e.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else {
+            continue;
+        };
         if let Ok(raw) = std::fs::read(e.path().join("cmdline")) {
             let line = String::from_utf8_lossy(&raw).replace('\0', " ");
             if line.starts_with(prefix) {
@@ -409,8 +453,8 @@ impl Drop for Stream {
 /// `on_line(Some(line))` per line, `on_line(None)` when the command ended.
 pub fn stream(cmd: &str, restart: Duration, on_line: impl Fn(Option<String>) + 'static) -> Stream {
     use std::io::BufRead;
-    use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
     let pid = Arc::new(AtomicI32::new(0));
     let stop = Arc::new(AtomicBool::new(false));
     let (tx, rx) = async_channel::unbounded::<Option<String>>();
@@ -419,7 +463,11 @@ pub fn stream(cmd: &str, restart: Duration, on_line: impl Fn(Option<String>) + '
     std::thread::spawn(move || {
         while !s2.load(Ordering::SeqCst) {
             let mut c = Command::new("sh");
-            c.arg("-c").arg(&cmd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+            c.arg("-c")
+                .arg(&cmd)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null());
             unsafe {
                 use std::os::unix::process::CommandExt;
                 c.pre_exec(|| {
@@ -461,10 +509,16 @@ pub fn stream(cmd: &str, restart: Duration, on_line: impl Fn(Option<String>) + '
 /// name (comm is at most 15 characters, so match prefixes of longer names).
 pub fn find_comms(names: &[&str]) -> Vec<Option<u32>> {
     let mut out = vec![None; names.len()];
-    let Ok(rd) = std::fs::read_dir("/proc") else { return out };
+    let Ok(rd) = std::fs::read_dir("/proc") else {
+        return out;
+    };
     for e in rd.flatten() {
-        let Some(pid) = e.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else { continue };
-        let Some(comm) = read_trim(e.path().join("comm")) else { continue };
+        let Some(pid) = e.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else {
+            continue;
+        };
+        let Some(comm) = read_trim(e.path().join("comm")) else {
+            continue;
+        };
         for (i, n) in names.iter().enumerate() {
             if out[i].is_none() && (comm == *n || (comm.len() == 15 && n.starts_with(&comm))) {
                 out[i] = Some(pid);
@@ -488,6 +542,12 @@ pub fn used_of(used_kb: u64, total_kb: u64) -> String {
     };
     let u = used_kb as f64 / div;
     let tn = total_kb as f64 / div;
-    let f = |x: f64| if x >= 100.0 { format!("{x:.0}") } else { format!("{x:.1}") };
+    let f = |x: f64| {
+        if x >= 100.0 {
+            format!("{x:.0}")
+        } else {
+            format!("{x:.1}")
+        }
+    };
     format!("{} / {} {unit}", f(u), f(tn))
 }

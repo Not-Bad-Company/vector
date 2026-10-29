@@ -45,11 +45,31 @@ struct Inner {
     modes: bool,
 }
 
-const M_REC: mode::State = mode::State { key: "rec", label: "REC", rank: 0 };
-const M_DICTATE: mode::State = mode::State { key: "dictate", label: "DICTATE", rank: 1 };
-const M_VM: mode::State = mode::State { key: "vm", label: "VM", rank: 3 };
-const M_SILENT: mode::State = mode::State { key: "silent", label: "SILENT", rank: 4 };
-const M_AWAKE: mode::State = mode::State { key: "awake", label: "AWAKE", rank: 5 };
+const M_REC: mode::State = mode::State {
+    key: "rec",
+    label: "REC",
+    rank: 0,
+};
+const M_DICTATE: mode::State = mode::State {
+    key: "dictate",
+    label: "DICTATE",
+    rank: 1,
+};
+const M_VM: mode::State = mode::State {
+    key: "vm",
+    label: "VM",
+    rank: 3,
+};
+const M_SILENT: mode::State = mode::State {
+    key: "silent",
+    label: "SILENT",
+    rank: 4,
+};
+const M_AWAKE: mode::State = mode::State {
+    key: "awake",
+    label: "AWAKE",
+    rank: 5,
+};
 
 #[derive(Default, Clone)]
 struct WinState {
@@ -95,42 +115,93 @@ impl Indicators {
             mic_busy: Cell::new(false),
             vm_pid: Cell::new(None),
             mako_listener: Cell::new(0),
-            order: o
-                .list("show")
-                .unwrap_or_else(|| ["voxtype", "recording", "idle", "sleeplock", "win11", "dnd", "mic", "camera"].iter().map(|s| s.to_string()).collect()),
-            modes: ctx.cfg.left.iter().chain(&ctx.cfg.center).chain(&ctx.cfg.right).any(|n| n == "mode" || n == "menu"),
+            order: o.list("show").unwrap_or_else(|| {
+                [
+                    "voxtype",
+                    "recording",
+                    "idle",
+                    "sleeplock",
+                    "win11",
+                    "dnd",
+                    "mic",
+                    "camera",
+                ]
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
+            }),
+            modes: ctx
+                .cfg
+                .left
+                .iter()
+                .chain(&ctx.cfg.center)
+                .chain(&ctx.cfg.right)
+                .any(|n| n == "mode" || n == "menu"),
         });
         for s in inner.all() {
             s.set_visible(false);
         }
         inner.rec.set_markup("󰻂");
-        inner.rec.on_left(|| util::spawn_sh("omarchy-capture-screenrecording --stop-recording"));
-        inner.rec.tooltip(|| simple_tip("recording", "screen", "click stop"));
+        inner
+            .rec
+            .on_left(|| util::spawn_sh("omarchy-capture-screenrecording --stop-recording"));
+        inner
+            .rec
+            .tooltip(|| simple_tip("recording", "screen", "click stop"));
         inner.idle.set_markup("󱫖");
         inner.idle.on_left(|| util::spawn_sh("omarchy-toggle-idle"));
-        inner.idle.tooltip(|| simple_tip("idle lock", "off", "click turn back on"));
+        inner
+            .idle
+            .tooltip(|| simple_tip("idle lock", "off", "click turn back on"));
         inner.sleep.set_markup("󰒳");
-        inner.sleep.on_left(|| util::spawn(&[&util::home().join(".local/libexec/toggle_sleeplock").to_string_lossy()]));
+        inner.sleep.on_left(|| {
+            util::spawn(&[&util::home()
+                .join(".local/libexec/toggle_sleeplock")
+                .to_string_lossy()])
+        });
         inner.dnd.set_markup("󰂛");
         inner.dnd.on_left(|| mako::get().set_dnd(false));
-        inner.dnd.tooltip(|| simple_tip("notifications", "silenced", "click unsilence"));
+        inner
+            .dnd
+            .tooltip(|| simple_tip("notifications", "silenced", "click unsilence"));
         inner.win.set_markup("\u{f17a}");
         inner.win.on_left(|| util::spawn_sh("~/.local/bin/win11"));
-        inner.win.on_right(|| util::spawn_sh("~/.local/bin/win11-off"));
+        inner
+            .win
+            .on_right(|| util::spawn_sh("~/.local/bin/win11-off"));
         inner.mic.set_markup("󰍬");
         inner.cam.set_markup("󰄀");
-        inner.vox.on_left(|| util::spawn_sh("omarchy-voxtype-model"));
-        inner.vox.on_right(|| util::spawn_sh("omarchy-voxtype-config"));
+        inner
+            .vox
+            .on_left(|| util::spawn_sh("omarchy-voxtype-model"));
+        inner
+            .vox
+            .on_right(|| util::spawn_sh("omarchy-voxtype-config"));
 
         let w = Rc::downgrade(&inner);
         inner.sleep.tooltip(move || {
-            let since = std::fs::metadata(sleeplock_unit()).ok().and_then(|m| m.modified().ok()).map(|t| {
-                let s = t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
-                util::local(s, "%H:%M")
-            });
+            let since = std::fs::metadata(sleeplock_unit())
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .map(|t| {
+                    let s = t
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs_f64())
+                        .unwrap_or(0.0);
+                    util::local(s, "%H:%M")
+                });
             let _ = w.upgrade()?;
             let s = ui::sheet();
-            s.append(&ui::head("sleep lock", &format!("on{}", since.map(|x| format!(" since {x}")).unwrap_or_default())).0);
+            s.append(
+                &ui::head(
+                    "sleep lock",
+                    &format!(
+                        "on{}",
+                        since.map(|x| format!(" since {x}")).unwrap_or_default()
+                    ),
+                )
+                .0,
+            );
             s.append(&ui::tkv("blocks", "sleep and idle").tap(|b| b.set_margin_top(6)));
             s.append(&ui::thint("click or m4 to allow sleep"));
             Some(s.upcast())
@@ -141,7 +212,11 @@ impl Indicators {
         inner.vox.tooltip(move || {
             let i = w.upgrade()?;
             let t = i.vox_tip.borrow().clone();
-            simple_tip("voxtype", &util::esc(&t.to_lowercase()), "click model  ·  right config")
+            simple_tip(
+                "voxtype",
+                &util::esc(&t.to_lowercase()),
+                "click model  ·  right config",
+            )
         });
         let w = Rc::downgrade(&inner);
         inner.mic.tooltip(move || {
@@ -170,30 +245,38 @@ impl Indicators {
         // voxtype streams its own state
         if util::which("voxtype") {
             let w = Rc::downgrade(&inner);
-            let s = util::stream("voxtype status --follow --extended --format json", Duration::from_secs(10), move |line| {
-                let Some(i) = w.upgrade() else { return };
-                let Some(line) = line else {
-                    i.show(&i.vox, M_DICTATE, false);
-                    return;
-                };
-                let v: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
-                let class = v["class"].as_str().or(v["alt"].as_str()).unwrap_or("idle").to_string();
-                *i.vox_tip.borrow_mut() = v["tooltip"].as_str().unwrap_or("").to_string();
-                let (icon, cls) = match class.as_str() {
-                    "recording" => ("󰍬", "crit"),
-                    "transcribing" => ("󰔟", "warn"),
-                    _ => ("", ""),
-                };
-                i.vox.set_markup(icon);
-                i.vox.set_classes(&[cls, "small"]);
-                if class == "recording" {
-                    i.show(&i.vox, M_DICTATE, true);
-                } else {
-                    // transcribing stays an icon (it's brief); idle hides
-                    mode::set(M_DICTATE, false);
-                    i.vox.set_visible(!icon.is_empty());
-                }
-            });
+            let s = util::stream(
+                "voxtype status --follow --extended --format json",
+                Duration::from_secs(10),
+                move |line| {
+                    let Some(i) = w.upgrade() else { return };
+                    let Some(line) = line else {
+                        i.show(&i.vox, M_DICTATE, false);
+                        return;
+                    };
+                    let v: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
+                    let class = v["class"]
+                        .as_str()
+                        .or(v["alt"].as_str())
+                        .unwrap_or("idle")
+                        .to_string();
+                    *i.vox_tip.borrow_mut() = v["tooltip"].as_str().unwrap_or("").to_string();
+                    let (icon, cls) = match class.as_str() {
+                        "recording" => ("󰍬", "crit"),
+                        "transcribing" => ("󰔟", "warn"),
+                        _ => ("", ""),
+                    };
+                    i.vox.set_markup(icon);
+                    i.vox.set_classes(&[cls, "small"]);
+                    if class == "recording" {
+                        i.show(&i.vox, M_DICTATE, true);
+                    } else {
+                        // transcribing stays an icon (it's brief); idle hides
+                        mode::set(M_DICTATE, false);
+                        i.vox.set_visible(!icon.is_empty());
+                    }
+                },
+            );
             inner.streams.borrow_mut().push(s);
         }
 
@@ -231,7 +314,16 @@ fn sleeplock_unit() -> PathBuf {
 
 impl Inner {
     fn all(&self) -> [&Slot; 8] {
-        [&self.vox, &self.rec, &self.idle, &self.sleep, &self.win, &self.dnd, &self.mic, &self.cam]
+        [
+            &self.vox,
+            &self.rec,
+            &self.idle,
+            &self.sleep,
+            &self.win,
+            &self.dnd,
+            &self.mic,
+            &self.cam,
+        ]
     }
 
     fn by_name(&self, n: &str) -> Option<&Slot> {
@@ -255,7 +347,8 @@ impl Inner {
         self.show(&self.sleep, M_AWAKE, sleeplock_unit().exists());
         // the VM: only its own qemu (checked by command line) counts
         let vm = found[2].filter(|pid| {
-            std::fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|c| String::from_utf8_lossy(&c).contains("guest=win11"))
+            std::fs::read(format!("/proc/{pid}/cmdline"))
+                .is_ok_and(|c| String::from_utf8_lossy(&c).contains("guest=win11"))
         });
         self.vm_pid.set(vm);
     }
@@ -267,17 +360,27 @@ impl Inner {
         let w = Rc::downgrade(self);
         util::bg(
             || {
-                let o = util::run(&["pactl", "-f", "json", "list", "source-outputs"], Duration::from_secs(2))?;
+                let o = util::run(
+                    &["pactl", "-f", "json", "list", "source-outputs"],
+                    Duration::from_secs(2),
+                )?;
                 let v: serde_json::Value = serde_json::from_str(&o.stdout).ok()?;
                 let mut apps: Vec<String> = v
                     .as_array()?
                     .iter()
                     .filter(|s| s["corked"].as_bool() != Some(true))
                     // monitors of an output (visualisers, recorders of desktop audio) are not the mic
-                    .filter(|s| !s["source"].as_str().is_some_and(|x| x.ends_with(".monitor")))
+                    .filter(|s| {
+                        !s["source"]
+                            .as_str()
+                            .is_some_and(|x| x.ends_with(".monitor"))
+                    })
                     .filter_map(|s| {
                         let p = &s["properties"];
-                        p["application.name"].as_str().or(p["application.process.binary"].as_str()).map(str::to_string)
+                        p["application.name"]
+                            .as_str()
+                            .or(p["application.process.binary"].as_str())
+                            .map(str::to_string)
                     })
                     .collect();
                 apps.sort();
@@ -300,13 +403,24 @@ impl Inner {
         util::bg(
             || {
                 let mut apps = Vec::new();
-                let Ok(rd) = std::fs::read_dir("/proc") else { return apps };
+                let Ok(rd) = std::fs::read_dir("/proc") else {
+                    return apps;
+                };
                 for e in rd.flatten() {
-                    if !e.file_name().to_str().is_some_and(|s| s.bytes().all(|b| b.is_ascii_digit())) {
+                    if !e
+                        .file_name()
+                        .to_str()
+                        .is_some_and(|s| s.bytes().all(|b| b.is_ascii_digit()))
+                    {
                         continue;
                     }
-                    let Ok(fds) = std::fs::read_dir(e.path().join("fd")) else { continue };
-                    let uses = fds.flatten().any(|fd| std::fs::read_link(fd.path()).is_ok_and(|t| t.to_string_lossy().starts_with("/dev/video")));
+                    let Ok(fds) = std::fs::read_dir(e.path().join("fd")) else {
+                        continue;
+                    };
+                    let uses = fds.flatten().any(|fd| {
+                        std::fs::read_link(fd.path())
+                            .is_ok_and(|t| t.to_string_lossy().starts_with("/dev/video"))
+                    });
                     if uses {
                         if let Some(c) = util::read_trim(e.path().join("comm")) {
                             apps.push(c);
@@ -316,7 +430,9 @@ impl Inner {
                 apps.sort();
                 apps.dedup();
                 // pipewire/wireplumber hold the devices open all the time
-                apps.retain(|a| !matches!(a.as_str(), "pipewire" | "wireplumber" | ".pipewire-wrap"));
+                apps.retain(|a| {
+                    !matches!(a.as_str(), "pipewire" | "wireplumber" | ".pipewire-wrap")
+                });
                 apps
             },
             move |apps| {
@@ -336,8 +452,12 @@ impl Inner {
             return;
         };
         let stat = util::read(format!("/proc/{pid}/stat")).unwrap_or_default();
-        let f: Vec<&str> = stat.rsplit_once(')').map(|(_, r)| r.split_whitespace().collect()).unwrap_or_default();
-        let ticks = f.get(11).and_then(|x| x.parse::<u64>().ok()).unwrap_or(0) + f.get(12).and_then(|x| x.parse::<u64>().ok()).unwrap_or(0);
+        let f: Vec<&str> = stat
+            .rsplit_once(')')
+            .map(|(_, r)| r.split_whitespace().collect())
+            .unwrap_or_default();
+        let ticks = f.get(11).and_then(|x| x.parse::<u64>().ok()).unwrap_or(0)
+            + f.get(12).and_then(|x| x.parse::<u64>().ok()).unwrap_or(0);
         let hz = 100.0;
         let now = util::now();
         let mut st = self.win_state.borrow_mut();
@@ -357,17 +477,33 @@ impl Inner {
             st.since = std::fs::metadata(format!("/proc/{pid}"))
                 .ok()
                 .and_then(|m| m.modified().ok())
-                .map(|t| util::local(t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0), "%H:%M"))
+                .map(|t| {
+                    util::local(
+                        t.duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs_f64())
+                            .unwrap_or(0.0),
+                        "%H:%M",
+                    )
+                })
                 .unwrap_or_default();
         }
         st.input_idle = std::fs::metadata(WIN_IDLE_FILE)
             .ok()
-            .filter(|m| m.modified().ok().and_then(|t| t.elapsed().ok()).is_some_and(|e| e.as_secs() < 90))
+            .filter(|m| {
+                m.modified()
+                    .ok()
+                    .and_then(|t| t.elapsed().ok())
+                    .is_some_and(|e| e.as_secs() < 90)
+            })
             .and_then(|_| util::read(WIN_IDLE_FILE))
             .map(|s| s.chars().filter(|c| c.is_ascii_digit()).collect::<String>())
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
-        st.cpu_quiet = if st.low_since > 0.0 { (now - st.low_since) as u64 } else { 0 };
+        st.cpu_quiet = if st.low_since > 0.0 {
+            (now - st.low_since) as u64
+        } else {
+            0
+        };
         st.idle = st.input_idle >= WIN_LIMIT && st.cpu_quiet >= WIN_LIMIT;
         let idle = st.idle;
         drop(st);
@@ -386,14 +522,39 @@ impl Inner {
         let st = self.win_state.borrow();
         let s = ui::sheet();
         let detail = if st.idle {
-            format!("{}{}", ui::colored("idle", &self.theme.color1), if st.since.is_empty() { String::new() } else { format!(", on since {}", st.since) })
+            format!(
+                "{}{}",
+                ui::colored("idle", &self.theme.color1),
+                if st.since.is_empty() {
+                    String::new()
+                } else {
+                    format!(", on since {}", st.since)
+                }
+            )
         } else {
-            format!("running{}", if st.since.is_empty() { String::new() } else { format!(" since {}", st.since) })
+            format!(
+                "running{}",
+                if st.since.is_empty() {
+                    String::new()
+                } else {
+                    format!(" since {}", st.since)
+                }
+            )
         };
         s.append(&ui::head("windows 11", &detail).0);
         s.append(&ui::tsection("idle"));
-        s.append(&ui::tkv("input", &format!("{} min {}", st.input_idle / 60, ui::dim("without input"))));
-        s.append(&ui::tkv("cpu", &format!("{} min {}", st.cpu_quiet / 60, ui::dim("under 60% of a core"))));
+        s.append(&ui::tkv(
+            "input",
+            &format!("{} min {}", st.input_idle / 60, ui::dim("without input")),
+        ));
+        s.append(&ui::tkv(
+            "cpu",
+            &format!(
+                "{} min {}",
+                st.cpu_quiet / 60,
+                ui::dim("under 60% of a core")
+            ),
+        ));
         s.append(&ui::text("turns red at 30 min for both", &["dim"]));
         s.append(&ui::thint("click open  ·  right shut down"));
         s.upcast()
@@ -517,8 +678,12 @@ impl PInner {
 
     fn panel(self: &Rc<Self>, p: &Panel) -> gtk::Widget {
         p.set_width(300);
-        let card = Card::new("power profile", if self.asus { "asusctl" } else { "platform" });
-        let choices = util::read_trim("/sys/firmware/acpi/platform_profile_choices").unwrap_or_else(|| "quiet balanced performance".into());
+        let card = Card::new(
+            "power profile",
+            if self.asus { "asusctl" } else { "platform" },
+        );
+        let choices = util::read_trim("/sys/firmware/acpi/platform_profile_choices")
+            .unwrap_or_else(|| "quiet balanced performance".into());
         let cur = self.current.borrow().clone();
         let rows = ui::vbox(0, &[]);
         for c in choices.split_whitespace() {
@@ -541,19 +706,34 @@ impl PInner {
             // what asusd really does on plug/unplug (its own config, not `asusctl profile get`)
             let ron = util::read("/etc/asusd/asusd.ron").unwrap_or_default();
             let field = |k: &str| {
-                ron.lines().find_map(|l| l.trim().strip_prefix(&format!("{k}:")).map(|v| v.trim().trim_end_matches(',').to_lowercase()))
+                ron.lines().find_map(|l| {
+                    l.trim()
+                        .strip_prefix(&format!("{k}:"))
+                        .map(|v| v.trim().trim_end_matches(',').to_lowercase())
+                })
             };
             card.body.append(&ui::section("when power changes"));
             for (label, flag, prof, cli) in [
-                ("charger", "change_platform_profile_on_ac", "platform_profile_on_ac", "-a"),
-                ("battery", "change_platform_profile_on_battery", "platform_profile_on_battery", "-b"),
+                (
+                    "charger",
+                    "change_platform_profile_on_ac",
+                    "platform_profile_on_ac",
+                    "-a",
+                ),
+                (
+                    "battery",
+                    "change_platform_profile_on_battery",
+                    "platform_profile_on_battery",
+                    "-b",
+                ),
             ] {
                 let switches = field(flag).as_deref() == Some("true");
                 let target = field(prof).unwrap_or_default();
                 let row = ui::hbox(0, &["kv"]);
                 row.append(&ui::text(label, &["k"]));
                 if switches {
-                    let opts: Vec<(&str, &str)> = choices.split_whitespace().map(|c| (c, c)).collect();
+                    let opts: Vec<(&str, &str)> =
+                        choices.split_whitespace().map(|c| (c, c)).collect();
                     let cli = cli.to_string();
                     let seg = ui::segmented(&opts, &target, move |p| {
                         let mut name = p.to_string();

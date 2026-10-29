@@ -76,7 +76,11 @@ pub fn load() -> Option<Rc<Runtime>> {
         files.push(dir.join("init.lua"));
     }
     if let Ok(rd) = std::fs::read_dir(dir.join("plugins")) {
-        let mut p: Vec<_> = rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "lua")).collect();
+        let mut p: Vec<_> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "lua"))
+            .collect();
         p.sort();
         files.extend(p);
     }
@@ -88,10 +92,18 @@ pub fn load() -> Option<Rc<Runtime>> {
     if let Err(e) = install(&lua) {
         errors.push(format!("lua: {}", err(e)));
     }
-    let rt = Rc::new(Runtime { lua, modules: RefCell::default(), live: RefCell::default(), errors: RefCell::default() });
+    let rt = Rc::new(Runtime {
+        lua,
+        modules: RefCell::default(),
+        live: RefCell::default(),
+        errors: RefCell::default(),
+    });
     RT.with(|r| *r.borrow_mut() = Rc::downgrade(&rt));
     for f in files {
-        let name = f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let name = f
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
         match std::fs::read_to_string(&f) {
             Ok(code) => {
                 if let Err(e) = rt.lua.load(&code).set_name(&name).exec() {
@@ -156,19 +168,33 @@ fn install(lua: &Lua) -> mlua::Result<()> {
             Ok(())
         })?,
     )?;
-    bar.set("spawn", lua.create_function(|_, cmd: String| Ok(util::spawn_sh(&cmd)))?)?;
-    bar.set("read", lua.create_function(|_, p: String| Ok(util::read(util::expand(&p))))?)?;
+    bar.set(
+        "spawn",
+        lua.create_function(|_, cmd: String| Ok(util::spawn_sh(&cmd)))?,
+    )?;
+    bar.set(
+        "read",
+        lua.create_function(|_, p: String| Ok(util::read(util::expand(&p))))?,
+    )?;
     bar.set(
         "json",
-        lua.create_function(|lua, t: String| match serde_json::from_str::<serde_json::Value>(&t) {
-            Ok(v) => lua.to_value(&v),
-            Err(_) => Ok(Value::Nil),
+        lua.create_function(|lua, t: String| {
+            match serde_json::from_str::<serde_json::Value>(&t) {
+                Ok(v) => lua.to_value(&v),
+                Err(_) => Ok(Value::Nil),
+            }
         })?,
     )?;
     bar.set(
         "notify",
         lua.create_function(|_, (t, b): (String, Option<String>)| {
-            util::spawn(&["notify-send", "-a", "vector-bar", &t, &b.unwrap_or_default()]);
+            util::spawn(&[
+                "notify-send",
+                "-a",
+                "vector-bar",
+                &t,
+                &b.unwrap_or_default(),
+            ]);
             Ok(())
         })?,
     )?;
@@ -176,7 +202,13 @@ fn install(lua: &Lua) -> mlua::Result<()> {
         "refresh",
         lua.create_function(|_, name: String| {
             if let Some(rt) = rt() {
-                let live: Vec<_> = rt.live.borrow().iter().filter(|(n, _)| *n == name).filter_map(|(_, w)| w.upgrade()).collect();
+                let live: Vec<_> = rt
+                    .live
+                    .borrow()
+                    .iter()
+                    .filter(|(n, _)| *n == name)
+                    .filter_map(|(_, w)| w.upgrade())
+                    .collect();
                 glib::idle_add_local_once(move || {
                     for i in live {
                         i.update();
@@ -209,7 +241,9 @@ impl Runtime {
             changed: Notify::default(),
             rt: self.clone(),
         });
-        self.live.borrow_mut().push((name.to_string(), Rc::downgrade(&inner)));
+        self.live
+            .borrow_mut()
+            .push((name.to_string(), Rc::downgrade(&inner)));
         // first result first: it may carry a panel that wire() hooks up
         inner.update();
         inner.wire();
@@ -251,7 +285,11 @@ impl Inner {
     }
 
     fn call_action(&self, action: &str) {
-        let f = self.spec.get::<Table>("actions").ok().and_then(|t| t.get::<Function>(action).ok());
+        let f = self
+            .spec
+            .get::<Table>("actions")
+            .ok()
+            .and_then(|t| t.get::<Function>(action).ok());
         match f {
             Some(f) => {
                 if let Err(e) = f.call::<()>(()) {
@@ -317,7 +355,9 @@ impl Inner {
         match self.spec.get::<Value>("panel") {
             Ok(Value::Function(f)) => match f.call::<Value>(()) {
                 Ok(v) => self.rt.lua.from_value(v).unwrap_or_default(),
-                Err(e) => serde_json::json!({"title": self.name, "items": [{"text": err(e), "class": "crit"}]}),
+                Err(e) => {
+                    serde_json::json!({"title": self.name, "items": [{"text": err(e), "class": "crit"}]})
+                }
             },
             _ => self.last.borrow()["panel"].clone(),
         }
@@ -340,8 +380,13 @@ impl Inner {
     }
 
     fn update(self: &Rc<Self>) {
-        let Ok(f) = self.spec.get::<Function>("update") else { return };
-        match f.call::<Value>(()).and_then(|v| self.rt.lua.from_value::<serde_json::Value>(v)) {
+        let Ok(f) = self.spec.get::<Function>("update") else {
+            return;
+        };
+        match f
+            .call::<Value>(())
+            .and_then(|v| self.rt.lua.from_value::<serde_json::Value>(v))
+        {
             Ok(v) => {
                 let text = match &v {
                     serde_json::Value::String(s) => s.clone(),
@@ -350,7 +395,8 @@ impl Inner {
                 self.slot.set_markup(&text);
                 let cls = v["class"].as_str().unwrap_or("");
                 self.slot.set_classes(&[cls]);
-                self.slot.set_visible(v["visible"].as_bool().unwrap_or(!text.is_empty()));
+                self.slot
+                    .set_visible(v["visible"].as_bool().unwrap_or(!text.is_empty()));
                 *self.last.borrow_mut() = v;
                 self.slot.bump();
                 self.changed.emit();

@@ -23,7 +23,11 @@ pub struct Window(Rc<Inner>, #[allow(dead_code)] hypr::Events);
 impl Window {
     pub fn new(ctx: &Ctx) -> Window {
         let o = ctx.opts("window");
-        let inner = Rc::new(Inner { slot: ctx.slot("window", &["window-title"]), max: o.num("max_length", 60.0) as usize, current: RefCell::default() });
+        let inner = Rc::new(Inner {
+            slot: ctx.slot("window", &["window-title"]),
+            max: o.num("max_length", 60.0) as usize,
+            current: RefCell::default(),
+        });
         inner.slot.set_visible(false);
         inner.slot.on_middle(|| hypr::dispatch("killactive"));
         let w = Rc::downgrade(&inner);
@@ -70,7 +74,11 @@ impl TapWrap for gtk::Label {
 impl Inner {
     fn set(&self, class: &str, title: &str) {
         *self.current.borrow_mut() = (class.to_string(), title.to_string());
-        let t = if title.chars().count() > self.max { title.chars().take(self.max).collect::<String>() + "…" } else { title.to_string() };
+        let t = if title.chars().count() > self.max {
+            title.chars().take(self.max).collect::<String>() + "…"
+        } else {
+            title.to_string()
+        };
         self.slot.set_markup(&util::esc(&t));
         self.slot.set_visible(!t.is_empty());
         self.slot.bump();
@@ -79,7 +87,14 @@ impl Inner {
     fn query(self: &Rc<Self>) {
         let w = Rc::downgrade(self);
         util::bg(
-            || hypr::json("activewindow").map(|v| (v["class"].as_str().unwrap_or("").to_string(), v["title"].as_str().unwrap_or("").to_string())),
+            || {
+                hypr::json("activewindow").map(|v| {
+                    (
+                        v["class"].as_str().unwrap_or("").to_string(),
+                        v["title"].as_str().unwrap_or("").to_string(),
+                    )
+                })
+            },
             move |r| {
                 if let Some(i) = w.upgrade() {
                     let (c, t) = r.unwrap_or_default();

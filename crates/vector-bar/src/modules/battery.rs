@@ -46,7 +46,9 @@ impl Bat {
         Bat {
             present: dev.join("capacity").exists(),
             capacity: n("capacity").unwrap_or(0),
-            status: util::read_trim(dev.join("status")).unwrap_or_default().to_lowercase(),
+            status: util::read_trim(dev.join("status"))
+                .unwrap_or_default()
+                .to_lowercase(),
             watts: n("power_now").unwrap_or(0) as f64 / 1e6,
             energy_now: n("energy_now").unwrap_or(0) as f64 / 1e6,
             energy_full: n("energy_full").unwrap_or(0) as f64 / 1e6,
@@ -75,7 +77,11 @@ impl Bat {
 
 fn hm(h: f64) -> String {
     let m = (h * 60.0).round() as i64;
-    if m < 60 { format!("{m}m") } else { format!("{}h {:02}m", m / 60, m % 60) }
+    if m < 60 {
+        format!("{m}m")
+    } else {
+        format!("{}h {:02}m", m / 60, m % 60)
+    }
 }
 
 struct Inner {
@@ -105,7 +111,10 @@ impl Battery {
             theme: ctx.theme.clone(),
             notified: Cell::new(101),
         });
-        let right = o.str("on_right", "notify-send -u low \"$(omarchy-battery-status)\"");
+        let right = o.str(
+            "on_right",
+            "notify-send -u low \"$(omarchy-battery-status)\"",
+        );
         inner.slot.on_right(move || util::spawn_sh(&right));
         let w = Rc::downgrade(&inner);
         inner.slot.tooltip(move || w.upgrade().map(|i| i.tooltip()));
@@ -130,7 +139,8 @@ impl Inner {
         self.slot.set_visible(true);
         let idx = ((b.capacity.clamp(0, 100) as usize) / 10).min(9);
         let charging = b.status == "charging";
-        let full = b.status == "full" || (b.ac && b.capacity >= b.limit.unwrap_or(100) - 1 && !charging);
+        let full =
+            b.status == "full" || (b.ac && b.capacity >= b.limit.unwrap_or(100) - 1 && !charging);
         let text = if full {
             "󰂅".to_string()
         } else if charging {
@@ -155,10 +165,21 @@ impl Inner {
             for lvl in [self.warn, self.crit] {
                 if b.capacity <= lvl && self.notified.get() > lvl {
                     self.notified.set(lvl);
-                    let urgency = if lvl == self.crit { "critical" } else { "normal" };
+                    let urgency = if lvl == self.crit {
+                        "critical"
+                    } else {
+                        "normal"
+                    };
                     util::spawn(&[
-                        "notify-send", "-u", urgency, "-a", "vector-bar", "-i", "battery-low",
-                        "Battery low", &format!("{}% left", b.capacity),
+                        "notify-send",
+                        "-u",
+                        urgency,
+                        "-a",
+                        "vector-bar",
+                        "-i",
+                        "battery-low",
+                        "Battery low",
+                        &format!("{}% left", b.capacity),
                     ]);
                 }
             }
@@ -174,18 +195,48 @@ impl Inner {
     fn tooltip(&self) -> gtk::Widget {
         let b = self.bat.borrow();
         let s = ui::sheet();
-        let state = if b.ac && b.status != "charging" { "plugged in".to_string() } else { b.status.clone() };
+        let state = if b.ac && b.status != "charging" {
+            "plugged in".to_string()
+        } else {
+            b.status.clone()
+        };
         s.append(&ui::head("battery", &state).0);
-        let cls = if b.status == "discharging" && b.capacity <= self.crit { "crit" } else if b.status == "discharging" && b.capacity <= self.warn { "warn" } else { "" };
+        let cls = if b.status == "discharging" && b.capacity <= self.crit {
+            "crit"
+        } else if b.status == "discharging" && b.capacity <= self.warn {
+            "warn"
+        } else {
+            ""
+        };
         let when = match b.hours() {
             Some(h) if b.status == "charging" => format!("full in {}", hm(h)),
             Some(h) => format!("{} left", hm(h)),
             None => String::new(),
         };
-        s.append(&ui::tmeter("level", b.capacity as f64 / 100.0, &format!("{}%", b.capacity), &when, cls));
-        s.append(&ui::tkv(if b.status == "charging" { "input" } else { "draw" }, &format!("{:.1} W", b.watts)));
+        s.append(&ui::tmeter(
+            "level",
+            b.capacity as f64 / 100.0,
+            &format!("{}%", b.capacity),
+            &when,
+            cls,
+        ));
+        s.append(&ui::tkv(
+            if b.status == "charging" {
+                "input"
+            } else {
+                "draw"
+            },
+            &format!("{:.1} W", b.watts),
+        ));
         if b.energy_design > 0.0 {
-            s.append(&ui::tkv("health", &format!("{:.0}%  {}", b.energy_full / b.energy_design * 100.0, ui::dim(&format!("· {} cycles", b.cycles)))));
+            s.append(&ui::tkv(
+                "health",
+                &format!(
+                    "{:.0}%  {}",
+                    b.energy_full / b.energy_design * 100.0,
+                    ui::dim(&format!("· {} cycles", b.cycles))
+                ),
+            ));
         }
         if let Some(l) = b.limit.filter(|l| *l < 100) {
             s.append(&ui::tkv("limit", &format!("{l}%")));
@@ -230,23 +281,57 @@ fn power_panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
         move || {
             let Some(i) = i.upgrade() else { return };
             let b = i.bat.borrow().clone();
-            detail.set_markup(&format!("{}% · {}", b.capacity, if b.ac && b.status != "charging" { "plugged in" } else { &b.status }));
+            detail.set_markup(&format!(
+                "{}% · {}",
+                b.capacity,
+                if b.ac && b.status != "charging" {
+                    "plugged in"
+                } else {
+                    &b.status
+                }
+            ));
             ui::clear(&level);
-            let cls = if b.capacity <= i.crit { "crit" } else if b.capacity <= i.warn { "warn" } else { "" };
-            level.append(&ui::meter_row("level", b.capacity as f64 / 100.0, &format!("{}%", b.capacity), "", cls));
+            let cls = if b.capacity <= i.crit {
+                "crit"
+            } else if b.capacity <= i.warn {
+                "warn"
+            } else {
+                ""
+            };
+            level.append(&ui::meter_row(
+                "level",
+                b.capacity as f64 / 100.0,
+                &format!("{}%", b.capacity),
+                "",
+                cls,
+            ));
             ui::clear(&details);
             if let Some(h) = b.hours() {
-                let (k, v) = if b.status == "charging" { ("full in", hm(h)) } else { ("left", hm(h)) };
+                let (k, v) = if b.status == "charging" {
+                    ("full in", hm(h))
+                } else {
+                    ("left", hm(h))
+                };
                 details.append(&ui::kv(k, &v).0);
             }
-            let rate = if b.status == "charging" { "input" } else { "draw" };
+            let rate = if b.status == "charging" {
+                "input"
+            } else {
+                "draw"
+            };
             details.append(&ui::kv(rate, &format!("{:.1} W", b.watts)).0);
             if b.energy_design > 0.0 {
                 let health = b.energy_full / b.energy_design * 100.0;
                 details.append(
                     &ui::kv(
                         "health",
-                        &format!("{health:.0}%  {}", ui::dim(&format!("· {:.0} of {:.0} Wh · {} cycles", b.energy_full, b.energy_design, b.cycles))),
+                        &format!(
+                            "{health:.0}%  {}",
+                            ui::dim(&format!(
+                                "· {:.0} of {:.0} Wh · {} cycles",
+                                b.energy_full, b.energy_design, b.cycles
+                            ))
+                        ),
                     )
                     .0,
                 );
@@ -260,8 +345,15 @@ fn power_panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
     // charge limit (ASUS & co: charge_control_end_threshold, needs write access)
     if let Some(limit) = i.bat.borrow().limit {
         let lim_path = i.dev.join("charge_control_end_threshold");
-        let writable = std::fs::OpenOptions::new().write(true).open(&lim_path).is_ok();
-        let shown = if writable { String::new() } else { format!("{limit}%") };
+        let writable = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&lim_path)
+            .is_ok();
+        let shown = if writable {
+            String::new()
+        } else {
+            format!("{limit}%")
+        };
         let (row, _) = ui::kv("limit", &shown);
         if writable {
             let opts = [("60", "60%"), ("80", "80%"), ("100", "100%")];
@@ -270,7 +362,6 @@ fn power_panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
             });
             row.append(&seg);
         } else {
-
         }
         body.append(&row);
     }
@@ -279,8 +370,14 @@ fn power_panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
     let profile = util::sh_out("powerprofilesctl get", Duration::from_millis(800));
     if let Some(cur) = profile {
         body.append(&ui::section("power mode"));
-        let opts = [("power-saver", "saver"), ("balanced", "balanced"), ("performance", "performance")];
-        let seg = ui::segmented(&opts, &cur, |v| util::spawn(&["powerprofilesctl", "set", v]));
+        let opts = [
+            ("power-saver", "saver"),
+            ("balanced", "balanced"),
+            ("performance", "performance"),
+        ];
+        let seg = ui::segmented(&opts, &cur, |v| {
+            util::spawn(&["powerprofilesctl", "set", v])
+        });
         seg.add_css_class("chips");
         body.append(&seg);
     }
@@ -288,11 +385,27 @@ fn power_panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
     // session
     body.append(&ui::section("session"));
     let actions: Vec<(&str, &str, &str, bool)> = {
-        let mut v = vec![("󰌾", "lock", "omarchy-system-lock", false), ("󱄄", "screensaver", "omarchy-launch-screensaver force", false)];
-        if !std::path::Path::new(&util::home().join(".local/state/omarchy/toggles/suspend-off")).exists() {
+        let mut v = vec![
+            ("󰌾", "lock", "omarchy-system-lock", false),
+            (
+                "󱄄",
+                "screensaver",
+                "omarchy-launch-screensaver force",
+                false,
+            ),
+        ];
+        if !std::path::Path::new(&util::home().join(".local/state/omarchy/toggles/suspend-off"))
+            .exists()
+        {
             v.push(("󰒲", "suspend", "systemctl suspend", false));
         }
-        if util::sh_out("omarchy-hibernation-available && echo y", Duration::from_millis(800)).as_deref() == Some("y") {
+        if util::sh_out(
+            "omarchy-hibernation-available && echo y",
+            Duration::from_millis(800),
+        )
+        .as_deref()
+            == Some("y")
+        {
             v.push(("󰤁", "hibernate", "systemctl hibernate", true));
         }
         v.push(("󰍃", "log out", "omarchy-system-logout", true));

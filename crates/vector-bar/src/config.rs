@@ -93,8 +93,21 @@ impl Default for Config {
             left: v(&["mode", "workspaces", "agents"]),
             center: v(&["media", "indicators"]),
             right: v(&[
-                "tray", "homelab", "phone", "earbuds", "sony", "ai", "clipboard", "notifications",
-                "bluetooth", "vpn", "network", "profile", "sysmon", "battery", "clock",
+                "tray",
+                "homelab",
+                "phone",
+                "earbuds",
+                "sony",
+                "ai",
+                "clipboard",
+                "notifications",
+                "bluetooth",
+                "vpn",
+                "network",
+                "profile",
+                "sysmon",
+                "battery",
+                "clock",
             ]),
             blocks: v(&["mode", "clock"]),
             segments: v(&["workspaces", "profile", "sysmon", "battery"]),
@@ -137,10 +150,17 @@ pub struct Opts<'a>(Option<&'a toml::Table>);
 
 impl Opts<'_> {
     pub fn str(&self, key: &str, default: &str) -> String {
-        self.0.and_then(|t| t.get(key)).and_then(|v| v.as_str()).unwrap_or(default).to_string()
+        self.0
+            .and_then(|t| t.get(key))
+            .and_then(|v| v.as_str())
+            .unwrap_or(default)
+            .to_string()
     }
     pub fn opt_str(&self, key: &str) -> Option<String> {
-        self.0.and_then(|t| t.get(key)).and_then(|v| v.as_str()).map(str::to_string)
+        self.0
+            .and_then(|t| t.get(key))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
     }
     pub fn num(&self, key: &str, default: f64) -> f64 {
         self.0
@@ -149,10 +169,17 @@ impl Opts<'_> {
             .unwrap_or(default)
     }
     pub fn bool(&self, key: &str, default: bool) -> bool {
-        self.0.and_then(|t| t.get(key)).and_then(|v| v.as_bool()).unwrap_or(default)
+        self.0
+            .and_then(|t| t.get(key))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(default)
     }
     pub fn list(&self, key: &str) -> Option<Vec<String>> {
         let a = self.0?.get(key)?.as_array()?;
-        Some(a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        Some(
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect(),
+        )
     }
 }
