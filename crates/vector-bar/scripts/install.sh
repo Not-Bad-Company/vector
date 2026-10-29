@@ -3,8 +3,9 @@
 # systemd user unit, then restart it if it runs.
 set -eu
 cd "$(dirname "$0")/.."
-cargo build --release
-install -Dm755 target/release/vector-bar "$HOME/.local/bin/vector-bar.new"
+cargo build --release -p vector-bar
+target="$(cargo metadata --format-version 1 --no-deps | jq -r .target_directory)"
+install -Dm755 "$target/release/vector-bar" "$HOME/.local/bin/vector-bar.new"
 mv -f "$HOME/.local/bin/vector-bar.new" "$HOME/.local/bin/vector-bar"
 install -Dm644 data/vector-bar.service "$HOME/.config/systemd/user/vector-bar.service"
 systemctl --user daemon-reload
