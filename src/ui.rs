@@ -221,12 +221,22 @@ pub fn pointer(w: &impl IsA<gtk::Widget>) {
 
 /// Makes any widget clickable (primary button release).
 pub fn on_click(w: &impl IsA<gtk::Widget>, f: impl Fn() + 'static) {
+    let f = Rc::new(f);
     let g = gtk::GestureClick::new();
     g.set_button(gdk::BUTTON_PRIMARY);
+    let f2 = f.clone();
     g.connect_released(move |g, _, _, _| {
         g.set_state(gtk::EventSequenceState::Claimed);
-        f()
+        f2()
     });
+    // bar widgets (workspaces) must also react when the panel overlay caught the click
+    if w.root().is_none_or(|r| r.has_css_class("vbar")) {
+        crate::slot::register_click(w, Rc::new(move |b, _| {
+            if b == gdk::BUTTON_PRIMARY {
+                f()
+            }
+        }));
+    }
     w.add_controller(g);
     w.add_css_class("clickable");
     pointer(w);

@@ -103,7 +103,9 @@ fn open(name: &str, build: PanelFn, anchor: Option<gtk::Widget>, center: bool) {
     for e in [Edge::Top, Edge::Bottom, Edge::Left, Edge::Right] {
         win.set_anchor(e, true);
     }
-    win.set_exclusive_zone(0); // sits below the bar's exclusive zone
+    // covers the bar too: while a panel holds the keyboard Hyprland sends the
+    // pointer only here, so clicks on the bar row are passed on to the bar
+    win.set_exclusive_zone(-1);
     // follow the mode colour like the bar
     let apply = {
         let w = win.downgrade();
@@ -172,16 +174,31 @@ fn open(name: &str, build: PanelFn, anchor: Option<gtk::Widget>, center: bool) {
     card.set_halign(gtk::Align::Start);
     card.set_valign(gtk::Align::Start);
     card.set_margin_start(x);
-    card.set_margin_top(GAP + top_offset());
+    let bar_h = anchor.as_ref().and_then(|a| a.root()).map(|r| r.height()).filter(|h| *h > 0).unwrap_or(26);
+    card.set_margin_top(bar_h + GAP + top_offset());
     fixed.append(&card);
     let outside = gtk::GestureClick::new();
+    outside.set_button(0);
     let card_w = card.downgrade();
     let fixed_w = fixed.downgrade();
-    outside.connect_released(move |_, _, px, py| {
+    let bar_root = anchor.as_ref().and_then(|a| a.root()).map(|r| r.upcast::<gtk::Widget>().downgrade());
+    outside.connect_released(move |g, _, px, py| {
         if let (Some(c), Some(f)) = (card_w.upgrade(), fixed_w.upgrade()) {
             if let Some(b) = c.compute_bounds(&f) {
                 if b.contains_point(&gtk::graphene::Point::new(px as f32, py as f32)) {
                     return;
+                }
+            }
+        }
+        let button = g.current_button();
+        // on the bar row: let the bar item there handle it (it closes/switches the panel)
+        let target_y = py - top_offset() as f64;
+        if target_y >= 0.0 && (target_y as i32) < bar_h {
+            if let Some(bar) = bar_root.as_ref().and_then(|w| w.upgrade()) {
+                if let Some(hit) = bar.pick(px, target_y, gtk::PickFlags::DEFAULT) {
+                    if crate::slot::click_at(&hit, button) {
+                        return;
+                    }
                 }
             }
         }

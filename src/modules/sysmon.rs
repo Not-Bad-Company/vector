@@ -453,24 +453,24 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
 
     // cpu
     body.append(&ui::section("cpu").tap(|l| l.add_css_class("first")));
+    // one graph: the last few minutes of cpu, under its heading
+    let w = Rc::downgrade(i);
+    let g_cpu = spark(Rc::new(move || w.upgrade().map(|i| i.cpu_hist.borrow().iter().copied().collect()).unwrap_or_default()), 100.0, &t.accent, 40);
+    body.append(&ui::hbox(0, &["spark"]).tap(|b| {
+        b.set_margin_top(2);
+        b.set_margin_bottom(6);
+        b.append(&g_cpu);
+    }));
     let cpu_kv = ui::kv("now", "");
     body.append(&cpu_kv.0);
-    let w = Rc::downgrade(i);
-    let g_cpu = spark(Rc::new(move || w.upgrade().map(|i| i.cpu_hist.borrow().iter().copied().collect()).unwrap_or_default()), 100.0, &t.accent, 38);
-    body.append(&ui::hbox(0, &["spark"]).tap(|b| b.append(&g_cpu)));
     let temp_kv = ui::kv("temp", "");
     body.append(&temp_kv.0);
-    let w = Rc::downgrade(i);
-    let g_temp = spark(Rc::new(move || w.upgrade().map(|i| i.temp_hist.borrow().iter().copied().collect()).unwrap_or_default()), 100.0, &t.color3, 24);
-    body.append(&ui::hbox(0, &["spark"]).tap(|b| b.append(&g_temp)));
 
     // memory
     body.append(&ui::section("memory"));
     let mem_box = ui::vbox(0, &[]);
     body.append(&mem_box);
-    let w = Rc::downgrade(i);
-    let g_mem = spark(Rc::new(move || w.upgrade().map(|i| i.mem_hist.borrow().iter().copied().collect()).unwrap_or_default()), 100.0, &t.color6, 24);
-    body.append(&ui::hbox(0, &["spark"]).tap(|b| b.append(&g_mem)));
+
 
     // hardware
     body.append(&ui::section("hardware"));
@@ -488,7 +488,7 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
         let i = Rc::downgrade(i);
         let detail = card.detail.clone();
         let (cpu_v, temp_v) = (cpu_kv.1.clone(), temp_kv.1.clone());
-        let (g_cpu, g_temp, g_mem) = (g_cpu.clone(), g_temp.clone(), g_mem.clone());
+        let g_cpu = g_cpu.clone();
         let (mem_box, hw) = (mem_box.clone(), hw.clone());
         move || {
             let Some(i) = i.upgrade() else { return };
@@ -508,8 +508,6 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
             }
             hw.append(&ui::kv("power", &format!("{:.1} W {}", s.watts, ui::dim(&s.bat_status))).0);
             g_cpu.queue_draw();
-            g_temp.queue_draw();
-            g_mem.queue_draw();
         }
     };
     let fill = Rc::new(fill);

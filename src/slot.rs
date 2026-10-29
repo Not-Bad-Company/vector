@@ -41,8 +41,36 @@ impl Notify {
     }
 }
 
+type Clicker = Rc<dyn Fn(u32, &gtk::Widget)>;
+
 thread_local! {
     static LAYOUT: Notify = Notify::default();
+    /// every clickable bar widget, so a click on the bar row that the panel
+    /// overlay caught can be handed to it (see panel.rs)
+    static CLICKERS: RefCell<Vec<(glib::WeakRef<gtk::Widget>, Clicker)>> = RefCell::default();
+}
+
+/// Registers a click handler for `w` (button, widget).
+pub fn register_click(w: &impl IsA<gtk::Widget>, f: Clicker) {
+    let _ = CLICKERS.try_with(|c| {
+        let mut c = c.borrow_mut();
+        c.retain(|(w, _)| w.upgrade().is_some());
+        c.push((w.upcast_ref::<gtk::Widget>().downgrade(), f));
+    });
+}
+
+/// Runs the click handler of `w` or its nearest registered ancestor.
+pub fn click_at(w: &gtk::Widget, button: u32) -> bool {
+    let mut cur = Some(w.clone());
+    while let Some(x) = cur {
+        let f = CLICKERS.with(|c| c.borrow().iter().find(|(r, _)| r.upgrade().as_ref() == Some(&x)).map(|(_, f)| f.clone()));
+        if let Some(f) = f {
+            f(button, &x);
+            return true;
+        }
+        cur = x.parent();
+    }
+    false
 }
 
 /// Emitted when any slot is shown or hidden (the bar re-checks its dividers).
@@ -266,6 +294,8 @@ impl Slot {
             me.click(btn, anchor.as_ref());
         });
         b.add_controller(g);
+        let me = self.clone();
+        register_click(&b, Rc::new(move |btn, w| me.click(btn, Some(w))));
 
         // scrolling (touchpads send small deltas: accumulate to whole steps)
         let sc = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);

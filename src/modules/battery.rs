@@ -188,7 +188,7 @@ impl Inner {
             s.append(&ui::tkv("health", &format!("{:.0}%  {}", b.energy_full / b.energy_design * 100.0, ui::dim(&format!("· {} cycles", b.cycles)))));
         }
         if let Some(l) = b.limit.filter(|l| *l < 100) {
-            s.append(&ui::tkv("limit", &format!("{l}%  {}", ui::dim("· charging stops here"))));
+            s.append(&ui::tkv("limit", &format!("{l}%")));
         }
         if let Some(p) = util::read_trim("/sys/firmware/acpi/platform_profile") {
             s.append(&ui::tkv("profile", &p));
@@ -233,12 +233,12 @@ fn power_panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
             detail.set_markup(&format!("{}% · {}", b.capacity, if b.ac && b.status != "charging" { "plugged in" } else { &b.status }));
             ui::clear(&level);
             let cls = if b.capacity <= i.crit { "crit" } else if b.capacity <= i.warn { "warn" } else { "" };
-            let mut detail_txt = String::new();
-            if let Some(h) = b.hours() {
-                detail_txt = if b.status == "charging" { format!("full in {}", hm(h)) } else { format!("{} left", hm(h)) };
-            }
-            level.append(&ui::meter_row("level", b.capacity as f64 / 100.0, &format!("{}%", b.capacity), &detail_txt, cls));
+            level.append(&ui::meter_row("level", b.capacity as f64 / 100.0, &format!("{}%", b.capacity), "", cls));
             ui::clear(&details);
+            if let Some(h) = b.hours() {
+                let (k, v) = if b.status == "charging" { ("full in", hm(h)) } else { ("left", hm(h)) };
+                details.append(&ui::kv(k, &v).0);
+            }
             let rate = if b.status == "charging" { "input" } else { "draw" };
             details.append(&ui::kv(rate, &format!("{:.1} W", b.watts)).0);
             if b.energy_design > 0.0 {
@@ -261,7 +261,8 @@ fn power_panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
     if let Some(limit) = i.bat.borrow().limit {
         let lim_path = i.dev.join("charge_control_end_threshold");
         let writable = std::fs::OpenOptions::new().write(true).open(&lim_path).is_ok();
-        let (row, _) = ui::kv("limit", &format!("{limit}%{}", if writable { "" } else { "  " }));
+        let shown = if writable { String::new() } else { format!("{limit}%") };
+        let (row, _) = ui::kv("limit", &shown);
         if writable {
             let opts = [("60", "60%"), ("80", "80%"), ("100", "100%")];
             let seg = ui::segmented(&opts, &limit.to_string(), move |v| {
@@ -269,7 +270,7 @@ fn power_panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
             });
             row.append(&seg);
         } else {
-            row.append(&ui::label(&ui::dim("charge stops here"), &[]));
+
         }
         body.append(&row);
     }

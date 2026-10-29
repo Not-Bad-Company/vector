@@ -841,43 +841,46 @@ impl Inner {
             }
         }
         s.append(&ui::tsection("limits"));
+        // one row per account: the window that binds now (highest use)
         let grid = gtk::Grid::new();
         grid.set_column_spacing(10);
         grid.set_row_spacing(3);
         let mut row = 0;
-        let mut add = |name: &str, acc: &Account| {
+        let mut add = |name: &str, w: Option<&Window>, err: Option<&str>| {
             grid.attach(&ui::text(name, &["dim"]), 0, row, 1, 1);
-            let mut col = 1;
-            for w in acc.windows.iter().take(if acc.label == "antigravity" { 6 } else { 2 }) {
-                if col > 2 {
-                    // more than two windows (antigravity): continue on the next row
-                    row += 1;
-                    col = 1;
+            match w {
+                Some(w) => {
+                    let cls = ui::pct_class(w.pct);
+                    grid.attach(&ui::text(&w.name, &["dim"]), 1, row, 1, 1);
+                    let m = ui::meter(w.pct / 100.0, cls);
+                    m.set_size_request(80, -1);
+                    m.set_hexpand(false);
+                    grid.attach(&m, 2, row, 1, 1);
+                    grid.attach(&ui::text(&format!("{:.0}%", w.pct), &[cls]).tap(|l| l.set_xalign(1.0)), 3, row, 1, 1);
+                    let reset = w.reset.map(util::until).unwrap_or_default();
+                    grid.attach(&ui::text(&reset, &["dim"]), 4, row, 1, 1);
                 }
-                let cls = ui::pct_class(w.pct);
-                let cell = ui::hbox(6, &[]);
-                cell.append(&ui::text(&w.name, &["dim"]));
-                let m = ui::meter(w.pct / 100.0, cls);
-                m.set_size_request(54, -1);
-                m.set_hexpand(false);
-                cell.append(&m);
-                cell.append(&ui::text(&format!("{:.0}%", w.pct), &[cls]));
-                grid.attach(&cell, col, row, 1, 1);
-                col += 1;
-            }
-            if acc.windows.is_empty() {
-                grid.attach(&ui::text(acc.error.as_deref().unwrap_or("no data yet"), &["dim"]), 1, row, 2, 1);
+                None => grid.attach(&ui::text(err.unwrap_or("no data yet"), &["dim"]), 1, row, 4, 1),
             }
             row += 1;
         };
-        for c in &u.claude {
-            add(&c.label, c);
-        }
-        for c in &u.codex {
-            add(&c.label, c);
+        let worst = |ws: &[Window]| ws.iter().max_by(|a, b| a.pct.partial_cmp(&b.pct).unwrap_or(std::cmp::Ordering::Equal)).cloned();
+        for c in u.claude.iter().chain(u.codex.iter()) {
+            add(&c.label, worst(&c.windows).as_ref(), c.error.as_deref());
         }
         if let Some(g) = &u.agy {
-            add("agy", g);
+            // per model group: its own binding window
+            let mut groups: Vec<String> = Vec::new();
+            for w in &g.windows {
+                let grp = w.name.rsplit_once(' ').map(|x| x.0).unwrap_or(&w.name).to_string();
+                if !groups.contains(&grp) {
+                    groups.push(grp);
+                }
+            }
+            for grp in groups {
+                let ws: Vec<Window> = g.windows.iter().filter(|w| w.name.starts_with(&format!("{grp} "))).map(|w| Window { name: w.name.rsplit(' ').next().unwrap_or("").to_string(), ..w.clone() }).collect();
+                add(&grp, worst(&ws).as_ref(), g.error.as_deref());
+            }
         }
         s.append(&grid);
         s.append(&ui::thint("click overview  ·  middle refresh usage"));
