@@ -1,7 +1,9 @@
 //! The Start menu (SUPER tap, or a click on the bar's mode block), in the
-//! Vista layout: apps on the left (pinned, most used, all apps, and a search
-//! field that hands the query to Vector Space), places, recent files,
-//! settings and the system on the right, power along the bottom.
+//! Vista layout. Left: pinned and most used apps, with all apps and recent
+//! files as pages of the same pane, and the search along the bottom (typing
+//! hands the query to Vector Space, which has every mode). Right: you, your
+//! places, settings and system tiles, and power along the bottom.
+//! Keyboard: type to search, Down/Up to walk the rows, Enter opens, Escape closes.
 
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
@@ -15,9 +17,10 @@ use crate::apps::{self, App};
 use crate::util::{self, Usage};
 
 const PINS: &str = "start-pins.json";
-const LEFT_W: i32 = 360;
-const RIGHT_W: i32 = 300;
-const MOST_USED: usize = 7;
+const LEFT_W: i32 = 400;
+const RIGHT_W: i32 = 336;
+const MOST_USED: usize = 8;
+const TILE_COLS: u32 = 4;
 
 pub struct Start {
     win: gtk::ApplicationWindow,
@@ -27,6 +30,9 @@ pub struct Start {
     frequent: gtk::Box,
     all: gtk::Box,
     recent: gtk::Box,
+    nav: gtk::Button,
+    nav_label: gtk::Label,
+    nav_glyph: gtk::Label,
     apps: RefCell<Vec<App>>,
     armed: RefCell<Option<String>>,
     built: Cell<bool>,
@@ -76,7 +82,7 @@ fn build(app: &gtk::Application) -> Rc<Start> {
 
     let backdrop = gtk::Box::new(gtk::Orientation::Vertical, 0);
     backdrop.add_css_class("start-backdrop");
-    let card = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let card = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     card.add_css_class("card");
     card.add_css_class("start");
     card.set_halign(gtk::Align::Start);
@@ -86,60 +92,71 @@ fn build(app: &gtk::Application) -> Rc<Start> {
     backdrop.append(&card);
     win.set_child(Some(&backdrop));
 
-    let cols = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    card.append(&cols);
-
-    // left: apps
+    // ── left: apps ───────────────────────────────────────────────
     let left = gtk::Box::new(gtk::Orientation::Vertical, 0);
     left.add_css_class("start-left");
     left.set_size_request(LEFT_W, -1);
     let pinned = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let frequent = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let home = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    home.append(&section("pinned"));
     home.append(&pinned);
     home.append(&section("most used"));
     home.append(&frequent);
     let all = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    let all_scroll = gtk::ScrolledWindow::new();
-    all_scroll.set_hscrollbar_policy(gtk::PolicyType::Never);
-    all_scroll.set_child(Some(&all));
-    all_scroll.set_vexpand(true);
+    let recent = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let recent_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    recent_page.append(&section("recent files"));
+    recent_page.append(&recent);
     let pages = gtk::Stack::new();
     pages.set_transition_type(gtk::StackTransitionType::SlideLeftRight);
-    pages.set_transition_duration(140);
-    pages.add_named(&home, Some("home"));
-    pages.add_named(&all_scroll, Some("all"));
+    pages.set_transition_duration(160);
+    pages.add_named(&scrolled(&home), Some("home"));
+    pages.add_named(&scrolled(&all), Some("all"));
+    pages.add_named(&scrolled(&recent_page), Some("recent"));
     pages.set_vexpand(true);
     left.append(&pages);
-    let more = row(&glyph("\u{f003b}"), "all apps", "›");
-    more.add_css_class("start-more");
-    left.append(&more);
+
+    // all apps / back
+    let nav = gtk::Button::new();
+    nav.add_css_class("start-row");
+    nav.add_css_class("start-nav");
+    let nav_box = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    let nav_glyph = glyph("\u{f003b}");
+    let nav_label = gtk::Label::new(Some("all apps"));
+    nav_label.set_xalign(0.0);
+    nav_label.set_hexpand(true);
+    let nav_arrow = gtk::Label::new(Some("\u{f0142}"));
+    nav_arrow.add_css_class("start-meta");
+    nav_box.append(&nav_glyph);
+    nav_box.append(&nav_label);
+    nav_box.append(&nav_arrow);
+    nav.set_child(Some(&nav_box));
+    left.append(&nav);
+
+    // the search, along the bottom
+    let search = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    search.add_css_class("start-searchbar");
+    let sglyph = gtk::Label::new(Some("\u{f0349}"));
+    sglyph.add_css_class("start-sglyph");
     let entry = gtk::Entry::new();
     entry.add_css_class("start-search");
-    entry.set_placeholder_text(Some("search apps, files, = calc, > convert…"));
-    left.append(&entry);
-    cols.append(&left);
+    entry.set_hexpand(true);
+    entry.set_placeholder_text(Some("type to search"));
+    let hint = gtk::Label::new(Some("= calc  > convert  ; clip"));
+    hint.add_css_class("start-hint");
+    search.append(&sglyph);
+    search.append(&entry);
+    search.append(&hint);
+    left.append(&search);
+    card.append(&left);
 
-    // right: you, places, recent, settings, system
+    // ── right: you, places, tiles, power ─────────────────────────
     let right = gtk::Box::new(gtk::Orientation::Vertical, 0);
     right.add_css_class("start-right");
     right.set_size_request(RIGHT_W, -1);
     right.append(&user_block());
-    let recent = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    let right_rows = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    let rscroll = gtk::ScrolledWindow::new();
-    rscroll.set_hscrollbar_policy(gtk::PolicyType::Never);
-    rscroll.set_propagate_natural_height(true);
-    rscroll.set_child(Some(&right_rows));
-    rscroll.set_vexpand(true);
-    right.append(&rscroll);
-    cols.append(&right);
-
-    // power, along the bottom right
-    let power = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    power.add_css_class("start-power");
-    power.set_halign(gtk::Align::End);
-    card.append(&power);
+    card.append(&right);
 
     let s = Rc::new(Start {
         win,
@@ -149,29 +166,41 @@ fn build(app: &gtk::Application) -> Rc<Start> {
         frequent,
         all,
         recent,
+        nav,
+        nav_label,
+        nav_glyph,
         apps: RefCell::default(),
         armed: RefCell::default(),
         built: Cell::new(false),
     });
 
-    // places, recent, settings and system rows (static, built once)
-    right_rows.append(&section("places"));
-    for (glyph_, name, path) in places() {
+    right.append(&section("places"));
+    for (g, name, path) in places() {
         let p = path.clone();
-        right_rows.append(&s.button(&glyph(glyph_), &name, "", move || {
-            util::launch(&["vector-find", &p.to_string_lossy()])
-        }));
+        right.append(&s.button(&glyph(g), &name, "", move || util::launch(&["vector-find", &p.to_string_lossy()])));
     }
-    right_rows.append(&section("recent"));
-    right_rows.append(&s.recent);
-    right_rows.append(&section("settings"));
-    for (g, name, cmd) in SETTINGS {
-        right_rows.append(&s.button(&glyph(g), name, "", move || util::launch(&["sh", "-c", cmd])));
-    }
-    right_rows.append(&section("system"));
-    for (g, name, cmd) in SYSTEM {
-        right_rows.append(&s.button(&glyph(g), name, "", move || util::launch(&["sh", "-c", cmd])));
-    }
+    let w = Rc::downgrade(&s);
+    let recent_row = row(&glyph("\u{f02da}"), "recent files", "\u{f0142}");
+    recent_row.connect_clicked(move |_| {
+        if let Some(s) = w.upgrade() {
+            s.page("recent");
+        }
+    });
+    right.append(&recent_row);
+
+    right.append(&section("settings"));
+    right.append(&s.tiles(SETTINGS));
+    right.append(&section("system"));
+    right.append(&s.tiles(SYSTEM));
+
+    let spacer = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    spacer.set_vexpand(true);
+    right.append(&spacer);
+
+    // power, level with the search
+    let power = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    power.add_css_class("start-power");
+    power.set_homogeneous(true);
     for &(g, tip, cmd, confirm) in POWER {
         let b = gtk::Button::new();
         b.add_css_class("start-pow");
@@ -193,24 +222,17 @@ fn build(app: &gtk::Application) -> Rc<Start> {
         });
         power.append(&b);
     }
+    right.append(&power);
 
-    // all apps / back
     let w = Rc::downgrade(&s);
-    let lbl = more.last_child().and_downcast::<gtk::Label>();
-    let title = more.first_child().and_then(|c| c.next_sibling()).and_downcast::<gtk::Label>();
-    let click = gtk::GestureClick::new();
-    click.connect_released(move |_, _, _, _| {
-        let Some(s) = w.upgrade() else { return };
-        let to_all = s.pages.visible_child_name().as_deref() != Some("all");
-        s.pages.set_visible_child_name(if to_all { "all" } else { "home" });
-        if let (Some(t), Some(l)) = (&title, &lbl) {
-            t.set_text(if to_all { "back" } else { "all apps" });
-            l.set_text(if to_all { "‹" } else { "›" });
+    s.nav.connect_clicked(move |_| {
+        if let Some(s) = w.upgrade() {
+            let home = s.pages.visible_child_name().as_deref() == Some("home");
+            s.page(if home { "all" } else { "home" });
         }
     });
-    more.add_controller(click);
 
-    // typing searches: the query goes to Vector Space, which has every mode
+    // typing searches: the query goes to Vector Space
     let w = Rc::downgrade(&s);
     s.entry.connect_changed(move |e| {
         let text = e.text().to_string();
@@ -225,19 +247,31 @@ fn build(app: &gtk::Application) -> Rc<Start> {
         }
     });
 
-    // Escape or a click outside closes
+    // keys: Escape closes (or goes back a page), Down leaves the search for the rows
     let keys = gtk::EventControllerKey::new();
+    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
     let w = Rc::downgrade(&s);
     keys.connect_key_pressed(move |_, k, _, _| {
-        if k == gdk::Key::Escape {
-            if let Some(s) = w.upgrade() {
-                s.hide();
+        let Some(s) = w.upgrade() else { return glib::Propagation::Proceed };
+        match k {
+            gdk::Key::Escape => {
+                if s.pages.visible_child_name().as_deref() != Some("home") {
+                    s.page("home");
+                } else {
+                    s.hide();
+                }
+                glib::Propagation::Stop
             }
-            return glib::Propagation::Stop;
+            gdk::Key::Down if s.entry.has_focus() => {
+                s.focus_first();
+                glib::Propagation::Stop
+            }
+            _ => glib::Propagation::Proceed,
         }
-        glib::Propagation::Proceed
     });
     s.win.add_controller(keys);
+
+    // a click outside closes
     let click = gtk::GestureClick::new();
     let w = Rc::downgrade(&s);
     let c2 = card.clone();
@@ -255,30 +289,43 @@ fn build(app: &gtk::Application) -> Rc<Start> {
 
 impl Start {
     fn show(self: &Rc<Self>) {
-        crate::ui::get().map(|ui| ui.hide());
+        if let Some(ui) = crate::ui::get() {
+            ui.hide();
+        }
         if !self.built.get() {
             *self.apps.borrow_mut() = apps::load();
             self.built.set(true);
         }
         self.fill_apps();
         self.fill_recent();
-        self.pages.set_visible_child_name("home");
+        self.page("home");
         *self.armed.borrow_mut() = None;
         self.place();
         self.win.present();
+        self.entry.grab_focus();
         if std::env::var_os("VECTOR_SPACE_TEST").is_some() {
             eprintln!("start shown on {:?}", self.win.monitor().and_then(|m| m.connector()));
         }
-        self.entry.grab_focus();
     }
 
     fn hide(&self) {
-        if std::env::var_os("VECTOR_SPACE_TEST").is_some() && self.win.is_visible() {
-            eprintln!("start hidden");
-        }
         self.win.set_visible(false);
         // pick up apps installed meanwhile on the next open
         self.built.set(false);
+    }
+
+    fn page(&self, name: &str) {
+        self.pages.set_visible_child_name(name);
+        let home = name == "home";
+        self.nav_label.set_text(if home { "all apps" } else { "back" });
+        self.nav_glyph.set_text(if home { "\u{f003b}" } else { "\u{f0141}" });
+    }
+
+    fn focus_first(&self) {
+        let page = self.pages.visible_child().and_then(|c| first_button(&c));
+        if let Some(b) = page {
+            b.grab_focus();
+        }
     }
 
     /// The focused monitor (or VECTOR_OUTPUT for test instances).
@@ -312,18 +359,19 @@ impl Start {
                 self.pinned.append(&self.app_row(a, true));
             }
         }
+        if self.pinned.first_child().is_none() {
+            self.pinned.append(&empty("right click an app to pin it here"));
+        }
         // most used: launch counts, fading with time, pins left out
         let usage = Usage::load("launches.json");
-        let mut used: Vec<&App> = apps.iter().filter(|a| !pins.contains(&a.id) && usage.bonus(&a.id) > 0).collect();
+        let mut used: Vec<&App> =
+            apps.iter().filter(|a| !pins.contains(&a.id) && usage.bonus(&a.id) > 0).collect();
         used.sort_by(|a, b| usage.bonus(&b.id).cmp(&usage.bonus(&a.id)).then(a.name.cmp(&b.name)));
         for a in used.into_iter().take(MOST_USED) {
             self.frequent.append(&self.app_row(a, false));
         }
         if self.frequent.first_child().is_none() {
-            let l = gtk::Label::new(Some("apps you open show up here"));
-            l.add_css_class("start-empty");
-            l.set_xalign(0.0);
-            self.frequent.append(&l);
+            self.frequent.append(&empty("the apps you open most show up here"));
         }
         let mut sorted: Vec<&App> = apps.iter().collect();
         sorted.sort_by_key(|a| a.name.to_lowercase());
@@ -333,7 +381,9 @@ impl Start {
             if first != letter {
                 letter = first;
                 if let Some(c) = first {
-                    self.all.append(&section(&c.to_string()));
+                    let l = section(&c.to_string());
+                    l.add_css_class("start-letter");
+                    self.all.append(&l);
                 }
             }
             self.all.append(&self.app_row(a, pins.contains(&a.id)));
@@ -342,49 +392,80 @@ impl Start {
 
     fn fill_recent(self: &Rc<Self>) {
         clear(&self.recent);
-        let files = recent_files(5);
+        let files = recent_files(12);
         if files.is_empty() {
-            let l = gtk::Label::new(Some("nothing yet"));
-            l.add_css_class("start-empty");
-            l.set_xalign(0.0);
-            self.recent.append(&l);
+            self.recent.append(&empty("files you open show up here"));
         }
-        for p in files {
+        for (p, when) in files {
             let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let dir = p
+                .parent()
+                .map(|d| d.to_string_lossy().replace(&*util::home().to_string_lossy(), "~"))
+                .unwrap_or_default();
             let path = p.clone();
-            self.recent.append(&self.button(&glyph(file_glyph(&p)), &name, "", move || {
+            let r = self.button(&glyph(file_glyph(&p)), &name, &when, move || {
                 util::launch(&["xdg-open", &path.to_string_lossy()])
-            }));
+            });
+            r.set_tooltip_text(Some(&dir));
+            self.recent.append(&r);
         }
     }
 
-    /// A clickable row that closes the menu and runs `f`.
-    fn button(self: &Rc<Self>, icon: &impl IsA<gtk::Widget>, name: &str, meta: &str, f: impl Fn() + 'static) -> gtk::Box {
+    /// A row that closes the menu and runs `f`.
+    fn button(self: &Rc<Self>, icon: &impl IsA<gtk::Widget>, name: &str, meta: &str, f: impl Fn() + 'static) -> gtk::Button {
         let r = row(icon, name, meta);
         let w = Rc::downgrade(self);
-        let click = gtk::GestureClick::new();
-        click.connect_released(move |_, _, _, _| {
+        r.connect_clicked(move |_| {
             if let Some(s) = w.upgrade() {
                 s.hide();
             }
             f();
         });
-        r.add_controller(click);
         r
     }
 
-    fn app_row(self: &Rc<Self>, a: &App, pinned: bool) -> gtk::Box {
+    fn tiles(self: &Rc<Self>, items: &'static [(&'static str, &'static str, &'static str)]) -> gtk::Grid {
+        let g = gtk::Grid::new();
+        g.add_css_class("start-tiles");
+        g.set_column_homogeneous(true);
+        for (i, &(gl, name, cmd)) in items.iter().enumerate() {
+            let b = gtk::Button::new();
+            b.add_css_class("start-tile");
+            let col = gtk::Box::new(gtk::Orientation::Vertical, 4);
+            let ic = gtk::Label::new(Some(gl));
+            ic.add_css_class("start-tile-glyph");
+            let l = gtk::Label::new(Some(name));
+            l.add_css_class("start-tile-label");
+            l.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            col.append(&ic);
+            col.append(&l);
+            b.set_child(Some(&col));
+            b.set_tooltip_text(Some(name));
+            let w = Rc::downgrade(self);
+            b.connect_clicked(move |_| {
+                if let Some(s) = w.upgrade() {
+                    s.hide();
+                }
+                util::launch(&["sh", "-c", cmd]);
+            });
+            g.attach(&b, (i as u32 % TILE_COLS) as i32, (i as u32 / TILE_COLS) as i32, 1, 1);
+        }
+        g
+    }
+
+    fn app_row(self: &Rc<Self>, a: &App, pinned: bool) -> gtk::Button {
         let icon: gtk::Widget = match &a.icon {
             Some(i) => {
                 let img = gtk::Image::from_gicon(i);
-                img.set_pixel_size(22);
+                img.set_pixel_size(24);
+                img.add_css_class("start-appicon");
                 img.upcast()
             }
             None => glyph("\u{f08c6}").upcast(),
         };
         let id = a.id.clone();
-        let r = self.button(&icon, &a.name, if pinned { "\u{f0403}" } else { "" }, move || apps::launch(&id, None));
-        r.set_tooltip_text(Some(if pinned { "right click: unpin" } else { "right click: pin to start" }));
+        let r = self.button(&icon, &a.name, "", move || apps::launch(&id, None));
+        r.set_tooltip_text(Some(if pinned { "right click: unpin" } else { "right click: pin" }));
         // right click pins or unpins
         let id = a.id.clone();
         let w = Rc::downgrade(self);
@@ -410,17 +491,17 @@ const SETTINGS: &[(&str, &str, &str)] = &[
     ("\u{f05a9}", "wi-fi", "omarchy-launch-wifi"),
     ("\u{f00af}", "bluetooth", "omarchy-launch-bluetooth"),
     ("\u{f057e}", "sound", "omarchy-launch-audio"),
+    ("\u{f030c}", "keys", "omarchy-menu-keybindings"),
     ("\u{f03d8}", "theme", "omarchy-menu theme"),
-    ("\u{f0e09}", "background", "omarchy-theme-bg-next"),
-    ("\u{f0b34}", "font", "omarchy-menu font"),
-    ("\u{f030c}", "keybindings", "omarchy-menu-keybindings"),
+    ("\u{f0e09}", "wallpaper", "omarchy-theme-bg-next"),
+    ("\u{f0b34}", "font", "omarchy-menu style"),
+    ("\u{f0493}", "setup", "omarchy-menu setup"),
 ];
 
 const SYSTEM: &[(&str, &str, &str)] = &[
-    ("\u{f0d6e}", "update", "omarchy-menu update"),
+    ("\u{f06b0}", "update", "omarchy-menu update"),
     ("\u{f0ab7}", "install", "omarchy-menu install"),
-    ("\u{f0a7a}", "remove", "omarchy-menu remove"),
-    ("\u{f0493}", "setup", "omarchy-menu setup"),
+    ("\u{f05e8}", "remove", "omarchy-menu remove"),
     ("\u{f02fd}", "about", "omarchy-launch-about"),
 ];
 
@@ -471,8 +552,8 @@ fn places() -> Vec<(&'static str, String, PathBuf)> {
     out
 }
 
-/// The newest existing files from the shared recently-used list.
-fn recent_files(n: usize) -> Vec<PathBuf> {
+/// The newest existing files from the shared recently-used list, with when.
+fn recent_files(n: usize) -> Vec<(PathBuf, String)> {
     let xbel = glib::user_data_dir().join("recently-used.xbel");
     let Ok(text) = std::fs::read_to_string(xbel) else { return vec![] };
     let mut seen: Vec<(String, PathBuf)> = Vec::new();
@@ -480,16 +561,24 @@ fn recent_files(n: usize) -> Vec<PathBuf> {
         let attr = |k: &str| {
             chunk.split(&format!("{k}=\"")).nth(1).and_then(|r| r.split('"').next()).map(str::to_string)
         };
-        let (Some(href), Some(when)) = (attr("href"), attr("modified").or_else(|| attr("visited"))) else {
+        let (Some(href), Some(when)) = (attr("href"), attr("visited").or_else(|| attr("modified"))) else {
             continue;
         };
         let Some(p) = href.strip_prefix("file://").map(|p| PathBuf::from(unescape(p))) else { continue };
-        if p.is_file() {
+        if p.is_file() && !seen.iter().any(|(_, q)| q == &p) {
             seen.push((when, p));
         }
     }
     seen.sort_by(|a, b| b.0.cmp(&a.0));
-    seen.into_iter().map(|(_, p)| p).take(n).collect()
+    seen.into_iter()
+        .take(n)
+        .map(|(when, p)| {
+            let ago = glib::DateTime::from_iso8601(&when, None)
+                .map(|d| util::age(d.to_unix() as f64))
+                .unwrap_or_default();
+            (p, ago)
+        })
+        .collect()
 }
 
 fn unescape(s: &str) -> String {
@@ -516,13 +605,15 @@ fn file_glyph(p: &Path) -> &'static str {
         Some("mp4" | "mkv" | "webm" | "mov") => "\u{f022b}",
         Some("mp3" | "flac" | "wav" | "ogg" | "opus" | "m4a") => "\u{f0223}",
         Some("pdf") => "\u{f0226}",
+        Some("xlsx" | "ods" | "csv") => "\u{f021b}",
+        Some("docx" | "odt" | "md" | "txt") => "\u{f0219}",
         Some("zip" | "gz" | "xz" | "7z" | "tar" | "zst") => "\u{f05c4}",
         _ => "\u{f0214}",
     }
 }
 
 fn user_block() -> gtk::Box {
-    let b = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    let b = gtk::Box::new(gtk::Orientation::Horizontal, 14);
     b.add_css_class("start-user");
     let user = glib::user_name().to_string_lossy().to_string();
     let real = glib::real_name().to_string_lossy().to_string();
@@ -530,7 +621,7 @@ fn user_block() -> gtk::Box {
     let face = util::home().join(".face");
     let avatar: gtk::Widget = if face.is_file() {
         let p = gtk::Picture::for_filename(&face);
-        p.set_size_request(40, 40);
+        p.set_size_request(44, 44);
         p.set_content_fit(gtk::ContentFit::Cover);
         p.upcast()
     } else {
@@ -539,12 +630,20 @@ fn user_block() -> gtk::Box {
         l.upcast()
     };
     b.append(&avatar);
-    let col = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let col = gtk::Box::new(gtk::Orientation::Vertical, 2);
     col.set_valign(gtk::Align::Center);
     let n = gtk::Label::new(Some(&name.to_lowercase()));
     n.add_css_class("start-name");
     n.set_xalign(0.0);
-    let h = gtk::Label::new(Some("vectorOS"));
+    let up = std::fs::read_to_string("/proc/uptime")
+        .ok()
+        .and_then(|s| s.split_whitespace().next()?.parse::<f64>().ok())
+        .map(|u| {
+            let m = (u / 60.0) as u64;
+            if m < 60 { format!("up {m}m") } else { format!("up {}h {}m", m / 60, m % 60) }
+        })
+        .unwrap_or_default();
+    let h = gtk::Label::new(Some(&format!("vectorOS · {up}")));
     h.add_css_class("start-host");
     h.set_xalign(0.0);
     col.append(&n);
@@ -553,24 +652,57 @@ fn user_block() -> gtk::Box {
     b
 }
 
-fn row(icon: &impl IsA<gtk::Widget>, name: &str, meta: &str) -> gtk::Box {
+fn row(icon: &impl IsA<gtk::Widget>, name: &str, meta: &str) -> gtk::Button {
+    let b = gtk::Button::new();
+    b.add_css_class("start-row");
     let r = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-    r.add_css_class("start-row");
     r.append(icon);
     let l = gtk::Label::new(Some(name));
     l.set_xalign(0.0);
     l.set_hexpand(true);
     l.set_ellipsize(gtk::pango::EllipsizeMode::End);
     r.append(&l);
-    let m = gtk::Label::new(Some(meta));
-    m.add_css_class("start-meta");
-    r.append(&m);
-    r
+    if !meta.is_empty() {
+        let m = gtk::Label::new(Some(meta));
+        m.add_css_class("start-meta");
+        r.append(&m);
+    }
+    b.set_child(Some(&r));
+    b
+}
+
+fn scrolled(child: &impl IsA<gtk::Widget>) -> gtk::ScrolledWindow {
+    let s = gtk::ScrolledWindow::new();
+    s.set_hscrollbar_policy(gtk::PolicyType::Never);
+    s.set_child(Some(child));
+    s.set_vexpand(true);
+    s
+}
+
+fn first_button(w: &gtk::Widget) -> Option<gtk::Button> {
+    if let Some(b) = w.downcast_ref::<gtk::Button>() {
+        return Some(b.clone());
+    }
+    let mut c = w.first_child();
+    while let Some(ch) = c {
+        if let Some(b) = first_button(&ch) {
+            return Some(b);
+        }
+        c = ch.next_sibling();
+    }
+    None
 }
 
 fn glyph(g: &str) -> gtk::Label {
     let l = gtk::Label::new(Some(g));
     l.add_css_class("start-glyph");
+    l
+}
+
+fn empty(text: &str) -> gtk::Label {
+    let l = gtk::Label::new(Some(text));
+    l.add_css_class("start-empty");
+    l.set_xalign(0.0);
     l
 }
 

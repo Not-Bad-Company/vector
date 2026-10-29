@@ -130,51 +130,94 @@ scrollbar slider {{ background: alpha({fg}, 0.18); min-width: 3px; }}
     )
 }
 
-/// The Start menu (start.rs): the card's two columns, rows, power buttons.
+/// The Start menu (start.rs): two columns, rows and tiles as flat buttons
+/// with the accent edge on hover and focus, search and power level along the bottom.
 pub fn start_css(t: &Theme) -> String {
-    let (bg, fg, acc) = (&t.background, &t.foreground, &t.accent);
+    let (bg, fg, acc, red) = (&t.background, &t.foreground, &t.accent, &t.color1);
     format!(
         r#"
 .start-backdrop {{ background: transparent; }}
-.card.start {{ animation: start-in 130ms cubic-bezier(0.2, 0.9, 0.3, 1); }}
+.card.start {{ animation: start-in 140ms cubic-bezier(0.2, 0.9, 0.3, 1); }}
 @keyframes start-in {{
-  from {{ opacity: 0; transform: translate(-6px, -6px) scale(0.985); }}
+  from {{ opacity: 0; transform: translate(-8px, -8px) scale(0.98); }}
   to {{ opacity: 1; transform: none; }}
 }}
-.start-left {{ padding: 10px 0 0 0; }}
-.start-right {{ background: alpha({fg}, 0.035); border-left: 1px solid alpha({fg}, 0.08); padding: 0 0 6px 0; }}
+.start-left {{ padding-top: 6px; }}
+.start-right {{ background: alpha({fg}, 0.035); border-left: 1px solid alpha({fg}, 0.08); }}
+
+/* section labels */
 .start-section {{
-  font-size: 11px; color: alpha({fg}, 0.42); letter-spacing: 1px;
-  padding: 12px 18px 4px 18px; text-transform: lowercase;
+  font-size: 11px; color: alpha({fg}, 0.4); letter-spacing: 1px;
+  padding: 14px 20px 6px 20px;
 }}
-.start-row {{ padding: 7px 18px; min-height: 26px; border-left: 2px solid transparent; }}
-.start-row:hover {{ background: alpha({fg}, 0.06); border-left-color: {acc}; }}
-.start-row:active {{ background: alpha({acc}, 0.18); }}
-.start-row label {{ font-size: 13px; }}
-.start-glyph {{ font-size: 16px; min-width: 22px; color: alpha({fg}, 0.75); }}
-.start-meta {{ color: alpha({fg}, 0.4); font-size: 12px; }}
-.start-empty {{ color: alpha({fg}, 0.35); font-size: 12px; padding: 4px 18px; }}
-.start-more {{ border-top: 1px solid alpha({fg}, 0.08); margin-top: 6px; }}
+.start-letter {{ color: {acc}; font-weight: bold; padding-top: 12px; }}
+.start-empty {{ color: alpha({fg}, 0.32); font-size: 12px; padding: 6px 20px 10px 20px; }}
+
+/* rows: flat buttons, accent edge on hover and keyboard focus */
+button.start-row {{
+  background: transparent; border: none; box-shadow: none; border-radius: 0;
+  border-left: 2px solid transparent; padding: 6px 18px; min-height: 26px;
+  color: {fg}; font-weight: normal; transition: background 90ms ease;
+}}
+button.start-row:hover {{ background: alpha({fg}, 0.06); border-left-color: alpha({acc}, 0.6); }}
+button.start-row:focus-visible {{ background: alpha({acc}, 0.14); border-left-color: {acc}; }}
+button.start-row:active {{ background: alpha({acc}, 0.22); }}
+button.start-row label {{ font-size: 13px; }}
+.start-glyph {{ font-size: 16px; min-width: 24px; color: alpha({fg}, 0.72); }}
+button.start-row:hover .start-glyph, button.start-row:focus-visible .start-glyph {{ color: {acc}; }}
+.start-meta {{ color: alpha({fg}, 0.38); font-size: 11px; }}
+.start-right button.start-row {{ padding: 5px 20px; min-height: 22px; }}
+
+/* all apps / back, and the search */
+button.start-nav {{ border-top: 1px solid alpha({fg}, 0.07); padding-top: 9px; padding-bottom: 9px; }}
+.start-searchbar {{
+  min-height: 50px; background: alpha({fg}, 0.045);
+  border-top: 1px solid alpha({fg}, 0.09);
+}}
+.start-searchbar:focus-within {{ border-top-color: {acc}; background: alpha({fg}, 0.06); }}
+.start-sglyph {{ font-size: 15px; color: alpha({fg}, 0.5); padding: 0 4px 0 20px; }}
+.start-searchbar:focus-within .start-sglyph {{ color: {acc}; }}
 .start-search, .start-search text {{
-  background: alpha({fg}, 0.04); border: none; border-top: 1px solid alpha({fg}, 0.08);
-  box-shadow: none; min-height: 46px; padding: 0 18px; font-size: 14px; color: {fg}; caret-color: {acc};
+  background: transparent; border: none; box-shadow: none; outline: none;
+  min-height: 50px; padding: 0 8px; font-size: 14px; color: {fg}; caret-color: {acc};
 }}
-.start-search:focus-within {{ border-top-color: {acc}; }}
-.start-user {{ padding: 16px 18px 12px 18px; border-bottom: 1px solid alpha({fg}, 0.08); }}
+.start-search text placeholder {{ color: alpha({fg}, 0.35); }}
+.start-hint {{ font-size: 11px; color: alpha({fg}, 0.28); padding-right: 18px; }}
+
+/* you */
+.start-user {{ padding: 18px 20px 14px 20px; border-bottom: 1px solid alpha({fg}, 0.07); }}
 .start-avatar {{
-  background: {acc}; color: {bg}; font-weight: bold; font-size: 18px;
-  min-width: 40px; min-height: 40px;
+  background: {acc}; color: {bg}; font-weight: bold; font-size: 20px;
+  min-width: 44px; min-height: 44px;
 }}
 .start-name {{ font-size: 15px; font-weight: bold; }}
-.start-host {{ font-size: 11px; color: alpha({fg}, 0.45); }}
-.start-power {{ border-top: 1px solid alpha({fg}, 0.08); background: alpha({fg}, 0.035); }}
-.start-pow {{
-  background: transparent; border: none; box-shadow: none; padding: 8px 14px; min-width: 20px;
-  color: alpha({fg}, 0.7);
+.start-host {{ font-size: 11px; color: alpha({fg}, 0.42); }}
+
+/* settings and system tiles */
+.start-tiles {{ padding: 0 12px; }}
+button.start-tile {{
+  background: transparent; border: none; box-shadow: none; border-radius: 0;
+  padding: 9px 2px 8px 2px; color: alpha({fg}, 0.85);
+  border-bottom: 2px solid transparent;
 }}
-.start-pow:hover {{ background: alpha({fg}, 0.08); color: {fg}; }}
-.start-pow.armed {{ background: {red}; color: {bg}; }}
-"#,
-        red = t.color1
+button.start-tile:hover {{ background: alpha({fg}, 0.06); border-bottom-color: alpha({acc}, 0.6); }}
+button.start-tile:focus-visible {{ background: alpha({acc}, 0.14); border-bottom-color: {acc}; }}
+.start-tile-glyph {{ font-size: 19px; color: alpha({fg}, 0.75); }}
+button.start-tile:hover .start-tile-glyph, button.start-tile:focus-visible .start-tile-glyph {{ color: {acc}; }}
+.start-tile-label {{ font-size: 11px; }}
+
+/* power, level with the search */
+.start-power {{ min-height: 50px; border-top: 1px solid alpha({fg}, 0.09); background: alpha({fg}, 0.045); }}
+button.start-pow {{
+  background: transparent; border: none; box-shadow: none; border-radius: 0;
+  color: alpha({fg}, 0.65); padding: 0;
+}}
+button.start-pow .start-glyph {{ font-size: 17px; }}
+button.start-pow:hover {{ background: alpha({fg}, 0.07); }}
+button.start-pow:hover .start-glyph {{ color: {fg}; }}
+button.start-pow:focus-visible {{ background: alpha({acc}, 0.14); }}
+button.start-pow.armed {{ background: {red}; }}
+button.start-pow.armed .start-glyph {{ color: {bg}; }}
+"#
     )
 }
