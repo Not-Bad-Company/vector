@@ -92,7 +92,10 @@ struct Inner {
     warn: i64,
     crit: i64,
     theme: Rc<Theme>,
-    notified: Cell<i64>,
+    /// the low-battery card on screen (0: none)
+    card: Cell<u32>,
+    /// highest level shown this discharge: 0 none, 1 warning, 2 critical
+    stage: Cell<u8>,
 }
 
 pub struct Battery(Rc<Inner>);
@@ -109,7 +112,8 @@ impl Battery {
             warn: o.num("warning", 20.0) as i64,
             crit: o.num("critical", 10.0) as i64,
             theme: ctx.theme.clone(),
-            notified: Cell::new(101),
+            card: Cell::new(0),
+            stage: Cell::new(0),
         });
         let right = o.str(
             "on_right",
@@ -160,35 +164,83 @@ impl Inner {
             ""
         };
         self.slot.set_classes(&[cls]);
-        // one notification per threshold crossing while discharging
-        if discharging {
-            for lvl in [self.warn, self.crit] {
-                if b.capacity <= lvl && self.notified.get() > lvl {
-                    self.notified.set(lvl);
-                    let urgency = if lvl == self.crit {
-                        "critical"
-                    } else {
-                        "normal"
-                    };
-                    util::spawn(&[
-                        "notify-send",
-                        "-u",
-                        urgency,
-                        "-a",
-                        "vector-bar",
-                        "-i",
-                        "battery-low",
-                        "Battery low",
-                        &format!("{}% left", b.capacity),
-                    ]);
-                }
-            }
-        } else {
-            self.notified.set(101);
-        }
+        self.low_card(&b, discharging);
         if *self.bat.borrow() != b {
             *self.bat.borrow_mut() = b;
             self.changed.emit();
+        }
+    }
+
+    /// One low-battery card for the whole discharge: shown at the warning
+    /// level, updated in place as the percentage drops, raised to critical at
+    /// the critical level, never timing out, closed when the charger is in.
+    /// Swiped away, it stays away until the next level is crossed.
+    fn low_card(&self, b: &Bat, discharging: bool) {
+        let store = crate::notify::get();
+        let serving = crate::notify::enabled();
+        let live = |id: u32| id != 0 && store.live().iter().any(|n| n.id == id);
+        if !discharging || b.capacity > self.warn {
+            let id = self.card.replace(0);
+            if live(id) {
+                store.close(id, 3);
+            }
+            if !discharging {
+                self.stage.set(0);
+            }
+            return;
+        }
+        let want = if b.capacity <= self.crit { 2 } else { 1 };
+        let id = self.card.get();
+        let showing = live(id);
+        if !showing && want <= self.stage.get() {
+            return; // swiped away at this level
+        }
+        let left = b
+            .hours()
+            .map(|h| format!(" · about {} left", hm(h)))
+            .unwrap_or_default();
+        let body = format!("{}%{left}", b.capacity);
+        if !serving {
+            // another notification server: one plain notification per level
+            if want > self.stage.get() {
+                self.stage.set(want);
+                util::spawn(&[
+                    "notify-send",
+                    "-u",
+                    if want == 2 { "critical" } else { "normal" },
+                    "-a",
+                    "Battery",
+                    "-i",
+                    "battery-caution",
+                    "Battery low",
+                    &body,
+                ]);
+            }
+            return;
+        }
+        if showing
+            && store
+                .live()
+                .iter()
+                .any(|n| n.id == id && n.body == body && (n.urgency == 2) == (want == 2))
+        {
+            return;
+        }
+        let first = want > self.stage.get();
+        self.stage.set(self.stage.get().max(want));
+        let note = crate::notify::Note {
+            app: "Battery".into(),
+            summary: if want == 2 { "Battery almost empty".into() } else { "Battery low".into() },
+            body,
+            urgency: if want == 2 { 2 } else { 1 },
+            icon: "battery-caution".into(),
+            category: "device.warning".into(),
+            ..Default::default()
+        };
+        let new = store.notify(note, if showing { id } else { 0 }, 0);
+        self.card.set(new);
+        if first && !showing {
+            util::spawn(&["omarchy-hook", "battery-low", &b.capacity.to_string()]);
         }
     }
 
