@@ -299,7 +299,12 @@ impl Slot {
             let fresh = matches!(&*c, Some((ver, at, _)) if *ver == v && now - at < 1.0);
             if !fresh {
                 match f() {
-                    Some(w) => *c = Some((v, now, w)),
+                    Some(w) => {
+                        if w.has_css_class("sheet") && w.first_child().is_some_and(|c| c.next_sibling().is_none()) {
+                            w.add_css_class("bare");
+                        }
+                        *c = Some((v, now, w))
+                    }
                     None => {
                         *c = None;
                         return false;

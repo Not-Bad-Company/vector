@@ -326,8 +326,7 @@ impl Inner {
     fn tooltip(&self) -> gtk::Widget {
         let s = self.last.borrow();
         let sh = ui::sheet();
-        let host = util::read_trim("/proc/sys/kernel/hostname").unwrap_or_default();
-        sh.append(&ui::head(&host, &format!("up {}{}", util::dur(s.uptime), if s.profile.is_empty() { String::new() } else { format!(" · {}", s.profile) })).0);
+        sh.append(&ui::head("system", &format!("up {}{}", util::dur(s.uptime), if s.profile.is_empty() { String::new() } else { format!(" · {}", s.profile) })).0);
         // last 90 samples of cpu
         let hist: Vec<f64> = self.cpu_hist.borrow().iter().copied().collect();
         let g = spark(Rc::new(move || hist.clone()), 100.0, &self.theme.accent, 28);
@@ -441,8 +440,7 @@ fn procs() -> Vec<Proc> {
 
 fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
     p.set_width(380);
-    let host = util::read_trim("/proc/sys/kernel/hostname").unwrap_or_default();
-    let card = Card::new(&host, "");
+    let card = Card::new("system", "");
     card.controls.append(&ui::link("btop", &[], {
         let p = p.clone();
         move || {

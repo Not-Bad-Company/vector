@@ -136,6 +136,7 @@ pub fn kv(k: &str, v: &str) -> (gtk::Box, gtk::Label) {
 pub fn tkv(k: &str, v: &str) -> gtk::Box {
     let (b, _) = kv(k, v);
     b.remove_css_class("kv");
+    b.add_css_class("tkv");
     b
 }
 

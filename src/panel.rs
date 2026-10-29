@@ -15,7 +15,10 @@ use crate::ui;
 
 const GAP: i32 = 6;
 const MARGIN: i32 = 8;
-const MAX_BODY: i32 = 560;
+/// Body height before a panel scrolls; set per open from the monitor height.
+fn max_body() -> i32 {
+    MAXB.with(|m| m.get())
+}
 
 /// Extra top offset (test mode: the test bar does not reserve space).
 fn top_offset() -> i32 {
@@ -40,6 +43,7 @@ fn theme() -> Rc<crate::theme::Theme> {
 
 thread_local! {
     static TOP: Cell<i32> = const { Cell::new(0) };
+    static MAXB: Cell<i32> = const { Cell::new(560) };
     static THEME: RefCell<Option<Rc<crate::theme::Theme>>> = const { RefCell::new(None) };
     static APP: RefCell<Option<gtk::Application>> = const { RefCell::new(None) };
     static OPEN: RefCell<Option<Open>> = const { RefCell::new(None) };
@@ -129,6 +133,9 @@ fn open(name: &str, build: PanelFn, anchor: Option<gtk::Widget>, center: bool) {
         win.set_monitor(Some(m));
     }
     let mon_w = monitor.as_ref().map(|m| m.geometry().width()).unwrap_or(1920);
+    let mon_h = monitor.as_ref().map(|m| m.geometry().height()).unwrap_or(1080);
+    // bar, gaps, header and footer: the rest is for the body
+    MAXB.with(|m| m.set((mon_h - 26 - top_offset() - 2 * GAP - 110).max(300)));
 
     let panel = Panel(Rc::new(PInner {
         width: Cell::new(360),
@@ -303,7 +310,7 @@ impl Card {
         let scroll = gtk::ScrolledWindow::new();
         scroll.set_hscrollbar_policy(gtk::PolicyType::Never);
         scroll.set_propagate_natural_height(true);
-        scroll.set_max_content_height(MAX_BODY);
+        scroll.set_max_content_height(max_body());
         scroll.set_child(Some(&body));
         root.append(&scroll);
         let foot = ui::hbox(2, &["foot"]);

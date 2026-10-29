@@ -178,6 +178,9 @@ tooltip {{
 }}
 tooltip > box {{ padding: 0; }}
 tooltip .sheet {{ padding: 0 0 10px 0; min-width: 240px; }}
+tooltip .sheet.bare {{ padding: 0; }}
+tooltip .sheet.bare > .thead {{ margin: 0; border-bottom: none; }}
+.tkv .k {{ min-width: {kcol}px; color: alpha({fg}, 0.5); }}
 tooltip .sheet > * {{ margin-left: 14px; margin-right: 14px; }}
 tooltip .sheet > .thead {{ margin: 0 0 6px 0; background: alpha({fg}, 0.035); border-bottom: 1px solid alpha({fg}, 0.08); min-height: 24px; }}
 tooltip .thead .htitle {{ background: {acc}; color: {bg}; font-weight: bold; padding: 0 10px; }}

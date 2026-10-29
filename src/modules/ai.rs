@@ -39,6 +39,8 @@ const BRAIN: &str = "\u{f09d1}";
 const CODEX: &str = "\u{f06a9}";
 const AGY: &str = "<span font_family='AntigravityMark'>\u{e000}</span>";
 const SPIN: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
+/// How long a finished agent stays on the bar line.
+const DONE_SHOWN: f64 = 120.0;
 const M_AGENT: mode::State = mode::State { key: "silent", label: "AGENT", rank: 2 };
 
 // ── agents ───────────────────────────────────────────────────────────────────
@@ -761,9 +763,16 @@ impl Inner {
         self.render_line(&a);
     }
 
-    /// The one agent the line is about: whoever needs you, else the latest to change.
+    /// The one agent the line is about: whoever needs you, else the busy one
+    /// that changed last, else one that finished in the last two minutes.
     fn pick(a: &[Agent]) -> Option<&Agent> {
-        a.iter().find(|x| x.needs_you()).or_else(|| a.iter().max_by(|x, y| x.changed.partial_cmp(&y.changed).unwrap_or(std::cmp::Ordering::Equal)))
+        fn latest<'a>(it: impl Iterator<Item = &'a Agent>) -> Option<&'a Agent> {
+            it.max_by(|x, y| x.changed.partial_cmp(&y.changed).unwrap_or(std::cmp::Ordering::Equal))
+        }
+        a.iter()
+            .find(|x| x.needs_you())
+            .or_else(|| latest(a.iter().filter(|x| x.busy())))
+            .or_else(|| latest(a.iter().filter(|x| !x.busy() && util::now() - x.since < DONE_SHOWN)))
     }
 
     fn render_line(&self, a: &[Agent]) {
@@ -778,21 +787,21 @@ impl Inner {
             self.line.set_visible(true);
             return;
         }
-        let (icon, what, when) = if t.busy() {
-            let what = t.subs.first().map(|s| format!("{} · {}", s.description, s.doing)).filter(|_| t.doing.is_empty() || t.subs.first().is_some_and(|s| s.changed > t.changed - 1.0)).unwrap_or_else(|| t.doing.clone());
-            (SPIN[self.spin.get()].to_string(), what, util::dur((now - t.since).max(0.0) as u64))
-        } else {
-            ("󰄬".to_string(), "done".to_string(), util::ago(t.since))
-        };
         let others = a.iter().filter(|x| x.busy() && x.sid != t.sid).count();
         let more = if others > 0 { format!("  {}", ui::dim(&format!("+{others}"))) } else { String::new() };
-        self.line.set_markup(&format!(
-            "{}  {}  {}  {}{more}",
-            if t.busy() { icon } else { ui::dim(&icon) },
-            util::esc(&short(&t.label(), 38)),
-            ui::dim(&util::esc(&short(&what, 42))),
-            ui::dim(&when),
-        ));
+        let text = if t.busy() {
+            let what = t.subs.first().filter(|s| s.changed > t.changed - 1.0).map(|s| s.description.clone()).unwrap_or_else(|| t.doing.clone());
+            format!(
+                "{}  {}  {}  {}{more}",
+                SPIN[self.spin.get()],
+                util::esc(&short(&t.label(), 38)),
+                ui::dim(&util::esc(&short(&what, 42))),
+                ui::dim(&util::dur((now - t.since).max(0.0) as u64)),
+            )
+        } else {
+            format!("{}  {}  {}{more}", ui::dim("󰄬"), util::esc(&short(&t.label(), 38)), ui::dim(&format!("done, {}", util::ago(t.since))))
+        };
+        self.line.set_markup(&text);
         self.line.set_classes(&[]);
         self.line.set_visible(true);
     }
@@ -801,26 +810,16 @@ impl Inner {
         let s = ui::sheet();
         let a = self.agents.borrow();
         let busy = a.iter().filter(|x| x.busy()).count();
-        let subs: usize = a.iter().map(|x| x.subs.len()).sum();
-        s.append(&ui::head("agents", &format!("{} sessions · {busy} working{}", a.len(), if subs > 0 { format!(" · {subs} subagents") } else { String::new() })).0);
+        s.append(&ui::head("agents", &format!("{busy} of {} working", a.len())).0);
         for ag in a.iter() {
-            s.append(&agent_line(ag, &self.theme, true).tap(|w| w.set_margin_top(6)));
-            let sub = ui::label(
-                &ui::dim(&util::esc(&format!("{} · {} · {} · up {}", ag.name, ag.account, ag.cwd.replace(&*util::home().to_string_lossy(), "~"), util::dur((util::now() - ag.started).max(0.0) as u64)))),
-                &[],
-            );
-            sub.set_margin_start(22);
-            s.append(&sub);
+            s.append(&agent_line(ag, &self.theme, true).tap(|w| w.set_margin_top(4)));
             if ag.busy() && !ag.doing.is_empty() {
-                let d = ui::label(&format!("{} {}", ui::dim("now"), util::esc(&short(&ag.doing, 60))), &[]);
+                let d = ui::label(&ui::dim(&format!("now  {}", util::esc(&short(&ag.doing, 56)))), &[]);
                 d.set_margin_start(22);
                 s.append(&d);
             }
             for sa in &ag.subs {
-                let l = ui::label(
-                    &format!("{} {}  {}  {}", ui::dim("└"), util::esc(&sa.kind), util::esc(&short(&sa.description, 34)), ui::dim(&util::esc(&short(&sa.doing, 34)))),
-                    &[],
-                );
+                let l = ui::label(&ui::dim(&format!("└ {}  {}", util::esc(&sa.kind), util::esc(&short(&sa.description, 44)))), &[]);
                 l.set_margin_start(22);
                 s.append(&l);
             }
@@ -849,7 +848,12 @@ impl Inner {
         let mut add = |name: &str, acc: &Account| {
             grid.attach(&ui::text(name, &["dim"]), 0, row, 1, 1);
             let mut col = 1;
-            for w in acc.windows.iter().take(2) {
+            for w in acc.windows.iter().take(if acc.label == "antigravity" { 6 } else { 2 }) {
+                if col > 2 {
+                    // more than two windows (antigravity): continue on the next row
+                    row += 1;
+                    col = 1;
+                }
                 let cls = ui::pct_class(w.pct);
                 let cell = ui::hbox(6, &[]);
                 cell.append(&ui::text(&w.name, &["dim"]));
@@ -888,23 +892,14 @@ fn short(s: &str, n: usize) -> String {
 
 fn agent_line(a: &Agent, t: &Theme, long: bool) -> gtk::Widget {
     let row = ui::hbox(8, &[]);
-    let (icon, cls) = if a.needs_you() { ("󰀦", "crit") } else if a.busy() { ("󰔟", "ok") } else { ("󰒲", "dim") };
+    let (icon, cls) = if a.needs_you() { ("󰀦", "crit") } else if a.busy() { ("󰔟", "ok") } else { ("󰄬", "dim") };
     row.append(&ui::text(icon, &[cls]));
-    let name = ui::text(&a.name, &[]);
-    name.set_width_chars(10);
-    row.append(&name);
-    let what = if a.needs_you() {
-        ui::colored("needs your answer", &t.color1)
-    } else if a.busy() {
-        util::esc(&short(if a.doing.is_empty() { &a.title } else { &a.doing }, if long { 46 } else { 34 }))
-    } else {
-        ui::dim(&util::esc(&short(&a.title, 34)))
-    };
-    let l = ui::label(&what, &[]);
-    l.set_hexpand(true);
-    row.append(&l);
-    let since = (util::now() - a.since).max(0.0) as u64;
-    row.append(&ui::text(&format!("{} {}", if a.busy() { "busy" } else { "idle" }, util::dur(since)), &["dim"]));
+    let title = ui::text(&short(&a.label(), if long { 44 } else { 34 }), if a.busy() || a.needs_you() { &[] } else { &["dim"] });
+    title.set_hexpand(true);
+    row.append(&title);
+    let since = util::dur((util::now() - a.since).max(0.0) as u64);
+    let state = if a.needs_you() { ui::colored("needs you", &t.color1) } else if a.busy() { format!("busy {since}") } else { ui::dim(&format!("done {since} ago")) };
+    row.append(&ui::label(&state, &["dim"]));
     row.upcast()
 }
 

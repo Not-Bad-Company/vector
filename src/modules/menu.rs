@@ -179,7 +179,9 @@ fn menu_panel(p: &Panel, t: &Rc<Theme>) -> gtk::Widget {
         .and_then(|s| s.split_whitespace().next().and_then(|x| x.parse::<f64>().ok()))
         .map(|s| util::dur(s as u64))
         .unwrap_or_default();
-    let card = Card::new("vector os", &format!("{host} · up {up}"));
+    let theme_name = util::read_trim(util::config_dir().join("omarchy/current/theme.name")).unwrap_or_default().replace('-', " ");
+    let _ = host;
+    let card = Card::new("vector os", &format!("up {up}{}", if theme_name.is_empty() { String::new() } else { format!(" · {theme_name}") }));
     let _ = t;
     let b = &card.body;
 
