@@ -41,6 +41,10 @@ const AGY: &str = "<span font_family='AntigravityMark'>\u{e000}</span>";
 const SPIN: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
 /// How long a finished agent stays on the bar line.
 const DONE_SHOWN: f64 = 120.0;
+/// The line shows in full this long after it changes (an agent starts,
+/// finishes, or the line moves to another agent), then folds to its icon and
+/// an arrow; hovering unfolds it.
+const LINE_FULL: f64 = 5.0;
 const M_AGENT: mode::State = mode::State {
     key: "agent",
     label: "AGENT",
@@ -1307,6 +1311,10 @@ struct Inner {
     codex: Vec<(String, PathBuf)>,
     agy: bool,
     notified: RefCell<Vec<String>>,
+    line_key: RefCell<String>,
+    line_since: Cell<f64>,
+    line_hover: Cell<bool>,
+    line_full: Cell<bool>,
 }
 
 pub struct Ai(Rc<Inner>);
@@ -1370,6 +1378,10 @@ impl Ai {
             codex,
             agy: o.bool("antigravity", true) && util::which("agy"),
             notified: RefCell::default(),
+            line_key: RefCell::default(),
+            line_since: Cell::new(0.0),
+            line_hover: Cell::new(false),
+            line_full: Cell::new(false),
         });
         inner.slot.set_markup(BRAIN);
         inner.line.set_visible(false);
@@ -1504,6 +1516,9 @@ impl Inner {
         if a.iter().any(|x| x.busy()) {
             self.spin.set((self.spin.get() + 1) % SPIN.len());
             self.render_line(&a);
+        } else if self.line_full.get() {
+            // time to fold a "done" line
+            self.render_line(&a);
         }
     }
 
@@ -1562,8 +1577,16 @@ impl Inner {
         let now = util::now();
         let Some(t) = Self::pick(a) else {
             self.line.set_visible(false);
+            self.line_full.set(false);
             return;
         };
+        let key = format!("{}|{}|{}", t.sid, t.busy(), t.needs_you());
+        if *self.line_key.borrow() != key {
+            *self.line_key.borrow_mut() = key;
+            self.line_since.set(now);
+        }
+        let full = self.line_hover.get() || now - self.line_since.get() < LINE_FULL;
+        self.line_full.set(full);
         if t.needs_you() {
             self.line.set_markup(&format!(
                 "󰀦  {}  {}",
@@ -1580,7 +1603,14 @@ impl Inner {
         } else {
             String::new()
         };
-        let text = if t.busy() {
+        let text = if !full {
+            let icon = if t.busy() {
+                SPIN[self.spin.get()].to_string()
+            } else {
+                ui::dim("󰄬")
+            };
+            format!("{icon} {}{more}", ui::dim("›"))
+        } else if t.busy() {
             let what = t
                 .subs
                 .first()
@@ -1806,7 +1836,27 @@ impl AgentsLine {
 
 impl Module for AgentsLine {
     fn view(&self, _: &BarInfo) -> gtk::Widget {
-        self.0.0.line.view()
+        let w = self.0.0.line.view();
+        // hovering the folded line unfolds it
+        let m = gtk::EventControllerMotion::new();
+        let i = Rc::downgrade(&self.0.0);
+        m.connect_enter(move |_, _, _| {
+            if let Some(i) = i.upgrade() {
+                i.line_hover.set(true);
+                i.render_line(&i.agents.borrow());
+            }
+        });
+        let i = Rc::downgrade(&self.0.0);
+        m.connect_leave(move |_| {
+            if let Some(i) = i.upgrade() {
+                i.line_hover.set(false);
+                // linger a moment so the tooltip and a click still land
+                i.line_since.set(util::now() - LINE_FULL + 1.0);
+                i.render_line(&i.agents.borrow());
+            }
+        });
+        w.add_controller(m);
+        w
     }
     fn refresh(&self) {
         self.0.refresh();
