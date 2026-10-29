@@ -18,7 +18,3 @@ ureq = { version = "3", default-features = false, features = ["rustls", "json"] 
 libc = "0.2"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 mlua = { version = "0.12", features = ["lua54", "vendored", "serialize"] }
-
-[profile.release]
-lto = "thin"
-codegen-units = 4

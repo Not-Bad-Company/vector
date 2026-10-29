@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["crates/vector-core", "crates/vector", "crates/vector-view"]
+members = ["crates/vector-core", "crates/vector", "crates/vector-view", "crates/vector-bar"]
+default-members = ["crates/vector-core", "crates/vector", "crates/vector-view"]
 
 [workspace.package]
 version = "0.3.4"
