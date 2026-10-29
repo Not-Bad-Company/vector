@@ -170,9 +170,6 @@ window.vbar, window.vpanel, window.vnotify, window.vosd, tooltip, popover {{
 window.vbar * {{ font-family: '{font}'; }}
 
 /* ── bar: nvim lualine across the top ──────────────── */
-/* the arrow tab the bar folds into over a fullscreen window */
-window.vbar-tab {{ background: alpha({bg}, 0.92); border-bottom: 2px solid {acc}; }}
-window.vbar-tab .arrow {{ font-family: '{font}'; font-size: 9px; color: {fg}; padding: 1px 14px 2px; }}
 window.vbar {{ background: {bar_bg}; {bar_edge} }}
 window.vbar .bar {{ min-height: {inner}px; }}
 window.vbar .right {{ margin-right: 0; }}
