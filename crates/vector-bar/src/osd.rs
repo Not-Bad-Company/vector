@@ -507,14 +507,13 @@ fn display_meta() -> (String, String) {
     if !builtin && title != connector {
         extra.push(connector);
     }
-    // night light: hyprsunset's current temperature, when it tints
+    // hyprsunset's colour temperature
     if util::proc_running("hyprsunset")
         && let Some(t) =
             sh(&["hyprctl", "hyprsunset", "temperature"]).and_then(|t| t.trim().parse::<u32>().ok())
         && t > 0
-        && t < 6400
     {
-        extra.push(format!("night light {t}K"));
+        extra.push(format!("{t}K"));
     }
     if util::runtime_dir().join("lumend.sock").exists() {
         extra.push("adaptive".into());
