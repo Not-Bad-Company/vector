@@ -385,10 +385,16 @@ pub fn spark(hist: Rc<dyn Fn() -> Vec<f64>>, max: f64, color: &str, height: i32)
     let rgba = gtk::gdk::RGBA::parse(color).unwrap_or(gtk::gdk::RGBA::WHITE);
     d.set_draw_func(move |_, cr, w, h| {
         let v = hist();
+        let (w, h) = (w as f64, h as f64);
+        // faint baseline, so a fresh (still empty) graph reads as one
+        cr.set_source_rgba(rgba.red() as f64, rgba.green() as f64, rgba.blue() as f64, 0.25);
+        cr.set_line_width(1.0);
+        cr.move_to(0.0, h - 0.5);
+        cr.line_to(w, h - 0.5);
+        let _ = cr.stroke();
         if v.len() < 2 {
             return;
         }
-        let (w, h) = (w as f64, h as f64);
         let n = HISTORY.max(v.len()) as f64 - 1.0;
         let x0 = w - (v.len() as f64 - 1.0) / n * w;
         let y = |val: f64| h - 1.0 - (val / max).clamp(0.0, 1.0) * (h - 2.0);

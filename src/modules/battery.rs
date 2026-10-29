@@ -75,7 +75,7 @@ impl Bat {
 
 fn hm(h: f64) -> String {
     let m = (h * 60.0).round() as i64;
-    format!("{}h {:02}m", m / 60, m % 60)
+    if m < 60 { format!("{m}m") } else { format!("{}h {:02}m", m / 60, m % 60) }
 }
 
 struct Inner {
