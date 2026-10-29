@@ -1,0 +1,28 @@
+[package]
+name = "vector-capture"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Vector Capture: screenshots, colour picker, screen recording and text from screenshots"
+repository = "https://github.com/Not-Bad-Company/vector"
+
+[dependencies]
+vector-core.workspace = true
+glib.workspace = true
+gio.workspace = true
+gtk.workspace = true
+gtk4-layer-shell = "0.8"
+serde_json = "1"
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+libc = "0.2"
+
+# vector-capture: the light client (no GTK): forwards to the resident overlay,
+# or starts it.
+[[bin]]
+name = "vector-capture"
+path = "src/main.rs"
+
+# vector-capture-daemon: the overlay and capture pipeline (GTK), run by vector-capture.service.
+[[bin]]
+name = "vector-capture-daemon"
+path = "src/daemon.rs"
