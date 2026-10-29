@@ -1,12 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
-  <!-- a picture: square corners like vector's folder -->
-  <rect x="10" y="22" width="108" height="84" fill="#434c5e"/>
-  <rect x="10.75" y="22.75" width="106.5" height="82.5" fill="none" stroke="#d8dee9" stroke-opacity="0.25" stroke-width="1.5"/>
-  <!-- hills and a sun, clear of the arrow -->
-  <path d="M10 106 L44 70 L64 90 L84 66 L118 106 Z" fill="#81a1c1" fill-opacity="0.45"/>
-  <circle cx="100" cy="40" r="7" fill="#ebcb8b"/>
-  <!-- the vector, as in vector's icon -->
-  <path d="M28 96 L66 60" stroke="#a3be8c" stroke-width="6" stroke-linecap="square"/>
-  <path d="M78 49 L61 52 L70 65 Z" fill="#a3be8c"/>
-  <circle cx="28" cy="96" r="4" fill="#d8dee9"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Vector View B on Night Drive. -->
+  <rect width="512" height="512" fill="#14141d"/>
+  <rect x="64" y="96" width="384" height="320" fill="#1c1d29" stroke="#cfcdd9" stroke-opacity="0.55" stroke-width="20"/>
+  <path d="M793 -78Q826 -78 850.5 -53.0Q875 -28 875 4V88H793V4H709V-78ZM625 -78V4H500V-78ZM418 -78V4H334V88H250V4Q250 -28 274.5 -53.0Q299 -78 334 -78ZM875 172V298H793V172ZM334 172Q334 318 334 464H625V714Q625 748 600.5 773.0Q576 798 543 798H84Q49 798 24.5 773.0Q0 748 0 714V254Q0 222 24.5 197.0Q49 172 84 172ZM250 254H84V714H543V548H334Q299 548 274.5 523.0Q250 498 250 464ZM875 380V464Q875 498 850.5 523.0Q826 548 793 548H709V464H793V380Z" fill="#c9a467" fill-rule="evenodd" transform="translate(166.1 330.0) scale(0.2055 -0.2055)"/>
 </svg>
