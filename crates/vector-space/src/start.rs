@@ -19,7 +19,7 @@ use crate::util::{self, Usage};
 const PINS: &str = "start-pins.json";
 const LEFT_W: i32 = 400;
 const RIGHT_W: i32 = 336;
-const MOST_USED: usize = 8;
+const MOST_USED: usize = 10;
 const TILE_COLS: u32 = 4;
 
 pub struct Start {
@@ -33,9 +33,14 @@ pub struct Start {
     nav: gtk::Button,
     nav_label: gtk::Label,
     nav_glyph: gtk::Label,
+    time: gtk::Label,
+    date: gtk::Label,
     apps: RefCell<Vec<App>>,
     armed: RefCell<Option<String>>,
-    built: Cell<bool>,
+    /// rows rebuilt while hidden (after a close, and once at start), so opening only draws
+    prepared: Cell<bool>,
+    /// the all-apps page is built when first shown after a prepare
+    all_built: Cell<bool>,
 }
 
 thread_local! {
@@ -57,9 +62,16 @@ pub fn toggle(app: &gtk::Application) {
 }
 
 pub fn hide() {
-    if let Some(s) = START.with(|s| s.borrow().clone()) {
+    if let Some(s) = START.with(|s| s.borrow().clone())
+        && s.win.is_visible()
+    {
         s.hide();
     }
+}
+
+/// Built with the daemon, so even the first open only draws.
+pub fn init(app: &gtk::Application) {
+    START.with(|s| *s.borrow_mut() = Some(build(app)));
 }
 
 fn build(app: &gtk::Application) -> Rc<Start> {
@@ -155,7 +167,21 @@ fn build(app: &gtk::Application) -> Rc<Start> {
     let right = gtk::Box::new(gtk::Orientation::Vertical, 0);
     right.add_css_class("start-right");
     right.set_size_request(RIGHT_W, -1);
-    right.append(&user_block());
+    let user = user_block();
+    let when = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    when.set_hexpand(true);
+    when.set_halign(gtk::Align::End);
+    when.set_valign(gtk::Align::Center);
+    let time = gtk::Label::new(None);
+    time.add_css_class("start-time");
+    time.set_xalign(1.0);
+    let date = gtk::Label::new(None);
+    date.add_css_class("start-date");
+    date.set_xalign(1.0);
+    when.append(&time);
+    when.append(&date);
+    user.append(&when);
+    right.append(&user);
     card.append(&right);
 
     let s = Rc::new(Start {
@@ -169,9 +195,12 @@ fn build(app: &gtk::Application) -> Rc<Start> {
         nav,
         nav_label,
         nav_glyph,
+        time,
+        date,
         apps: RefCell::default(),
         armed: RefCell::default(),
-        built: Cell::new(false),
+        prepared: Cell::new(false),
+        all_built: Cell::new(false),
     });
 
     right.append(&section("places"));
@@ -284,6 +313,7 @@ fn build(app: &gtk::Application) -> Rc<Start> {
         }
     });
     backdrop.add_controller(click);
+    s.prepare_soon(1500);
     s
 }
 
@@ -292,29 +322,71 @@ impl Start {
         if let Some(ui) = crate::ui::get() {
             ui.hide();
         }
-        if !self.built.get() {
-            *self.apps.borrow_mut() = apps::load();
-            self.built.set(true);
+        let t = std::time::Instant::now();
+        if !self.prepared.get() {
+            self.prepare();
         }
-        self.fill_apps();
-        self.fill_recent();
+        self.prepared.set(false);
         self.page("home");
         *self.armed.borrow_mut() = None;
+        self.tick();
+        // keep the clock right while open
+        let w = Rc::downgrade(self);
+        glib::timeout_add_seconds_local(5, move || match w.upgrade() {
+            Some(s) if s.win.is_visible() => {
+                s.tick();
+                glib::ControlFlow::Continue
+            }
+            _ => glib::ControlFlow::Break,
+        });
         self.place();
         self.win.present();
         self.entry.grab_focus();
+        if std::env::var_os("VECTOR_SPACE_TIMING").is_some() {
+            eprintln!("start shown in {:?}", t.elapsed());
+        }
         if std::env::var_os("VECTOR_SPACE_TEST").is_some() {
             eprintln!("start shown on {:?}", self.win.monitor().and_then(|m| m.connector()));
         }
     }
 
-    fn hide(&self) {
+    fn hide(self: &Rc<Self>) {
         self.win.set_visible(false);
-        // pick up apps installed meanwhile on the next open
-        self.built.set(false);
+        self.prepare_soon(200);
     }
 
-    fn page(&self, name: &str) {
+    /// Reload apps, usage and recent files while nobody looks.
+    fn prepare_soon(self: &Rc<Self>, ms: u64) {
+        self.prepared.set(false);
+        let w = Rc::downgrade(self);
+        glib::timeout_add_local_once(std::time::Duration::from_millis(ms), move || {
+            if let Some(s) = w.upgrade()
+                && !s.win.is_visible()
+            {
+                s.prepare();
+            }
+        });
+    }
+
+    fn prepare(self: &Rc<Self>) {
+        *self.apps.borrow_mut() = apps::load();
+        self.fill_apps();
+        self.fill_recent();
+        self.all_built.set(false);
+        self.prepared.set(true);
+    }
+
+    fn tick(&self) {
+        if let Ok(now) = glib::DateTime::now_local() {
+            self.time.set_text(&now.format("%H:%M").map(|s| s.to_string()).unwrap_or_default());
+            self.date.set_text(&now.format("%a %-d %b").map(|s| s.to_lowercase()).unwrap_or_default());
+        }
+    }
+
+    fn page(self: &Rc<Self>, name: &str) {
+        if name == "all" && !self.all_built.get() {
+            self.fill_all();
+        }
         self.pages.set_visible_child_name(name);
         let home = name == "home";
         self.nav_label.set_text(if home { "all apps" } else { "back" });
@@ -356,7 +428,9 @@ impl Start {
         let pins = pins(&apps);
         for id in &pins {
             if let Some(a) = apps.iter().find(|a| &a.id == id) {
-                self.pinned.append(&self.app_row(a, true));
+                let r = self.app_row(a, true);
+                r.add_css_class("start-pinned");
+                self.pinned.append(&r);
             }
         }
         if self.pinned.first_child().is_none() {
@@ -373,6 +447,12 @@ impl Start {
         if self.frequent.first_child().is_none() {
             self.frequent.append(&empty("the apps you open most show up here"));
         }
+    }
+
+    fn fill_all(self: &Rc<Self>) {
+        clear(&self.all);
+        let apps = self.apps.borrow();
+        let pins = pins(&apps);
         let mut sorted: Vec<&App> = apps.iter().collect();
         sorted.sort_by_key(|a| a.name.to_lowercase());
         let mut letter = None;
@@ -388,6 +468,7 @@ impl Start {
             }
             self.all.append(&self.app_row(a, pins.contains(&a.id)));
         }
+        self.all_built.set(true);
     }
 
     fn fill_recent(self: &Rc<Self>) {
@@ -481,6 +562,9 @@ impl Start {
             }
             util::write_json(&util::state_dir().join(PINS), &p);
             s.fill_apps();
+            if s.all_built.get() {
+                s.fill_all();
+            }
         });
         r.add_controller(rc);
         r

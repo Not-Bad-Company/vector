@@ -156,13 +156,15 @@ pub fn start_css(t: &Theme) -> String {
 /* rows: flat buttons, accent edge on hover and keyboard focus */
 button.start-row {{
   background: transparent; border: none; box-shadow: none; border-radius: 0;
-  border-left: 2px solid transparent; padding: 6px 18px; min-height: 26px;
+  border-left: 2px solid transparent; padding: 6px 20px; min-height: 26px;
   color: {fg}; font-weight: normal; transition: background 90ms ease;
 }}
 button.start-row:hover {{ background: alpha({fg}, 0.06); border-left-color: alpha({acc}, 0.6); }}
 button.start-row:focus-visible {{ background: alpha({acc}, 0.14); border-left-color: {acc}; }}
 button.start-row:active {{ background: alpha({acc}, 0.22); }}
 button.start-row label {{ font-size: 13px; }}
+button.start-pinned label {{ font-weight: bold; }}
+button.start-nav:hover .start-meta {{ color: {acc}; }}
 .start-glyph {{ font-size: 16px; min-width: 24px; color: alpha({fg}, 0.72); }}
 button.start-row:hover .start-glyph, button.start-row:focus-visible .start-glyph {{ color: {acc}; }}
 .start-meta {{ color: alpha({fg}, 0.38); font-size: 11px; }}
@@ -191,6 +193,8 @@ button.start-nav {{ border-top: 1px solid alpha({fg}, 0.07); padding-top: 9px; p
   min-width: 44px; min-height: 44px;
 }}
 .start-name {{ font-size: 15px; font-weight: bold; }}
+.start-time {{ font-size: 22px; font-weight: bold; color: {fg}; }}
+.start-date {{ font-size: 11px; color: alpha({fg}, 0.45); }}
 .start-host {{ font-size: 11px; color: alpha({fg}, 0.42); }}
 
 /* settings and system tiles */

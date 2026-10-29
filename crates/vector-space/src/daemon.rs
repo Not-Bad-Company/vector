@@ -109,6 +109,7 @@ fn main() -> glib::ExitCode {
         load_css();
         watch_theme();
         ui::build(app);
+        start::init(app);
         convert::refresh_rates();
         if !test() {
             clip::import_clipse();
