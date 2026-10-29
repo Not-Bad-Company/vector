@@ -205,6 +205,45 @@ fn describe_tool(name: &Value, input: &Value) -> String {
     .unwrap_or_else(|| name.to_lowercase())
 }
 
+/// session id -> its transcript, found once
+static TRANSCRIPTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, PathBuf>>> = std::sync::LazyLock::new(Default::default);
+
+/// A session's transcript. Usually `<projects>/<cwd as dashes>/<sid>.jsonl`, but a
+/// session keeps the folder it *started* in (cwd changes, accounts switch), so
+/// fall back to looking for `<sid>.jsonl` in every account's projects folder.
+fn transcript_path(home: &Path, sid: &str, cwd: &str) -> PathBuf {
+    if let Some(p) = TRANSCRIPTS.lock().ok().and_then(|m| m.get(sid).cloned()).filter(|p| p.exists()) {
+        return p;
+    }
+    let name = format!("{sid}.jsonl");
+    let dashed: String = cwd.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    let mut roots: Vec<PathBuf> = vec![home.join(".claude/projects")];
+    if let Ok(rd) = std::fs::read_dir(home) {
+        for e in rd.flatten() {
+            let n = e.file_name().to_string_lossy().to_string();
+            if n.starts_with(".claude-account") {
+                roots.push(e.path().join("projects"));
+            }
+        }
+    }
+    let found = roots
+        .iter()
+        .map(|r| r.join(&dashed).join(&name))
+        .find(|p| p.exists())
+        .or_else(|| {
+            roots.iter().find_map(|r| {
+                std::fs::read_dir(r).ok()?.flatten().map(|d| d.path().join(&name)).find(|p| p.exists())
+            })
+        })
+        .unwrap_or_else(|| home.join(".claude/projects").join(&dashed).join(&name));
+    if found.exists() {
+        if let Ok(mut m) = TRANSCRIPTS.lock() {
+            m.insert(sid.to_string(), found.clone());
+        }
+    }
+    found
+}
+
 pub fn agents() -> Vec<Agent> {
     let mut out: Vec<Agent> = Vec::new();
     let home = util::home();
@@ -231,7 +270,7 @@ pub fn agents() -> Vec<Agent> {
                 continue;
             }
             let cwd = v["cwd"].as_str().unwrap_or("").to_string();
-            let tp = home.join(".claude/projects").join(cwd.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect::<String>()).join(format!("{sid}.jsonl"));
+            let tp = transcript_path(&home, &sid, &cwd);
             let (title, prompt, doing, doing_at) = transcript_meta(&tp);
             let subs = subagents(&tp.with_extension("").join("subagents"));
             let ms = |k: &str| v[k].as_f64().unwrap_or(0.0) / 1000.0;
@@ -255,8 +294,157 @@ pub fn agents() -> Vec<Agent> {
             });
         }
     }
+    out.extend(cli_agents());
     out.sort_by(|a, b| a.started.partial_cmp(&b.started).unwrap_or(std::cmp::Ordering::Equal));
     out
+}
+
+/// pid -> cpu ticks at the last poll (Antigravity: busy = using cpu)
+static TICKS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<u32, (u64, f64)>>> = std::sync::LazyLock::new(Default::default);
+
+fn boot_time() -> f64 {
+    util::read("/proc/stat")
+        .and_then(|s| s.lines().find_map(|l| l.strip_prefix("btime ").and_then(|v| v.trim().parse::<f64>().ok())))
+        .unwrap_or(0.0)
+}
+
+/// (start time, cpu ticks) of a process
+fn proc_times(pid: u32) -> Option<(f64, u64)> {
+    let s = util::read(format!("/proc/{pid}/stat"))?;
+    let f: Vec<&str> = s.rsplit_once(')')?.1.split_whitespace().collect();
+    let ticks = f.get(11)?.parse::<u64>().ok()? + f.get(12)?.parse::<u64>().ok()?;
+    let start = f.get(19)?.parse::<f64>().ok()? / 100.0 + boot_time();
+    Some((start, ticks))
+}
+
+fn proc_env(pid: u32, key: &str) -> Option<String> {
+    let raw = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
+    raw.split(|b| *b == 0).find_map(|kv| {
+        let kv = String::from_utf8_lossy(kv);
+        kv.strip_prefix(&format!("{key}=")).map(str::to_string)
+    })
+}
+
+/// Codex (every CODEX_HOME account) and Antigravity sessions running now.
+fn cli_agents() -> Vec<Agent> {
+    let mut out = Vec::new();
+    let Ok(rd) = std::fs::read_dir("/proc") else { return out };
+    let now = util::now();
+    let mut seen = Vec::new();
+    for e in rd.flatten() {
+        let Some(pid) = e.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else { continue };
+        let Some(comm) = util::read_trim(e.path().join("comm")) else { continue };
+        if comm != "codex" && comm != "agy" {
+            continue;
+        }
+        // one entry per session: skip a codex/agy whose parent is the same program
+        let parent_same = util::read(format!("/proc/{pid}/stat"))
+            .and_then(|s| s.rsplit_once(')').and_then(|r| r.1.split_whitespace().nth(1).map(str::to_string)))
+            .and_then(|pp| util::read_trim(format!("/proc/{pp}/comm")))
+            .is_some_and(|pc| pc == comm);
+        if parent_same {
+            continue;
+        }
+        let Some((started, ticks)) = proc_times(pid) else { continue };
+        let cwd = std::fs::read_link(format!("/proc/{pid}/cwd")).map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+        seen.push(pid);
+        if comm == "codex" {
+            let home = proc_env(pid, "CODEX_HOME").map(PathBuf::from).unwrap_or_else(|| util::home().join(".codex"));
+            let account = home.file_name().map(|n| n.to_string_lossy().trim_start_matches('.').to_string()).unwrap_or_else(|| "codex".into());
+            let (title, doing, busy, changed, cwd2) = codex_rollout(&home, started);
+            out.push(Agent {
+                pid,
+                sid: format!("codex-{pid}"),
+                name: format!("codex {pid}"),
+                account,
+                cwd: if cwd2.is_empty() { cwd } else { cwd2 },
+                status: if busy { "busy".into() } else { "idle".into() },
+                waiting: None,
+                started,
+                since: changed.max(started),
+                title: if title.is_empty() { "codex session".into() } else { title },
+                doing,
+                prompt: String::new(),
+                changed: changed.max(started),
+                subs: Vec::new(),
+            });
+        } else {
+            // agy keeps its conversations in binary stores: busy = it used cpu since the last poll
+            let busy = {
+                let mut m = TICKS.lock().ok();
+                let prev = m.as_ref().and_then(|m| m.get(&pid).copied());
+                if let Some(m) = m.as_mut() {
+                    m.insert(pid, (ticks, now));
+                }
+                prev.is_some_and(|(t, at)| now > at && (ticks.saturating_sub(t)) as f64 / 100.0 / (now - at) > 0.03)
+            };
+            out.push(Agent {
+                pid,
+                sid: format!("agy-{pid}"),
+                name: format!("agy {pid}"),
+                account: "antigravity".into(),
+                cwd: cwd.clone(),
+                status: if busy { "busy".into() } else { "idle".into() },
+                waiting: None,
+                started,
+                since: started,
+                title: format!("antigravity · {}", Path::new(&cwd).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()),
+                doing: String::new(),
+                prompt: String::new(),
+                changed: started,
+                subs: Vec::new(),
+            });
+        }
+    }
+    if let Ok(mut m) = TICKS.lock() {
+        m.retain(|pid, _| seen.contains(pid));
+    }
+    out
+}
+
+/// From the newest rollout of a codex account written since the process started:
+/// (title = first prompt, doing = latest tool call, busy, last change, cwd).
+fn codex_rollout(home: &Path, since: f64) -> (String, String, bool, f64, String) {
+    fn newest(d: &Path, best: &mut Option<(f64, PathBuf)>, depth: u8) {
+        let Ok(rd) = std::fs::read_dir(d) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() && depth < 4 {
+                newest(&p, best, depth + 1);
+            } else if p.extension().is_some_and(|x| x == "jsonl") {
+                let m = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs_f64()).unwrap_or(0.0);
+                if best.as_ref().is_none_or(|(t, _)| m > *t) {
+                    *best = Some((m, p));
+                }
+            }
+        }
+    }
+    let mut best = None;
+    newest(&home.join("sessions"), &mut best, 0);
+    let Some((mtime, path)) = best.filter(|(m, _)| *m >= since - 5.0) else { return (String::new(), String::new(), false, 0.0, String::new()) };
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let (mut title, mut doing, mut cwd, mut busy) = (String::new(), String::new(), String::new(), true);
+    for line in text.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        let p = &v["payload"];
+        match (v["type"].as_str(), p["type"].as_str()) {
+            (Some("session_meta"), _) => cwd = p["cwd"].as_str().unwrap_or("").to_string(),
+            (_, Some("message")) if title.is_empty() && p["role"] == "user" => {
+                let t = p["content"].as_array().and_then(|a| a.iter().find_map(|c| c["text"].as_str())).unwrap_or("");
+                // the first real line of the brief, not option lines like "mode: write"
+                title = t.lines().map(str::trim).find(|l| !l.is_empty() && !l.contains(": ") || l.len() > 40).unwrap_or("").chars().take(80).collect();
+            }
+            (_, Some("function_call")) => {
+                let args: Value = p["arguments"].as_str().and_then(|a| serde_json::from_str(a).ok()).unwrap_or_default();
+                let cmd = args["cmd"].as_str().map(str::to_string).or_else(|| args["command"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(" ")));
+                doing = cmd.unwrap_or_else(|| p["name"].as_str().unwrap_or("").to_string()).chars().take(60).collect();
+            }
+            (_, Some("task_started")) => busy = true,
+            (_, Some("task_complete")) => busy = false,
+            _ => {}
+        }
+    }
+    (title, doing, busy, mtime, cwd)
 }
 
 /// The Hyprland window holding an agent: walk up its parent processes until one owns a window.
