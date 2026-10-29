@@ -1,0 +1,85 @@
+# Vector Bar — ~/.config/vector-bar/config.toml
+# Every key is optional; these are the defaults. The bar reloads by itself
+# when this file, style.css, theme.toml or a plugin changes.
+
+height = 26
+font = "JetBrainsMonoNL Nerd Font"
+font_size = 12
+# bar colours for "needs attention" / "bad" (default: theme or #d08770 / #a55555)
+# warn = "#d08770"
+# crit = "#a55555"
+
+# Layout. Built-in modules:
+#   mode workspaces agents window media indicators clock
+#   homelab phone earbuds sony ai clipboard notifications bluetooth vpn
+#   network profile sysmon battery tray
+# plus custom:<name> ([[custom]] below) and any Lua plugin by its name.
+left = ["mode", "workspaces", "agents"]
+center = ["media", "indicators"]
+right = ["tray", "homelab", "phone", "earbuds", "sony", "ai", "clipboard", "notifications",
+         "bluetooth", "vpn", "network", "profile", "sysmon", "battery", "clock"]
+
+# lualine look: solid blocks in the mode colour, tinted segments beside them
+blocks = ["mode", "clock"]
+segments = ["workspaces", "profile", "sysmon", "battery"]
+
+# Per-module options.
+[modules.clock]
+format = "%a %d %b · %H:%M"
+format_alt = "%d %B W%V %Y"          # middle click
+# on_right = "omarchy-launch-floating-terminal-with-presentation omarchy-tz-select"
+
+[modules.workspaces]
+persistent = 8
+active = ""                           # glyph for the active one; "" = its number
+per_monitor = false
+# names = { 1 = "web", 2 = "code" }
+
+[modules.ai]
+claude = ["claude2", "claude3"]       # add "claude" when account 1 is logged in again
+codex = ["codex", "codex2", "codex3"]
+antigravity = true
+agents_interval = 2
+
+[modules.homelab]
+host = "daanhpi"
+tailscale_name = "daanhpi"
+metrics_ssh = "nas-metrics"
+mount = "/mnt/nas"
+# open = "vector-find /mnt/nas"
+
+[modules.sysmon]
+warn_temp = 75
+crit_temp = 90
+interval = 3
+
+[modules.battery]
+device = "BAT0"
+warning = 20
+critical = 10
+
+[modules.media]
+max_length = 45
+
+[modules.window]
+max_length = 60
+
+[modules.profile]
+# hide_when = ["balanced"]            # only show the profile when it isn't this
+
+[modules.indicators]
+# order of the small marks (the mode block shows REC/DICTATE/VM/SILENT/AWAKE instead)
+show = ["voxtype", "recording", "idle", "sleeplock", "win11", "dnd", "mic", "camera"]
+
+# Click overrides for any module: left / middle / right / scroll_up / scroll_down.
+# [bind.network]
+# right = "impala"
+
+# Script modules, Waybar custom/* compatible. Output: one JSON object per run
+# {"text", "tooltip", "class", "alt", "percentage"}; tooltip may also be a sheet
+# ({"title", "detail", "items": [...]}, see the README). interval = 0 streams lines.
+# [[custom]]
+# name = "weather"
+# exec = "~/.config/waybar/scripts/weather.sh"
+# interval = 600
+# on_click = "xdg-open https://wttr.in"
