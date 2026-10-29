@@ -231,8 +231,21 @@ fn panel(p: &Panel) -> gtk::Widget {
                 }
                 if !h.is_empty() {
                     hist.append(&ui::section("earlier"));
-                    for n in &h {
-                        hist.append(&note_row(n, false, &m2));
+                    // runs of the same app + title (sleep lock on/off...) become one row
+                    let mut i = 0;
+                    while i < h.len() {
+                        let mut j = i + 1;
+                        while j < h.len() && h[j].app == h[i].app && clean(&h[j].summary) == clean(&h[i].summary) {
+                            j += 1;
+                        }
+                        let row = note_row(&h[i], false, &m2);
+                        if j - i > 1 {
+                            if let Some(top) = row.first_child().and_downcast::<gtk::Box>() {
+                                top.append(&ui::text(&format!("×{}", j - i), &["dim"]));
+                            }
+                        }
+                        hist.append(&row);
+                        i = j;
                     }
                 }
             });
