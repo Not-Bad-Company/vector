@@ -1145,10 +1145,14 @@ impl Ui {
                 true
             }
             gdk::Key::Tab | gdk::Key::ISO_Left_Tab => {
-                let i = Mode::ALL.iter().position(|m| *m == mode).unwrap_or(0) as i32;
                 let d = if k == gdk::Key::ISO_Left_Tab || shift { -1 } else { 1 };
-                let next = Mode::ALL[(i + d).rem_euclid(Mode::ALL.len() as i32) as usize];
-                self.set_mode(next, "");
+                self.cycle_mode(d);
+                true
+            }
+            // grid modes (emoji) moved the selection above; in a text field
+            // the arrows only switch mode at the edge of the search
+            gdk::Key::Left | gdk::Key::Right if !ctrl && !shift && !alt && self.at_edge(k == gdk::Key::Left) => {
+                self.cycle_mode(if k == gdk::Key::Left { -1 } else { 1 });
                 true
             }
             gdk::Key::Return | gdk::Key::KP_Enter | gdk::Key::ISO_Enter => {
@@ -1217,6 +1221,27 @@ impl Ui {
             }
             _ => false,
         }
+    }
+
+    /// Next (`d` = 1) or previous (`d` = -1) mode, wrapping, in `Mode::ALL` order.
+    fn cycle_mode(self: &Rc<Self>, d: i32) {
+        let i = Mode::ALL.iter().position(|m| *m == self.mode()).unwrap_or(0) as i32;
+        let next = Mode::ALL[(i + d).rem_euclid(Mode::ALL.len() as i32) as usize];
+        self.set_mode(next, "");
+    }
+
+    /// True when Left (`left`) or Right has nothing to move in the search: it is
+    /// empty, or the cursor is at the start (Left) or end (Right) with no selection.
+    fn at_edge(&self, left: bool) -> bool {
+        let len = self.entry.text().chars().count() as i32;
+        if len == 0 {
+            return true;
+        }
+        if self.entry.selection_bounds().is_some() {
+            return false;
+        }
+        let pos = self.entry.position();
+        if left { pos == 0 } else { pos == len }
     }
 
     fn activate(self: &Rc<Self>, alt: bool) {

@@ -8,7 +8,9 @@ JetBrains Mono, a lualine mode block in the theme accent, dim lowercase detail.
 ## Modes and keys
 
 Type the prefix into an empty search to switch; backspace on an empty search
-goes back to apps. tab / shift+tab cycle, ctrl+1…7 jump.
+goes back to apps. tab / shift+tab cycle, left / right switch when the search is
+empty or the cursor is at its start / end (emoji: arrows move in the grid),
+ctrl+1…7 jump.
 
 | prefix | mode | enter | more |
 |---|---|---|---|
