@@ -72,7 +72,7 @@ const M_SILENT: mode::State = mode::State {
 const M_AWAKE: mode::State = mode::State {
     key: "awake",
     label: "AWAKE",
-    icon: "\u{f0176}",
+    icon: "\u{f06d0}",
     rank: 5,
 };
 
