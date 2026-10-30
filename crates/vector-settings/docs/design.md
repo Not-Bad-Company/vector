@@ -34,8 +34,8 @@ the window is closed.
 | page | backend | status |
 |---|---|---|
 | wi-fi | iwd over D-Bus; agent while in view; enterprise files via pkexec | done |
-| bluetooth | BlueZ over D-Bus; pairing agent while in view | in progress |
-| sound | PipeWire through `pactl` (JSON), `pactl subscribe` while in view | in progress |
+| bluetooth | BlueZ over D-Bus; pairing agent and discovery while in view | done |
+| sound | PipeWire through `pactl` (JSON), `pactl subscribe` while in view | done |
 | about | fastfetch JSON, `vector-update/install/remove` | done |
 | display | `hyprctl monitors`, writes `~/.config/hypr/monitors.conf` | planned |
 | power | power-profiles-daemon / asusctl, hypridle timeouts | planned |
@@ -43,8 +43,8 @@ the window is closed.
 | appearance | themes, backgrounds, fonts (the Vector Space galleries) | planned |
 | bar | `~/.config/vector-bar/config.toml` (modules, order) | planned |
 | default apps | `mimeapps.list`, `xdg-terminals.list` | planned |
-| pi | the homelab: health, krentenweger scrapers, site and app metrics, quick actions | planned |
-| ai | the AI workspace, crew agents, AI browser, guard, aisudo | planned |
+| pi | `ssh HOST STATUS` (one read-only JSON command, once a minute while in view), `~/.config/vectoros/pi.json` | done |
+| ai | `crew who --json`, `aiws`, guard and aisudo files | done |
 
 ## Wi-Fi notes
 
@@ -58,3 +58,14 @@ the window is closed.
   `_` use iwd's `=hex` file name.
 - Hidden networks: `Station.ConnectHiddenNetwork`; the password goes through
   the same agent.
+
+## Pi notes
+
+The page knows nothing about one particular server: `~/.config/vectoros/pi.json`
+names the ssh host, the status command, the admin and site URLs and which
+systemd units may be started from the page (`actions`, two clicks, with a
+warning text). The status command prints JSON with `host`, `services`,
+`timers` and optionally `kw` (the site's own database numbers), `umami`
+(visits) and `backup`; sections without data are left out. The owner's
+command (`kw-status`) is private, in their dotfiles, copied to the server's
+`~/bin`; it caches its answer 30 s and only reads.

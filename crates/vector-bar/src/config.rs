@@ -27,7 +27,7 @@ pub struct Config {
     pub segments: Vec<String>,
     /// Per-module options: `[modules.clock] format = "..."`.
     pub modules: HashMap<String, toml::Table>,
-    /// Click overrides: `[bind.network] right = "impala"`.
+    /// Click overrides: `[bind.network] right = "vector-settings wifi"`.
     pub bind: HashMap<String, Bind>,
     /// Waybar-style script modules.
     pub custom: Vec<Custom>,

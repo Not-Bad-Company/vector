@@ -138,10 +138,10 @@ wifi | wi-fi)
   ;;
 bluetooth)
   rfkill unblock bluetooth
-  omarchy-launch-bluetooth
+  exec vector-settings bluetooth
   ;;
 sound)
-  omarchy-launch-audio
+  exec vector-settings sound
   ;;
 
 lock)

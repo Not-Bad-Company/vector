@@ -195,7 +195,7 @@ fn builtin_rules() -> Vec<Rule> {
             r.summary = s("upgrade to omarchy quattro");
             r.ignore = Some(true);
         }),
-        launch("Setup Wi-Fi", "omarchy-launch-wifi"),
+        launch("Setup Wi-Fi", "vector-settings wifi"),
         launch(
             "Update System",
             "omarchy-launch-floating-terminal-with-presentation omarchy-update",

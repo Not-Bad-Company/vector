@@ -1,6 +1,6 @@
 //! Bluetooth over BlueZ (D-Bus, event driven). Bar: on / connected / off.
 //! Click: panel (power, devices with battery, scan, pair with its own agent,
-//! connect, disconnect, forget). Right: bluetui.
+//! connect, disconnect, forget). Right: vectorOS Settings.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -167,7 +167,7 @@ impl Bluetooth {
             pending: Cell::new(false),
             _sub: RefCell::default(),
         });
-        let right = o.str("on_right", "omarchy-launch-bluetooth");
+        let right = o.str("on_right", "vector-settings bluetooth");
         inner.slot.on_right(move || util::spawn_sh(&right));
         let w = Rc::downgrade(&inner);
         inner.slot.on_middle(move || {
@@ -281,9 +281,9 @@ impl Inner {
         }
         self.headphones.append_tooltip(&sh);
         sh.append(&ui::thint(if self.headphones.any_connected() {
-            "click devices & controls  ·  middle noise mode  ·  right bluetui"
+            "click devices & controls  ·  middle noise mode  ·  right settings"
         } else {
-            "click devices  ·  right bluetui"
+            "click devices  ·  right settings"
         }));
         sh.upcast()
     }
@@ -362,11 +362,11 @@ fn panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
     ui::pointer(&scan_btn);
     card.foot_add(&scan_btn);
     card.foot_add(&ui::spacer());
-    card.foot_add(&ui::link("bluetui", &[], {
+    card.foot_add(&ui::link("settings ›", &[], {
         let p = p.clone();
         move || {
             p.close();
-            util::spawn_sh("omarchy-launch-bluetooth");
+            util::spawn_sh("vector-settings bluetooth");
         }
     }));
 
