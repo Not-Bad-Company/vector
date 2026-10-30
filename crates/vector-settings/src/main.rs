@@ -6,6 +6,7 @@
 //! Single instance: a second call switches the open window to PAGE.
 
 mod about;
+mod ai;
 mod dbus;
 mod page;
 mod ui;
@@ -26,6 +27,7 @@ const APP_ID: &str = "org.vectoros.Settings";
 fn pages() -> Vec<PageDef> {
     vec![
         PageDef { id: "wifi", icon: "\u{f05a9}", title: "wi-fi", group: "connections", build: wifi::page },
+        PageDef { id: "ai", icon: "\u{f06a9}", title: "ai", group: "vector", build: ai::page },
         PageDef { id: "about", icon: "\u{f02fd}", title: "about", group: "system", build: about::page },
     ]
 }
