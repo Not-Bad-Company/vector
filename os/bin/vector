@@ -1,0 +1,201 @@
+#!/bin/bash
+# vector: vectorOS system commands. Also installed as vector-update,
+# vector-install, vector-remove, vector-setup, vector-about, vector-version,
+# vector-lock, vector-logout, vector-restart, vector-shutdown (the name picks
+# the command). Menus open in Vector Space's picker; anything that needs a
+# password or shows progress runs in a floating vectorOS terminal.
+#
+# Arch and the pinned Omarchy 3 layer stay the base: package installs use
+# pacman/yay, `update` uses the patched omarchy-update, and the rarely used
+# corners of Omarchy's menus stay one "more" row away.
+
+set -u
+SHARE="${VECTOROS_SHARE:-$HOME/.local/share/vectoros}"
+REPO="${VECTOR_REPO:-$HOME/.local/src/vector}"
+
+cmd="$(basename "$0")"
+if [[ $cmd == vector ]]; then
+  cmd="${1:-help}"
+  shift || true
+else
+  cmd="${cmd#vector-}"
+fi
+
+# ── helpers ──
+
+# menu PROMPT LINES... -> the chosen line on stdout, exit 1 when cancelled
+menu() {
+  local prompt="$1"
+  shift
+  printf '%s\n' "$@" | vector-space dmenu -p "$prompt"
+}
+
+# term "TITLE" "SHELL COMMAND": a floating terminal that shows the mark, runs
+# the command and waits for a key (not after Ctrl+C)
+term() {
+  local title="$1" run="$2"
+  setsid uwsm-app -- xdg-terminal-exec --app-id=org.vectoros.terminal --title="vectorOS · $title" \
+    -e bash -c "vector logo --small; echo; $run; s=\$?; if (( s != 130 )); then echo; if (( s == 0 )); then printf '\e[32mdone\e[0m'; else printf '\e[31mfailed (%s)\e[0m' \$s; fi; printf '  ·  press a key to close'; read -rsn1; fi" \
+    >/dev/null 2>&1 &
+}
+
+edit() { setsid uwsm-app -- omarchy-launch-editor "$1" >/dev/null 2>&1 & }
+
+version() {
+  local v
+  v="$(cat "$SHARE/version" 2>/dev/null || echo unknown)"
+  echo "vectorOS $v"
+}
+
+# pick packages from a list (stdin) and act on the chosen one
+pick_pkg() {
+  local prompt="$1"
+  vector-space dmenu -p "$prompt" --placeholder "package name"
+}
+
+# ── commands ──
+
+case "$cmd" in
+version | --version | -v)
+  version
+  ;;
+
+logo)
+  # $1 = accent, $2 = muted; --small for terminal headers
+  if [[ ${1:-} == --small ]]; then
+    printf '\e[34m\U000f055c\e[0m \e[1mvectorOS\e[0m\n'
+  else
+    sed -e 's/\$1/\x1b[34m/g' -e 's/\$2/\x1b[90m/g' -e 's/$/\x1b[0m/' "$SHARE/logo.txt"
+  fi
+  ;;
+
+about)
+  setsid uwsm-app -- xdg-terminal-exec --app-id=org.vectoros.about --title="vectorOS · about" \
+    -e bash -c "fastfetch; read -rsn1" >/dev/null 2>&1 &
+  ;;
+
+update)
+  case "$(menu Update "everything" "vector apps" "firmware" "time" "timezone" "more")" in
+  everything) term "update" "omarchy-update" ;;
+  "vector apps") term "update vector" "cd '$REPO' && git pull --ff-only && for c in crates/vector-bar crates/vector-space crates/vector-capture; do \$c/scripts/install.sh || exit; done && ./scripts/install.sh && os/install.sh && cargo clean" ;;
+  firmware) term "firmware" "fwupdmgr refresh; fwupdmgr update" ;;
+  time) term "time" "omarchy-update-time" ;;
+  timezone) term "timezone" "omarchy-tz-select" ;;
+  more) omarchy-menu update ;;
+  esac
+  ;;
+
+install)
+  case "$(menu Install "package" "aur package" "web app" "terminal app" "more")" in
+  package)
+    p="$(pacman -Slq | sort -u | pick_pkg "INSTALL")" || exit 0
+    [[ -n $p ]] && term "install $p" "pacman -Si '$p' | sed -n '1,4p;/^Description/p'; echo; sudo pacman -S --needed '$p'"
+    ;;
+  "aur package")
+    p="$(yay -Slqa 2>/dev/null | pick_pkg "INSTALL AUR")" || exit 0
+    [[ -n $p ]] && term "install $p" "yay -S --needed '$p'"
+    ;;
+  "web app") term "web app" "omarchy-webapp-install" ;;
+  "terminal app") term "terminal app" "omarchy-tui-install" ;;
+  more) omarchy-menu install ;;
+  esac
+  ;;
+
+remove)
+  case "$(menu Remove "package" "web app" "terminal app" "theme" "more")" in
+  package)
+    p="$(pacman -Qqe | pick_pkg "REMOVE")" || exit 0
+    [[ -n $p ]] && term "remove $p" "pacman -Qi '$p' | sed -n '1,3p;/^Description/p;/^Required By/p'; echo; sudo pacman -Rns '$p'"
+    ;;
+  "web app") term "web app" "omarchy-webapp-remove" ;;
+  "terminal app") term "terminal app" "omarchy-tui-remove" ;;
+  theme) term "theme" "omarchy-theme-remove" ;;
+  more) omarchy-menu remove ;;
+  esac
+  ;;
+
+setup)
+  case "$(menu Setup "wi-fi" "bluetooth" "sound" "power profile" "monitors" "keybindings" "input" "default apps" "more")" in
+  wi-fi) vector wifi ;;
+  bluetooth) vector bluetooth ;;
+  sound) vector sound ;;
+  "power profile")
+    cur="$(powerprofilesctl get 2>/dev/null)"
+    p="$(menu "POWER · $cur" $(powerprofilesctl list 2>/dev/null | sed -n 's/^[ *]*\([a-z-]*\):$/\1/p'))" || exit 0
+    [[ -n $p ]] && powerprofilesctl set "$p"
+    ;;
+  monitors) edit ~/.config/hypr/monitors.conf ;;
+  keybindings) edit ~/.config/hypr/bindings.conf ;;
+  input) edit ~/.config/hypr/input.conf ;;
+  "default apps") omarchy-menu setup ;;
+  more) omarchy-menu setup ;;
+  esac
+  ;;
+
+wifi | wi-fi)
+  rfkill unblock wifi
+  omarchy-launch-wifi
+  ;;
+bluetooth)
+  rfkill unblock bluetooth
+  omarchy-launch-bluetooth
+  ;;
+sound)
+  omarchy-launch-audio
+  ;;
+
+lock)
+  # hypridle's before_sleep sets VECTOR_LOCK_ONLY: lock, leave the screen alone
+  if ! pidof hyprlock >/dev/null; then
+    (
+      hyprlock
+      hyprctl dispatch dpms on >/dev/null
+      brightnessctl -d '*::kbd_backlight' -r >/dev/null 2>&1
+    ) &
+  fi
+  hyprctl switchxkblayout all 0 >/dev/null 2>&1
+  pgrep -x 1password >/dev/null && 1password --lock &
+  pkill -f '[o]rg.omarchy.screensaver'
+  if [[ ${VECTOR_LOCK_ONLY:-${OMARCHY_LOCK_ONLY:-false}} != true ]]; then
+    (
+      sleep 3
+      pidof hyprlock >/dev/null || exit 0
+      brightnessctl -d '*::kbd_backlight' -s set 0 >/dev/null 2>&1
+      hyprctl dispatch dpms off >/dev/null
+    ) &
+  fi
+  ;;
+
+logout | restart | shutdown)
+  # close windows first so apps (browsers) save their state, then act
+  case "$cmd" in
+  logout) then="uwsm stop" ;;
+  restart) then="systemctl reboot --no-wall" ;;
+  shutdown) then="systemctl poweroff --no-wall" ;;
+  esac
+  [[ $cmd != logout ]] && omarchy-state clear 're*-required' 2>/dev/null
+  nohup bash -c "sleep 2 && $then" >/dev/null 2>&1 &
+  hyprctl -j clients | jq -r '.[].address' | while read -r a; do
+    hyprctl dispatch closewindow "address:$a" >/dev/null
+  done
+  sleep 1
+  ;;
+
+help | -h | --help | *)
+  cat <<EOF
+$(version)
+usage: vector COMMAND (or vector-COMMAND)
+
+  update      system, Vector apps, firmware, time
+  install     packages (pacman, AUR), web apps, terminal apps
+  remove      packages, web apps, terminal apps, themes
+  setup       wi-fi, bluetooth, sound, power profile, monitors, keys, input
+  wifi | bluetooth | sound
+  about       system information
+  version     the vectorOS version
+  lock | logout | restart | shutdown
+  logo [--small]
+EOF
+  [[ $cmd == help || $cmd == -h || $cmd == --help ]] || exit 2
+  ;;
+esac

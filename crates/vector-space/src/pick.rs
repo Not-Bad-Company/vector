@@ -19,6 +19,8 @@ use crate::util::{self, Fuzzy};
 const WIDTH: i32 = 440;
 const ROW_H: i32 = 38;
 const MAX_ROWS: usize = 14;
+/// rows built at most; long lists (all packages) narrow down as you type
+const MAX_LIST: usize = 300;
 
 #[derive(serde::Deserialize, Default)]
 pub struct Request {
@@ -242,6 +244,7 @@ impl Pick {
         if !fz.empty {
             shown.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
         }
+        shown.truncate(MAX_LIST);
         for (_, i, hl) in &shown {
             let l = gtk::Label::new(None);
             l.set_markup(&util::highlight(&req.items[*i], hl));

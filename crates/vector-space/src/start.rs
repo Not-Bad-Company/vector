@@ -572,29 +572,29 @@ impl Start {
 }
 
 const SETTINGS: &[(&str, &str, &str)] = &[
-    ("\u{f05a9}", "wi-fi", "omarchy-launch-wifi"),
-    ("\u{f00af}", "bluetooth", "omarchy-launch-bluetooth"),
-    ("\u{f057e}", "sound", "omarchy-launch-audio"),
+    ("\u{f05a9}", "wi-fi", "vector wifi"),
+    ("\u{f00af}", "bluetooth", "vector bluetooth"),
+    ("\u{f057e}", "sound", "vector sound"),
     ("\u{f030c}", "keys", "omarchy-menu-keybindings"),
     ("\u{f03d8}", "theme", "vector-space themes"),
     ("\u{f0e09}", "wallpaper", "vector-space backgrounds"),
     ("\u{f0b34}", "font", "omarchy-menu style"),
-    ("\u{f0493}", "setup", "omarchy-menu setup"),
+    ("\u{f0493}", "setup", "vector setup"),
 ];
 
 const SYSTEM: &[(&str, &str, &str)] = &[
-    ("\u{f06b0}", "update", "omarchy-menu update"),
-    ("\u{f0ab7}", "install", "omarchy-menu install"),
-    ("\u{f05e8}", "remove", "omarchy-menu remove"),
-    ("\u{f02fd}", "about", "omarchy-launch-about"),
+    ("\u{f06b0}", "update", "vector update"),
+    ("\u{f0ab7}", "install", "vector install"),
+    ("\u{f05e8}", "remove", "vector remove"),
+    ("\u{f02fd}", "about", "vector about"),
 ];
 
 const POWER: &[(&str, &str, &str, bool)] = &[
-    ("\u{f033e}", "lock", "omarchy-system-lock", false),
+    ("\u{f033e}", "lock", "vector lock", false),
     ("\u{f04b2}", "sleep", "systemctl suspend", false),
-    ("\u{f0343}", "log out", "omarchy-system-logout", true),
-    ("\u{f0709}", "restart", "omarchy-system-reboot", true),
-    ("\u{f0425}", "shut down", "omarchy-system-shutdown", true),
+    ("\u{f0343}", "log out", "vector logout", true),
+    ("\u{f0709}", "restart", "vector restart", true),
+    ("\u{f0425}", "shut down", "vector shutdown", true),
 ];
 
 /// Pinned apps: what was pinned, else the browser, terminal and files.
