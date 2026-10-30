@@ -44,6 +44,7 @@ const DONE_SHOWN: f64 = 60.0;
 const M_AGENT: mode::State = mode::State {
     key: "agent",
     label: "AGENT",
+    icon: "\u{f06a9}",
     rank: 2,
 };
 

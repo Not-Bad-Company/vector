@@ -48,26 +48,31 @@ struct Inner {
 const M_REC: mode::State = mode::State {
     key: "rec",
     label: "REC",
+    icon: "\u{f044a}",
     rank: 0,
 };
 const M_DICTATE: mode::State = mode::State {
     key: "dictate",
     label: "DICTATE",
+    icon: "\u{f036c}",
     rank: 1,
 };
 const M_VM: mode::State = mode::State {
     key: "vm",
     label: "VM",
+    icon: "\u{f05b3}",
     rank: 3,
 };
 const M_SILENT: mode::State = mode::State {
     key: "silent",
     label: "SILENT",
+    icon: "\u{f009b}",
     rank: 4,
 };
 const M_AWAKE: mode::State = mode::State {
     key: "awake",
     label: "AWAKE",
+    icon: "\u{f0176}",
     rank: 5,
 };
 

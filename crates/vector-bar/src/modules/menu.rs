@@ -1,6 +1,6 @@
-//! The mode block on the far left: the Vector mark and the system mode
-//! (NORMAL, REC, DICTATE, SILENT, AWAKE, VM; several join with ·), in the
-//! mode's colour. Click: the Start menu (`vector-space start`; without Vector
+//! The mode block on the far left: always one icon in the mode's colour. The
+//! vectorOS mark normally; the icon of the most important active mode (REC,
+//! DICTATE, AGENT, VM, SILENT, AWAKE) while one is on. The tooltip names them. Click: the Start menu (`vector-space start`; without Vector
 //! Space, the bar's own menu panel). Right: terminal.
 //! The rarer Omarchy submenus (install, remove, setup...) stay reachable under "more".
 
@@ -30,14 +30,9 @@ impl Drop for Menu {
     }
 }
 
-/// The active states, joined; empty when nothing is on (then only the mark shows).
+/// The icon of the most important active state (the mark when none is on).
 fn label_text() -> String {
-    crate::mode::active()
-        .iter()
-        .filter(|s| s.key != "normal")
-        .map(|s| s.label)
-        .collect::<Vec<_>>()
-        .join(" · ")
+    format!("<span>{}</span>", crate::mode::active()[0].icon)
 }
 
 impl Menu {
@@ -99,12 +94,7 @@ impl Menu {
 
 impl Module for Menu {
     fn view(&self, _: &BarInfo) -> gtk::Widget {
-        let w = self.slot.view();
-        if let Some(b) = w.downcast_ref::<gtk::Box>() {
-            // the VectorOS mark: nf-md-vector_difference_ba
-            b.prepend(&ui::text("\u{f055c}", &["mark"]));
-        }
-        w
+        self.slot.view()
     }
     fn slots(&self) -> Vec<Slot> {
         vec![self.slot.clone()]

@@ -11,12 +11,16 @@ use crate::slot::Notify;
 pub struct State {
     pub key: &'static str,
     pub label: &'static str,
+    /// shown in the mode block in place of the vectorOS mark
+    pub icon: &'static str,
     pub rank: u8,
 }
 
 pub const NORMAL: State = State {
     key: "normal",
     label: "NORMAL",
+    // nf-md-vector_difference_ba: the vectorOS mark
+    icon: "\u{f055c}",
     rank: 255,
 };
 
