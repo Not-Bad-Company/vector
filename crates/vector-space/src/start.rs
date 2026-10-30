@@ -576,8 +576,8 @@ const SETTINGS: &[(&str, &str, &str)] = &[
     ("\u{f00af}", "bluetooth", "omarchy-launch-bluetooth"),
     ("\u{f057e}", "sound", "omarchy-launch-audio"),
     ("\u{f030c}", "keys", "omarchy-menu-keybindings"),
-    ("\u{f03d8}", "theme", "omarchy-menu theme"),
-    ("\u{f0e09}", "wallpaper", "omarchy-theme-bg-next"),
+    ("\u{f03d8}", "theme", "vector-space themes"),
+    ("\u{f0e09}", "wallpaper", "vector-space backgrounds"),
     ("\u{f0b34}", "font", "omarchy-menu style"),
     ("\u{f0493}", "setup", "omarchy-menu setup"),
 ];

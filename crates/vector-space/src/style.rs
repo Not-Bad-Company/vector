@@ -220,6 +220,18 @@ row.pick-row {{
 row.pick-row:hover {{ background: alpha({fg}, 0.05); }}
 row.pick-row:selected {{ background: alpha({acc}, 0.14); border-left-color: {acc}; color: {fg}; }}
 
+/* the picture gallery (gallery.rs) */
+.gallery-grid {{ padding: 12px; }}
+.gallery-grid flowboxchild {{ padding: 6px; background: transparent; border: none; }}
+.gallery-card {{ border: 1px solid alpha({fg}, 0.08); background: alpha({fg}, 0.03); }}
+.gallery-grid flowboxchild:hover .gallery-card {{ border-color: alpha({acc}, 0.5); }}
+.gallery-grid flowboxchild:selected .gallery-card {{ border-color: {acc}; box-shadow: 0 0 0 1px {acc}; }}
+.gallery-grid flowboxchild:selected {{ background: transparent; }}
+.gallery-thumb {{ background: alpha({fg}, 0.05); }}
+.gallery-name {{ padding: 8px 10px; font-size: 12px; }}
+.gallery-grid flowboxchild:selected .gallery-name label {{ color: {acc}; }}
+.gallery-current {{ font-size: 10px; color: {bg}; background: {acc}; padding: 1px 6px; font-weight: bold; }}
+
 /* power, level with the search */
 .start-power {{ min-height: 50px; border-top: 1px solid alpha({fg}, 0.09); background: alpha({fg}, 0.045); }}
 button.start-pow {{
