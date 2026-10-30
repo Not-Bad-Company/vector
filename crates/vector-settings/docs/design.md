@@ -39,7 +39,7 @@ the window is closed.
 | about | fastfetch JSON, `vector-update/install/remove` | done |
 | display | `hyprctl monitors`, writes `~/.config/hypr/monitors.conf` | planned |
 | power | power-profiles-daemon / asusctl, hypridle timeouts | planned |
-| keyboard & input | `~/.config/hypr/input.conf` (layout, repeat, touchpad, gestures) | planned |
+| keyboard & touchpad | `~/.config/hypr/input.conf` in place (`conf.rs`): layouts, compose, repeat, touchpad, pointer | done |
 | appearance | themes, backgrounds, fonts (the Vector Space galleries) | planned |
 | bar | `~/.config/vector-bar/config.toml` (modules, order) | planned |
 | default apps | `mimeapps.list`, `xdg-terminals.list` | planned |
