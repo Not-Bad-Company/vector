@@ -22,6 +22,7 @@ pub struct Menu {
     /// detection lives in the indicators module; made here when it isn't on the bar
     _indicators: Option<super::indicators::Indicators>,
     listener: u64,
+    marks: Rc<RefCell<Vec<glib::WeakRef<gtk::DrawingArea>>>>,
 }
 
 impl Drop for Menu {
@@ -30,9 +31,34 @@ impl Drop for Menu {
     }
 }
 
-/// The icon of the most important active state (the mark when none is on).
+/// The icon of the most important active state; empty in normal mode (then
+/// the drawn mark shows instead).
 fn label_text() -> String {
-    format!("<span>{}</span>", crate::mode::active()[0].icon)
+    let s = &crate::mode::active()[0];
+    if s.key == "normal" { String::new() } else { s.icon.to_string() }
+}
+
+/// The vectorOS mark, drawn (font glyphs of it blur at bar size): an outlined
+/// square with a solid one over its lower right corner, in the text colour.
+fn mark() -> gtk::DrawingArea {
+    let a = gtk::DrawingArea::new();
+    a.add_css_class("mark");
+    a.set_content_width(16);
+    a.set_content_height(16);
+    a.set_valign(gtk::Align::Center);
+    a.set_draw_func(|a, cr, w, h| {
+        let c = a.color();
+        cr.set_source_rgba(c.red() as f64, c.green() as f64, c.blue() as f64, c.alpha() as f64);
+        let (s, o, lw) = (10.0, 5.0, 1.8);
+        let x = ((w as f64 - (s + o)) / 2.0).round();
+        let y = ((h as f64 - (s + o)) / 2.0).round();
+        cr.set_line_width(lw);
+        cr.rectangle(x + lw / 2.0, y + lw / 2.0, s - lw, s - lw);
+        let _ = cr.stroke();
+        cr.rectangle(x + o, y + o, s, s);
+        let _ = cr.fill();
+    });
+    a
 }
 
 impl Menu {
@@ -40,8 +66,18 @@ impl Menu {
         let slot = ctx.slot("mode", &["menu"]);
         slot.set_markup(&label_text());
         let s2 = slot.clone();
+        let marks: Rc<RefCell<Vec<glib::WeakRef<gtk::DrawingArea>>>> = Rc::default();
+        let m2 = marks.clone();
         let listener = crate::mode::changed().connect(move || {
             s2.set_markup(&label_text());
+            let normal = crate::mode::current() == "normal";
+            m2.borrow_mut().retain(|w| match w.upgrade() {
+                Some(m) => {
+                    m.set_visible(normal);
+                    true
+                }
+                None => false,
+            });
             s2.bump();
         });
         let on_bar = |n: &str| {
@@ -88,13 +124,21 @@ impl Menu {
             slot,
             _indicators,
             listener,
+            marks,
         }
     }
 }
 
 impl Module for Menu {
     fn view(&self, _: &BarInfo) -> gtk::Widget {
-        self.slot.view()
+        let w = self.slot.view();
+        if let Some(b) = w.downcast_ref::<gtk::Box>() {
+            let m = mark();
+            m.set_visible(crate::mode::current() == "normal");
+            b.prepend(&m);
+            self.marks.borrow_mut().push(m.downgrade());
+        }
+        w
     }
     fn slots(&self) -> Vec<Slot> {
         vec![self.slot.clone()]

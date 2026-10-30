@@ -176,6 +176,8 @@ window.vbar .right {{ margin-right: 0; }}
 .zone.seg {{ background: alpha({fg}, 0.13); }}
 .zone.block .item, .zone.block .item label {{ color: {bg}; font-weight: bold; }}
 .zone.block .item {{ padding: 0 10px; transition: none; }}
+.zone.block .item.menu {{ padding: 0 9px 0 11px; }}
+.zone.block .item.menu label {{ font-size: 15px; font-weight: normal; }}
 .zone.block .item.clickable:hover, .zone.block .item.clickable.slant-hover {{ background: alpha({bg}, 0.14); }}
 .zone.block .item.open {{ background: alpha({bg}, 0.20); box-shadow: none; }}
 .zone.seg .item {{ padding: 0 8px; }}
