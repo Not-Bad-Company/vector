@@ -134,7 +134,7 @@ setup)
 
 wifi | wi-fi)
   rfkill unblock wifi
-  omarchy-launch-wifi
+  exec vector-settings wifi
   ;;
 bluetooth)
   rfkill unblock bluetooth

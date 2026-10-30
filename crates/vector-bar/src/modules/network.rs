@@ -1,6 +1,6 @@
 //! Network: Wi-Fi over iwd (D-Bus, event driven) or wired. Bar: signal bars /
 //! ethernet / disconnected. Click: Wi-Fi panel (power, saved + nearby networks,
-//! connect with password, disconnect, forget, scan). Right: impala.
+//! connect with password, disconnect, forget, scan). Right: vectorOS Settings.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -230,7 +230,7 @@ impl Network {
             pending: Cell::new(false),
             _sub: RefCell::default(),
         });
-        let right = o.str("on_right", "omarchy-launch-wifi");
+        let right = o.str("on_right", "vector-settings wifi");
         inner.slot.on_right(move || util::spawn_sh(&right));
         let w = Rc::downgrade(&inner);
         inner.slot.tooltip(move || w.upgrade().map(|i| i.tooltip()));
@@ -329,7 +329,7 @@ impl Inner {
         } else {
             sh.append(&ui::head("wi-fi", if !s.powered { "off" } else { "disconnected" }).0);
         }
-        sh.append(&ui::thint("click networks  ·  right impala"));
+        sh.append(&ui::thint("click networks  ·  right settings"));
         sh.upcast()
     }
 }
@@ -373,7 +373,7 @@ fn err_text(f: &Fail, with_pw: bool) -> String {
         "Aborted" => "cancelled".into(),
         "InProgress" => "already connecting".into(),
         "NotSupported" => "this network type isn't supported here".into(),
-        "NoAgent" => "no password prompt available: use impala".into(),
+        "NoAgent" => "no password prompt: settings may hold it".into(),
         "Timeout" => "timed out".into(),
         _ => f.message.clone(),
     }
@@ -402,7 +402,7 @@ fn wifi_panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
     let list = ui::KeyedList::new();
     card.body.append(&list.root);
 
-    // footer: scan + impala
+    // footer: scan + settings
     let spin = gtk::Spinner::new();
     spin.set_visible(false);
     let scan_l = ui::text("scan", &[]);
@@ -416,11 +416,11 @@ fn wifi_panel(i: &Rc<Inner>, p: &Panel) -> gtk::Widget {
     ui::pointer(&scan_btn);
     card.foot_add(&scan_btn);
     card.foot_add(&ui::spacer());
-    card.foot_add(&ui::link("impala", &[], {
+    card.foot_add(&ui::link("settings ›", &[], {
         let p = p.clone();
         move || {
             p.close();
-            util::spawn_sh("omarchy-launch-wifi");
+            util::spawn_sh("vector-settings wifi");
         }
     }));
 
@@ -1064,17 +1064,14 @@ fn net_row(
                 }));
             }
         } else if n.kind == "8021x" {
-            ex.append(&ui::text(
-                "enterprise network: set it up in impala",
-                &["dim"],
-            ));
+            ex.append(&ui::text("enterprise network: sign in once in settings", &["dim"]));
             let pc = p.clone();
-            ex.append(&ui::link("impala", &[], move || {
+            ex.append(&ui::link("settings ›", &[], move || {
                 pc.close();
-                util::spawn_sh("omarchy-launch-wifi");
+                util::spawn_sh("vector-settings wifi");
             }));
         } else if agent_ok == Some(false) {
-            ex.append(&ui::text("impala holds the password prompt", &["dim"]));
+            ex.append(&ui::text("another program holds the password prompt (settings?)", &["dim"]));
         } else {
             let e = gtk::PasswordEntry::new();
             e.set_show_peek_icon(true);

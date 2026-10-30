@@ -4908,6 +4908,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "vector-settings"
+version = "0.3.4"
+dependencies = [
+ "gio",
+ "glib",
+ "gtk4",
+ "libc",
+ "serde",
+ "serde_json",
+ "vector-core",
+]
+
+[[package]]
 name = "vector-space"
 version = "0.1.0"
 dependencies = [
